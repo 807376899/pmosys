@@ -139,6 +139,7 @@ def init_database():
                 current_status    TEXT NOT NULL DEFAULT 'draft',
                 category          TEXT,
                 budget            REAL DEFAULT 0,
+                approved_budget   REAL DEFAULT NULL,
                 special_note      TEXT DEFAULT '',
                 actual_start_date  TEXT,
                 actual_end_date    TEXT,
@@ -235,6 +236,9 @@ def _column_exists(conn: sqlite3.Connection, table_name: str, column_name: str) 
 
 def _ensure_projects_schema(conn: sqlite3.Connection) -> None:
     """为历史数据库补齐新增字段，避免升级失败"""
+    if not _column_exists(conn, "projects", "approved_budget"):
+        conn.execute("ALTER TABLE projects ADD COLUMN approved_budget REAL DEFAULT NULL")
+
     if not _column_exists(conn, "projects", "special_note"):
         conn.execute("ALTER TABLE projects ADD COLUMN special_note TEXT DEFAULT ''")
 
@@ -353,6 +357,7 @@ def create_project(
     project_manager: str = "",
     category: str = "",
     budget: float = 0,
+    approved_budget: Optional[float] = None,
     special_note: str = "",
     operator: str = "system",
 ) -> int:
@@ -375,12 +380,12 @@ def create_project(
             """
             INSERT INTO projects
                 (project_code, name, description, department, sponsor,
-                 project_manager, category, budget, special_note)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 project_manager, category, budget, approved_budget, special_note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 project_code.strip(), name, description, department, sponsor,
-                project_manager, category, budget, special_note,
+                project_manager, category, budget, approved_budget, special_note,
             ),
         )
         project_id = cursor.lastrowid
@@ -447,7 +452,7 @@ def get_projects(
     where = " WHERE " + " AND ".join(conditions) if conditions else ""
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT * FROM projects" + where + " ORDER BY updated_at DESC",
+            "SELECT * FROM projects" + where + " ORDER BY status_updated_at DESC, updated_at DESC, id DESC",
             params,
         ).fetchall()
         return [dict(r) for r in rows]
@@ -498,6 +503,11 @@ def delete_project(project_id: int) -> bool:
         return cursor.rowcount > 0
 
 
+def transition_allows_budget_adjustment(from_status: str, to_status: str) -> bool:
+    """仅当进入送审中或从送审中流出时允许调整审核后预算"""
+    return from_status == "submission_review" or to_status == "submission_review"
+
+
 # ============================================================
 # 状态流转
 # ============================================================
@@ -530,6 +540,7 @@ def transition_project(
     comment: str = "",
     deliverable: str = "",
     force: bool = False,
+    approved_budget: Optional[float] = None,
 ) -> dict:
     """
     执行项目状态流转。
@@ -560,6 +571,15 @@ def transition_project(
         from_status = project["current_status"]
         if from_status == to_status:
             return {"success": False, "message": "目标状态不能与当前状态相同"}
+
+        if approved_budget is not None and approved_budget < 0:
+            return {"success": False, "message": "审核后预算不能小于 0"}
+
+        if approved_budget is not None and not transition_allows_budget_adjustment(from_status, to_status):
+            return {
+                "success": False,
+                "message": "仅在进入送审中或从送审中流转时允许调整审核后预算",
+            }
 
         rule = None
         action_name = ""
@@ -613,13 +633,18 @@ def transition_project(
             deliverable_value = deliverable_value or rule["required_deliverable"]
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        update_fields = {
+            "current_status": to_status,
+            "updated_at": now,
+            "status_updated_at": now,
+        }
+        if approved_budget is not None:
+            update_fields["approved_budget"] = approved_budget
+
+        set_clause = ", ".join(f"{field} = ?" for field in update_fields)
         conn.execute(
-            """
-            UPDATE projects
-            SET current_status = ?, updated_at = ?, status_updated_at = ?
-            WHERE id = ?
-            """,
-            (to_status, now, now, project_id),
+            "UPDATE projects SET " + set_clause + " WHERE id = ?",
+            list(update_fields.values()) + [project_id],
         )
 
         conn.execute(
@@ -659,6 +684,7 @@ def batch_transition_projects(
     comment: str = "",
     deliverable: str = "",
     force: bool = False,
+    approved_budget: Optional[float] = None,
 ) -> dict:
     """
     批量执行项目状态流转。
@@ -701,6 +727,7 @@ def batch_transition_projects(
             comment=comment,
             deliverable=deliverable,
             force=force,
+            approved_budget=approved_budget,
         )
         if item_result["success"]:
             result["success"] += 1
@@ -1000,6 +1027,11 @@ def batch_create_projects(
             ).strip()
             category = str(rec.get("category", "") or rec.get("项目分类", "") or rec.get("分类", "")).strip()
             special_note = str(rec.get("special_note", "") or rec.get("特殊说明", "")).strip()
+            approved_budget = rec.get("approved_budget", rec.get("审核后预算(万元)", rec.get("审核后预算", "")))
+            try:
+                approved_budget = float(approved_budget) if approved_budget not in ("", None) else None
+            except (ValueError, TypeError):
+                approved_budget = None
             actual_start = str(rec.get("actual_start_date", "") or rec.get("实际开始", "") or rec.get("实际开始日期", "")).strip()
             actual_end = str(rec.get("actual_end_date", "") or rec.get("实际结束", "") or rec.get("实际结束日期", "")).strip()
 
@@ -1010,13 +1042,13 @@ def batch_create_projects(
                     INSERT INTO projects
                         (project_code, name, description, department, sponsor,
                          project_manager, current_status, category, special_note,
-                         budget, actual_start_date, actual_end_date)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         budget, approved_budget, actual_start_date, actual_end_date)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         project_code, name, description, department, sponsor,
                         project_manager, status_raw, category, special_note,
-                        budget, actual_start, actual_end,
+                        budget, approved_budget, actual_start, actual_end,
                     ),
                 )
                 new_id = cursor.lastrowid
