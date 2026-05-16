@@ -139,10 +139,12 @@ def init_database():
                 current_status    TEXT NOT NULL DEFAULT 'draft',
                 category          TEXT,
                 budget            REAL DEFAULT 0,
+                special_note      TEXT DEFAULT '',
                 actual_start_date  TEXT,
                 actual_end_date    TEXT,
                 created_at        TEXT DEFAULT (datetime('now','localtime')),
-                updated_at        TEXT DEFAULT (datetime('now','localtime'))
+                updated_at        TEXT DEFAULT (datetime('now','localtime')),
+                status_updated_at TEXT DEFAULT (datetime('now','localtime'))
             )
         """)
 
@@ -194,6 +196,9 @@ def init_database():
             )
         """)
 
+        # ---- 历史版本字段补齐 ----
+        _ensure_projects_schema(conn)
+
         # ---- 创建索引，提升查询性能 ----
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(current_status)"
@@ -203,6 +208,9 @@ def init_database():
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_projects_updated ON projects(updated_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_projects_status_updated ON projects(status_updated_at)"
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_history_project ON status_history(project_id)"
@@ -217,6 +225,28 @@ def init_database():
         # ---- 写入种子数据（仅在表为空时） ----
         _seed_statuses(conn)
         _seed_transitions(conn)
+
+
+def _column_exists(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+    """检查表中是否已存在指定字段"""
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return any(r["name"] == column_name for r in rows)
+
+
+def _ensure_projects_schema(conn: sqlite3.Connection) -> None:
+    """为历史数据库补齐新增字段，避免升级失败"""
+    if not _column_exists(conn, "projects", "special_note"):
+        conn.execute("ALTER TABLE projects ADD COLUMN special_note TEXT DEFAULT ''")
+
+    if not _column_exists(conn, "projects", "status_updated_at"):
+        conn.execute("ALTER TABLE projects ADD COLUMN status_updated_at TEXT DEFAULT ''")
+        conn.execute(
+            """
+            UPDATE projects
+            SET status_updated_at = COALESCE(NULLIF(updated_at, ''), NULLIF(created_at, ''), datetime('now','localtime'))
+            WHERE status_updated_at IS NULL OR status_updated_at = ''
+            """
+        )
 
 
 def _seed_statuses(conn: sqlite3.Connection):
@@ -323,6 +353,7 @@ def create_project(
     project_manager: str = "",
     category: str = "",
     budget: float = 0,
+    special_note: str = "",
     operator: str = "system",
 ) -> int:
     """
@@ -344,12 +375,12 @@ def create_project(
             """
             INSERT INTO projects
                 (project_code, name, description, department, sponsor,
-                 project_manager, category, budget)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 project_manager, category, budget, special_note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 project_code.strip(), name, description, department, sponsor,
-                project_manager, category, budget,
+                project_manager, category, budget, special_note,
             ),
         )
         project_id = cursor.lastrowid
@@ -372,6 +403,10 @@ def get_projects(
     keyword: Optional[str] = None,
     department: Optional[str] = None,
     project_manager: Optional[str] = None,
+    min_budget: Optional[float] = None,
+    max_budget: Optional[float] = None,
+    status_updated_from: Optional[str] = None,
+    status_updated_to: Optional[str] = None,
 ) -> list[dict]:
     """
     查询项目列表，支持多条件筛选。
@@ -386,15 +421,28 @@ def get_projects(
         params.append(status)
     if keyword:
         conditions.append(
-            "(name LIKE ? OR project_code LIKE ? OR description LIKE ?)"
+            "(name LIKE ? OR project_code LIKE ? OR description LIKE ? "
+            "OR sponsor LIKE ? OR special_note LIKE ?)"
         )
-        params.extend(["%" + keyword + "%"] * 3)
+        params.extend(["%" + keyword + "%"] * 5)
     if department:
         conditions.append("department = ?")
         params.append(department)
     if project_manager:
         conditions.append("project_manager = ?")
         params.append(project_manager)
+    if min_budget is not None:
+        conditions.append("budget >= ?")
+        params.append(min_budget)
+    if max_budget is not None:
+        conditions.append("budget <= ?")
+        params.append(max_budget)
+    if status_updated_from:
+        conditions.append("status_updated_at >= ?")
+        params.append(status_updated_from)
+    if status_updated_to:
+        conditions.append("status_updated_at <= ?")
+        params.append(status_updated_to)
 
     where = " WHERE " + " AND ".join(conditions) if conditions else ""
     with get_connection() as conn:
@@ -424,6 +472,7 @@ def update_project(project_id: int, **kwargs) -> bool:
     allowed_fields = {
         "name", "description", "department", "sponsor", "project_manager",
         "category", "actual_start_date", "actual_end_date", "budget",
+        "special_note",
     }
     updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
     if not updates:
@@ -480,6 +529,7 @@ def transition_project(
     approver: Optional[str] = None,
     comment: str = "",
     deliverable: str = "",
+    force: bool = False,
 ) -> dict:
     """
     执行项目状态流转。
@@ -501,7 +551,6 @@ def transition_project(
     返回: {"success": bool, "message": str}
     """
     with get_connection() as conn:
-        # 1. 获取项目当前状态
         project = conn.execute(
             "SELECT * FROM projects WHERE id = ?", (project_id,)
         ).fetchone()
@@ -509,45 +558,70 @@ def transition_project(
             return {"success": False, "message": "项目不存在: " + str(project_id)}
 
         from_status = project["current_status"]
+        if from_status == to_status:
+            return {"success": False, "message": "目标状态不能与当前状态相同"}
 
-        # 2. 校验流转规则：查询数据库中是否存在合法规则
-        rule = conn.execute(
-            """
-            SELECT * FROM transition_rules
-            WHERE from_status = ? AND to_status = ? AND is_active = 1
-            """,
-            (from_status, to_status),
-        ).fetchone()
+        rule = None
+        action_name = ""
+        approver_value = approver
+        deliverable_value = deliverable
+        comment_value = comment.strip()
 
-        if not rule:
-            return {
-                "success": False,
-                "message": "不允许的流转: " + from_status + " → " + to_status + "，请检查流转规则",
-            }
+        if force:
+            status_exists = conn.execute(
+                """
+                SELECT 1 FROM status_definitions
+                WHERE status_code = ? AND is_active = 1
+                """,
+                (to_status,),
+            ).fetchone()
+            if not status_exists:
+                return {"success": False, "message": "目标状态不存在: " + to_status}
 
-        # 3. 审批类流转必须指定审批人
-        if rule["requires_approval"] and not approver:
-            return {
-                "success": False,
-                "message": (
-                    "此流转需要审批，审批角色: "
-                    + str(rule["approver_role"])
-                    + "，请指定审批人"
-                ),
-            }
+            action_name = "PMO特批强制变更"
+            approver_value = approver_value or operator
+            if comment_value:
+                comment_value = "PMO特批: " + comment_value
+            else:
+                comment_value = "PMO特批"
+        else:
+            rule = conn.execute(
+                """
+                SELECT * FROM transition_rules
+                WHERE from_status = ? AND to_status = ? AND is_active = 1
+                """,
+                (from_status, to_status),
+            ).fetchone()
 
-        # 4. 执行状态变更
+            if not rule:
+                return {
+                    "success": False,
+                    "message": "不允许的流转: " + from_status + " → " + to_status + "，请检查流转规则",
+                }
+
+            if rule["requires_approval"] and not approver_value:
+                return {
+                    "success": False,
+                    "message": (
+                        "此流转需要审批，审批角色: "
+                        + str(rule["approver_role"])
+                        + "，请指定审批人"
+                    ),
+                }
+
+            action_name = rule["action_name"]
+            deliverable_value = deliverable_value or rule["required_deliverable"]
+
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         conn.execute(
             """
             UPDATE projects
-            SET current_status = ?, updated_at = ?
+            SET current_status = ?, updated_at = ?, status_updated_at = ?
             WHERE id = ?
             """,
-            (to_status, now, project_id),
+            (to_status, now, now, project_id),
         )
 
-        # 5. 记录状态变更到历史表
         conn.execute(
             """
             INSERT INTO status_history
@@ -556,29 +630,88 @@ def transition_project(
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                project_id, from_status, to_status, rule["action_name"],
-                operator, approver, comment,
-                deliverable or rule["required_deliverable"],
+                project_id, from_status, to_status, action_name,
+                operator, approver_value, comment_value, deliverable_value,
             ),
         )
 
-        # 6. 自动更新实际日期
-        # 进入"实施中"时记录实际开始日期
         if to_status == "implementing" and not project["actual_start_date"]:
             conn.execute(
                 "UPDATE projects SET actual_start_date = ? WHERE id = ?",
                 (now[:10], project_id),
             )
-        # 进入"已关闭"或"已终止"时记录实际结束日期
         if to_status in ("closed", "terminated") and not project["actual_end_date"]:
             conn.execute(
                 "UPDATE projects SET actual_end_date = ? WHERE id = ?",
                 (now[:10], project_id),
             )
 
-        # 7. 构建返回消息
-        msg = "状态流转成功: " + from_status + " → " + to_status + " (" + rule["action_name"] + ")"
+        action_desc = "PMO特批" if force else action_name
+        msg = "状态流转成功: " + from_status + " → " + to_status + " (" + action_desc + ")"
         return {"success": True, "message": msg}
+
+
+def batch_transition_projects(
+    project_ids: list[int],
+    to_status: str,
+    operator: str,
+    approver: Optional[str] = None,
+    comment: str = "",
+    deliverable: str = "",
+    force: bool = False,
+) -> dict:
+    """
+    批量执行项目状态流转。
+
+    返回:
+    {
+        "total": 总数,
+        "success": 成功数,
+        "failed": 失败数,
+        "errors": [{"project_id": 1, "project_code": "...", "name": "...", "error": "..."}]
+    }
+    """
+    unique_ids = []
+    seen = set()
+    for project_id in project_ids:
+        if project_id not in seen:
+            seen.add(project_id)
+            unique_ids.append(project_id)
+
+    result = {
+        "total": len(unique_ids),
+        "success": 0,
+        "failed": 0,
+        "errors": [],
+    }
+
+    for project_id in unique_ids:
+        project = get_project_by_id(project_id)
+        label = {
+            "project_id": project_id,
+            "project_code": project["project_code"] if project else "-",
+            "name": project["name"] if project else "-",
+        }
+
+        item_result = transition_project(
+            project_id=project_id,
+            to_status=to_status,
+            operator=operator,
+            approver=approver,
+            comment=comment,
+            deliverable=deliverable,
+            force=force,
+        )
+        if item_result["success"]:
+            result["success"] += 1
+        else:
+            result["failed"] += 1
+            result["errors"].append({
+                **label,
+                "error": item_result["message"],
+            })
+
+    return result
 
 
 def get_status_history(project_id: int) -> list[dict]:
@@ -866,6 +999,7 @@ def batch_create_projects(
                 or rec.get("负责人", "")
             ).strip()
             category = str(rec.get("category", "") or rec.get("项目分类", "") or rec.get("分类", "")).strip()
+            special_note = str(rec.get("special_note", "") or rec.get("特殊说明", "")).strip()
             actual_start = str(rec.get("actual_start_date", "") or rec.get("实际开始", "") or rec.get("实际开始日期", "")).strip()
             actual_end = str(rec.get("actual_end_date", "") or rec.get("实际结束", "") or rec.get("实际结束日期", "")).strip()
 
@@ -875,13 +1009,13 @@ def batch_create_projects(
                     """
                     INSERT INTO projects
                         (project_code, name, description, department, sponsor,
-                         project_manager, current_status, category,
+                         project_manager, current_status, category, special_note,
                          budget, actual_start_date, actual_end_date)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         project_code, name, description, department, sponsor,
-                        project_manager, status_raw, category,
+                        project_manager, status_raw, category, special_note,
                         budget, actual_start, actual_end,
                     ),
                 )
