@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from fastapi import FastAPI, Request
+from fastapi import HTTPException as FastAPIHTTPException
 from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from backend.app.api.v1.router import api_router
 from backend.app.core.config import get_settings
@@ -37,6 +39,18 @@ def create_app() -> FastAPI:
             f"{'.'.join(str(part) for part in err['loc'])}: {err['msg']}" for err in exc.errors()
         )
         return error_json(422, "VALIDATION_ERROR", message)
+
+    @app.exception_handler(FastAPIHTTPException)
+    async def handle_http_exception(_: Request, exc: FastAPIHTTPException):
+        detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+        code = "NOT_FOUND" if exc.status_code == 404 else f"HTTP_{exc.status_code}"
+        return error_json(exc.status_code, code, detail)
+
+    @app.exception_handler(StarletteHTTPException)
+    async def handle_starlette_http_exception(_: Request, exc: StarletteHTTPException):
+        detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+        code = "NOT_FOUND" if exc.status_code == 404 else f"HTTP_{exc.status_code}"
+        return error_json(exc.status_code, code, detail)
 
     @app.exception_handler(Exception)
     async def handle_unexpected(_: Request, exc: Exception):

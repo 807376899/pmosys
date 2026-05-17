@@ -23,4 +23,5 @@ class DashboardGroupItem(APIModel):
     label: str
     statuses: list[str]
     count: int
-
+    total_budget: float
+    total_approved_budget: float

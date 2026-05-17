@@ -9,6 +9,7 @@ import pytest
 def client(tmp_path, monkeypatch):
     db_path = tmp_path / "test_pmo.db"
     monkeypatch.setenv("PMO_DB_PATH", str(db_path))
+
     import backend.app.main as main_module
 
     importlib.reload(main_module)

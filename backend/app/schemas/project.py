@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from pydantic import Field, field_validator
+from pydantic import ConfigDict, Field, field_validator
 
 from backend.app.schemas.common import APIModel, PagedResponse
 
@@ -62,6 +62,8 @@ class ProjectCreate(ProjectBase):
 
 
 class ProjectUpdate(APIModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = None
     description: str | None = None
     department: str | None = None
@@ -202,4 +204,3 @@ class BatchTransitionExecuteResponse(APIModel):
     success: int
     failed: int
     errors: list[BatchTransitionErrorItem]
-
