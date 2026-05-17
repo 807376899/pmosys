@@ -1,0 +1,37 @@
+{
+  "info": {
+    "name": "PMO FastAPI Phase 1",
+    "_postman_id": "f8ab3f0e-3cab-4ef3-a6fa-9d749c6f4fd5",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/health",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "health"]
+        }
+      }
+    },
+    {
+      "name": "Dashboard Groups",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/dashboard/groups",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "dashboard", "groups"]
+        }
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000"
+    }
+  ]
+}
