@@ -35,3 +35,31 @@ def test_project_list_supports_project_type_filter(client, create_project_payloa
     items = response.json()["items"]
     assert len(items) == 1
     assert items[0]["project_type"] == "teaching_software"
+
+
+def test_project_list_sorting_and_department_order(client, create_project_payload, monkeypatch):
+    monkeypatch.setenv("PMO_DEPARTMENT_ORDER", "财务部,信息中心,教务处")
+    client.post(
+        "/api/v1/projects",
+        json=create_project_payload(name="信息项目", department="信息中心", actual_start_date="2025-01-01"),
+    )
+    client.post(
+        "/api/v1/projects",
+        json=create_project_payload(name="财务项目", department="财务部", actual_start_date="2024-01-01"),
+    )
+    client.post(
+        "/api/v1/projects",
+        json=create_project_payload(name="其他项目", department="后勤处", actual_start_date="2026-01-01"),
+    )
+
+    response = client.get("/api/v1/projects", params={"sort_by": "department", "sort_dir": "asc"})
+    assert response.status_code == 200
+    assert [item["department"] for item in response.json()["items"]] == ["财务部", "信息中心", "后勤处"]
+
+    response = client.get("/api/v1/projects", params={"sort_by": "implementation_year", "sort_dir": "desc"})
+    assert response.status_code == 200
+    assert [item["name"] for item in response.json()["items"]] == ["其他项目", "信息项目", "财务项目"]
+
+    response = client.get("/api/v1/meta/departments")
+    assert response.status_code == 200
+    assert response.json() == ["财务部", "信息中心", "后勤处"]

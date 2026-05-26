@@ -26,6 +26,7 @@ def init_database(conn: sqlite3.Connection) -> None:
             project_type TEXT,
             budget REAL DEFAULT 0,
             approved_budget REAL DEFAULT NULL,
+            contract_amount REAL DEFAULT NULL,
             special_note TEXT DEFAULT '',
             actual_start_date TEXT,
             actual_end_date TEXT,
@@ -105,6 +106,8 @@ def ensure_project_schema(conn: sqlite3.Connection) -> None:
         )
     if not column_exists(conn, "projects", "project_type"):
         conn.execute("ALTER TABLE projects ADD COLUMN project_type TEXT")
+    if not column_exists(conn, "projects", "contract_amount"):
+        conn.execute("ALTER TABLE projects ADD COLUMN contract_amount REAL DEFAULT NULL")
 
 
 def create_indexes(conn: sqlite3.Connection) -> None:

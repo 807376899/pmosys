@@ -13,6 +13,7 @@ def test_import_preview_and_commit(client):
                 "项目类型": "教学软件",
                 "当前状态": "draft",
                 "预算(万元)": 50,
+                "合同金额(万元)": 45,
             }
         ]
     )
@@ -26,10 +27,10 @@ def test_import_preview_and_commit(client):
     assert preview.status_code == 200
     body = preview.json()
     assert body["valid_rows"] == 1
+    assert body["records"][0]["contract_amount"] == 45.0
     commit = client.post(
         "/api/v1/imports/projects/commit",
         json={"records": body["records"], "operator": "批量导入"},
     )
     assert commit.status_code == 200
     assert commit.json()["success"] == 1
-

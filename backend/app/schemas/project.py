@@ -27,6 +27,7 @@ PATCHABLE_PROJECT_FIELDS = {
     "category",
     "project_type",
     "budget",
+    "contract_amount",
     "special_note",
     "actual_start_date",
     "actual_end_date",
@@ -42,6 +43,7 @@ class ProjectBase(APIModel):
     category: str = ""
     project_type: ProjectType
     budget: float = 0
+    contract_amount: float | None = None
     special_note: str = ""
     actual_start_date: str = ""
     actual_end_date: str = ""
@@ -72,6 +74,7 @@ class ProjectUpdate(APIModel):
     category: str | None = None
     project_type: ProjectType | None = None
     budget: float | None = None
+    contract_amount: float | None = None
     special_note: str | None = None
     actual_start_date: str | None = None
     actual_end_date: str | None = None
@@ -93,6 +96,7 @@ class ProjectListItem(APIModel):
     project_type: ProjectType | None = None
     budget: float | None = None
     approved_budget: float | None = None
+    contract_amount: float | None = None
     special_note: str | None = None
     actual_start_date: str | None = None
     actual_end_date: str | None = None

@@ -17,6 +17,7 @@ class ImportPreviewRecord(APIModel):
     project_type: ProjectType
     budget: float = 0
     approved_budget: float | None = None
+    contract_amount: float | None = None
     special_note: str = ""
     actual_start_date: str = ""
     actual_end_date: str = ""

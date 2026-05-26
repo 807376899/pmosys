@@ -10,6 +10,9 @@ export interface DashboardGroup {
   label: string;
   statuses: string[];
   count: number;
+  total_budget: number;
+  total_approved_budget: number;
+  total_contract_amount: number;
 }
 
 export interface StatusStat {
@@ -24,6 +27,12 @@ export interface DashboardSummary {
   total_projects: number;
   total_budget: number;
   total_approved_budget: number;
+  total_contract_amount: number;
+  project_library_count: number;
+  project_library_total_budget: number;
+  review_in_progress_count: number;
+  reviewed_count: number;
+  reviewed_total_approved_budget: number;
   status_stats: StatusStat[];
 }
 
@@ -40,6 +49,7 @@ export interface Project {
   project_type: "teaching_software" | "practical_teaching_site" | null;
   budget: number | null;
   approved_budget: number | null;
+  contract_amount: number | null;
   special_note: string | null;
   actual_start_date: string | null;
   actual_end_date: string | null;
@@ -60,6 +70,21 @@ export interface WorkflowStatus {
   status_code: string;
   status_name: string;
   color: string;
+}
+
+export interface StatusHistoryItem {
+  id: number;
+  project_id: number;
+  from_status: string | null;
+  to_status: string;
+  action: string;
+  operator: string;
+  approver: string | null;
+  comment: string | null;
+  deliverable: string | null;
+  transition_date: string;
+  from_status_name: string | null;
+  to_status_name: string | null;
 }
 
 export interface BatchTarget {
@@ -108,6 +133,7 @@ export interface ImportPreviewRecord {
   project_type: "teaching_software" | "practical_teaching_site";
   budget: number;
   approved_budget: number | null;
+  contract_amount: number | null;
   special_note: string;
   actual_start_date: string;
   actual_end_date: string;

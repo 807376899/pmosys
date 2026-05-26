@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from backend.app.db.connection import get_connection
-from backend.app.repositories.dashboard import fetch_budget_summary, fetch_group_budget_summaries
+from backend.app.repositories.dashboard import (
+    fetch_budget_summary,
+    fetch_group_budget_summaries,
+    fetch_project_library_summary,
+)
 from backend.app.repositories.projects import GROUP_STATUS_MAP
 from backend.app.services.workflow import get_status_stats
 
@@ -14,10 +18,30 @@ GROUP_LABELS = {
     "abandoned": "已废弃",
 }
 
+PROJECT_LIBRARY_STATUSES = [
+    "established",
+    "submission_review",
+    "procuring",
+    "implementing",
+    "trial",
+    "accepting",
+    "suspended",
+]
+REVIEW_IN_PROGRESS_STATUS = "submission_review"
+REVIEWED_STATUSES = ["established", "procuring", "implementing", "trial", "accepting"]
+
 
 def get_dashboard_summary() -> dict:
     with get_connection() as conn:
         summary = fetch_budget_summary(conn)
+        summary.update(
+            fetch_project_library_summary(
+                conn,
+                PROJECT_LIBRARY_STATUSES,
+                REVIEW_IN_PROGRESS_STATUS,
+                REVIEWED_STATUSES,
+            )
+        )
     summary["status_stats"] = get_status_stats()
     return summary
 
@@ -31,7 +55,7 @@ def get_dashboard_groups() -> list[dict]:
     for key, statuses in GROUP_STATUS_MAP.items():
         summary = budget_summaries.get(
             key,
-            {"count": 0, "total_budget": 0.0, "total_approved_budget": 0.0},
+            {"count": 0, "total_budget": 0.0, "total_approved_budget": 0.0, "total_contract_amount": 0.0},
         )
         items.append(
             {
@@ -41,6 +65,7 @@ def get_dashboard_groups() -> list[dict]:
                 "count": int(summary["count"] if summary["count"] is not None else sum(status_counts.get(status, 0) for status in statuses)),
                 "total_budget": float(summary["total_budget"] or 0),
                 "total_approved_budget": float(summary["total_approved_budget"] or 0),
+                "total_contract_amount": float(summary["total_contract_amount"] or 0),
             }
         )
     return items

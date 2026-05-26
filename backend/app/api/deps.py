@@ -17,6 +17,8 @@ def project_filters(
     implementation_year: str | None = None,
     status_updated_from: str | None = None,
     status_updated_to: str | None = None,
+    sort_by: str | None = None,
+    sort_dir: str = Query(default="desc", pattern="^(asc|desc)$"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=200),
 ) -> dict:
@@ -34,7 +36,8 @@ def project_filters(
         "implementation_year": implementation_year,
         "status_updated_from": status_updated_from,
         "status_updated_to": status_updated_to,
+        "sort_by": sort_by,
+        "sort_dir": sort_dir,
         "page": page,
         "page_size": page_size,
     }
-

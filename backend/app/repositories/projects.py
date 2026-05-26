@@ -19,8 +19,8 @@ def insert_project(conn: sqlite3.Connection, payload: dict) -> int:
         INSERT INTO projects (
             project_code, name, description, department, sponsor, project_manager,
             current_status, category, project_type, budget, approved_budget,
-            special_note, actual_start_date, actual_end_date
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            contract_amount, special_note, actual_start_date, actual_end_date
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             payload["project_code"],
@@ -34,6 +34,7 @@ def insert_project(conn: sqlite3.Connection, payload: dict) -> int:
             payload.get("project_type"),
             payload.get("budget", 0),
             payload.get("approved_budget"),
+            payload.get("contract_amount"),
             payload.get("special_note", ""),
             payload.get("actual_start_date", ""),
             payload.get("actual_end_date", ""),
@@ -131,6 +132,36 @@ def fetch_status_history(conn: sqlite3.Connection, project_id: int) -> list[dict
     return [dict(row) for row in rows]
 
 
+def _department_order_expression(department_order: list[str]) -> str:
+    if not department_order:
+        return "department"
+    clauses = []
+    for index, department in enumerate(department_order):
+        escaped = department.replace("'", "''")
+        clauses.append(f"WHEN department = '{escaped}' THEN {index}")
+    cases = " ".join(clauses)
+    return f"CASE {cases} ELSE {len(department_order)} END, department"
+
+
+def _order_clause(filters: dict) -> str:
+    sort_by = filters.get("sort_by") or "status_updated_at"
+    sort_dir = "ASC" if filters.get("sort_dir") == "asc" else "DESC"
+    department_order = list(filters.get("department_order") or [])
+    mapping = {
+        "project_type": "project_type",
+        "current_status": "current_status",
+        "department": _department_order_expression(department_order),
+        "implementation_year": "substr(actual_start_date, 1, 4)",
+        "status_updated_at": "status_updated_at",
+    }
+    expression = mapping.get(sort_by, "status_updated_at")
+    if sort_by == "department":
+        return f"ORDER BY {expression} {sort_dir}, updated_at DESC, id DESC"
+    if sort_by == "implementation_year":
+        return f"ORDER BY COALESCE(NULLIF({expression}, ''), '0000') {sort_dir}, updated_at DESC, id DESC"
+    return f"ORDER BY {expression} {sort_dir}, updated_at DESC, id DESC"
+
+
 def fetch_project_page(conn: sqlite3.Connection, filters: dict) -> tuple[list[dict], int]:
     conditions: list[str] = []
     params: list[object] = []
@@ -184,7 +215,7 @@ def fetch_project_page(conn: sqlite3.Connection, filters: dict) -> tuple[list[di
         f"""
         SELECT * FROM projects
         {where_clause}
-        ORDER BY status_updated_at DESC, updated_at DESC, id DESC
+        {_order_clause(filters)}
         LIMIT ? OFFSET ?
         """,
         params + [page_size, offset],
@@ -243,7 +274,7 @@ def fetch_all_projects_for_export(conn: sqlite3.Connection, filters: dict) -> li
         f"""
         SELECT * FROM projects
         {where_clause}
-        ORDER BY status_updated_at DESC, updated_at DESC, id DESC
+        {_order_clause(export_filters)}
         """,
         params,
     ).fetchall()

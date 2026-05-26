@@ -10,6 +10,7 @@ from backend.app.core.errors import (
     StaleStateError,
     ValidationError,
 )
+from backend.app.core.config import get_settings
 from backend.app.db.connection import get_connection
 from backend.app.repositories import projects as project_repo
 from backend.app.repositories import workflow as workflow_repo
@@ -58,6 +59,7 @@ def create_project(payload: dict) -> dict:
 
 
 def list_projects(filters: dict) -> dict:
+    filters = {**filters, "department_order": list(get_settings().department_order)}
     with get_connection() as conn:
         items, total = project_repo.fetch_project_page(conn, filters)
     return {

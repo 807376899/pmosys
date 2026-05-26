@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  ArrowLeft,
   ArrowUpRight,
   CheckCircle2,
   Database,
@@ -9,7 +10,6 @@ import {
   LoaderCircle,
   RefreshCcw,
   Send,
-  Sparkles,
 } from "lucide-react";
 import {
   type CSSProperties,
@@ -20,6 +20,7 @@ import {
   useMemo,
   useState,
 } from "react";
+import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { ApiError, apiGet, apiPost, apiPostForm, buildExportUrl } from "./lib/api";
 import { formatCurrency, formatDateTime, projectTypeLabel, statusLabel } from "./lib/format";
 import type {
@@ -31,6 +32,7 @@ import type {
   ImportPreviewResponse,
   Project,
   ProjectListResponse,
+  StatusHistoryItem,
   WorkflowStatus,
 } from "./types";
 
@@ -42,14 +44,20 @@ const GROUP_ACCENTS: Record<string, string> = {
   abandoned: "var(--accent-ink)",
 };
 
-function App() {
+function DashboardPage() {
   const [groups, setGroups] = useState<DashboardGroup[]>([]);
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [statuses, setStatuses] = useState<WorkflowStatus[]>([]);
+  const [departments, setDepartments] = useState<string[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [total, setTotal] = useState(0);
   const [activeGroup, setActiveGroup] = useState<string>("pre_establish");
   const [selectedStatus, setSelectedStatus] = useState<string>("");
+  const [selectedProjectType, setSelectedProjectType] = useState<string>("");
+  const [selectedDepartment, setSelectedDepartment] = useState<string>("");
+  const [selectedImplementationYear, setSelectedImplementationYear] = useState<string>("");
+  const [sortBy, setSortBy] = useState<string>("status_updated_at");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [keyword, setKeyword] = useState("");
   const deferredKeyword = useDeferredValue(keyword);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
@@ -73,25 +81,41 @@ function App() {
     const params = new URLSearchParams();
     if (activeGroup) params.set("group", activeGroup);
     if (selectedStatus) params.set("status", selectedStatus);
+    if (selectedProjectType) params.set("project_type", selectedProjectType);
+    if (selectedDepartment) params.set("department", selectedDepartment);
+    if (selectedImplementationYear) params.set("implementation_year", selectedImplementationYear);
     if (deferredKeyword) params.set("keyword", deferredKeyword);
+    params.set("sort_by", sortBy);
+    params.set("sort_dir", sortDir);
     params.set("page", "1");
     params.set("page_size", "50");
     return params;
-  }, [activeGroup, selectedStatus, deferredKeyword]);
+  }, [
+    activeGroup,
+    selectedStatus,
+    selectedProjectType,
+    selectedDepartment,
+    selectedImplementationYear,
+    sortBy,
+    sortDir,
+    deferredKeyword,
+  ]);
 
   async function loadDashboard() {
     setLoading(true);
     setError("");
     try {
-      const [groupData, summaryData, statusData, projectData] = await Promise.all([
+      const [groupData, summaryData, statusData, departmentData, projectData] = await Promise.all([
         apiGet<DashboardGroup[]>("/dashboard/groups"),
         apiGet<DashboardSummary>("/dashboard/summary"),
         apiGet<WorkflowStatus[]>("/workflow/statuses"),
+        apiGet<string[]>("/meta/departments"),
         apiGet<ProjectListResponse>("/projects", exportQuery),
       ]);
       setGroups(groupData);
       setSummary(summaryData);
       setStatuses(statusData);
+      setDepartments(departmentData);
       setProjects(projectData.items);
       setTotal(projectData.total);
       setSelectedIds((current) => current.filter((id) => projectData.items.some((item) => item.id === id)));
@@ -137,7 +161,7 @@ function App() {
       setPreview(null);
       setApprovedBudgetEnabled(false);
     });
-  }, [activeGroup, selectedStatus, deferredKeyword]);
+  }, [activeGroup, selectedStatus, selectedProjectType, selectedDepartment, selectedImplementationYear, sortBy, sortDir, deferredKeyword]);
 
   const selectedProjects = useMemo(
     () => projects.filter((project) => selectedIds.includes(project.id)),
@@ -145,6 +169,35 @@ function App() {
   );
 
   const availableTargets = useMemo(() => preview?.available_targets ?? [], [preview]);
+  const implementationYearOptions = useMemo(() => {
+    const years = new Set<string>();
+    for (const project of projects) {
+      const year = project.actual_start_date?.slice(0, 4);
+      if (year) years.add(year);
+    }
+    return Array.from(years).sort((a, b) => Number(b) - Number(a));
+  }, [projects]);
+  const showImplementationFilter = activeGroup === "completed" || selectedStatus === "closed";
+
+  useEffect(() => {
+    if (!showImplementationFilter && selectedImplementationYear) {
+      setSelectedImplementationYear("");
+    }
+  }, [showImplementationFilter, selectedImplementationYear]);
+
+  function toggleSort(nextSortBy: string) {
+    if (sortBy === nextSortBy) {
+      setSortDir((current) => (current === "asc" ? "desc" : "asc"));
+      return;
+    }
+    setSortBy(nextSortBy);
+    setSortDir(nextSortBy === "implementation_year" ? "desc" : "asc");
+  }
+
+  function sortLabel(field: string) {
+    if (sortBy !== field) return "↕";
+    return sortDir === "asc" ? "↑" : "↓";
+  }
 
   function toggleSelection(projectId: number) {
     setSelectedIds((current) =>
@@ -238,15 +291,8 @@ function App() {
       <div className="backdrop-grid" />
       <header className="hero">
         <div className="hero-copy">
-          <p className="eyebrow">
-            <Sparkles size={16} />
-            PMO Mission Control
-          </p>
-          <h1>把批量流转放到舞台中央，而不是藏在表格刷新里。</h1>
-          <p className="hero-text">
-            这是一个为 PMO、项目负责人和领导共同使用而设计的编辑部式工作台。
-            左边看局势，右边推流程，中间永远只保留当前最重要的批量决策。
-          </p>
+          <p className="eyebrow">PMO WORKSPACE</p>
+          <h1>PMO 项目管理工作台</h1>
           <div className="hero-actions">
             <a className="action-button primary" href={buildExportUrl(exportQuery)} target="_blank" rel="noreferrer">
               <FileDown size={16} />
@@ -259,17 +305,29 @@ function App() {
           </div>
         </div>
         <div className="hero-stats">
-          <article className="hero-stat">
-            <span>项目总量</span>
-            <strong>{summary?.total_projects ?? "—"}</strong>
+          <article className="hero-stat hero-stat-single">
+            <span>项目库总量</span>
+            <strong>{summary?.project_library_count ?? "—"}</strong>
           </article>
-          <article className="hero-stat">
-            <span>初始预算</span>
-            <strong>{formatCurrency(summary?.total_budget)} 万</strong>
+          <article className="hero-stat hero-stat-pair">
+            <div>
+              <span>项目库预算</span>
+              <strong>{formatCurrency(summary?.project_library_total_budget)} 万</strong>
+            </div>
+            <div>
+              <span>审核预算总计</span>
+              <strong>{formatCurrency(summary?.reviewed_total_approved_budget)} 万</strong>
+            </div>
           </article>
-          <article className="hero-stat">
-            <span>审核预算</span>
-            <strong>{formatCurrency(summary?.total_approved_budget)} 万</strong>
+          <article className="hero-stat hero-stat-pair">
+            <div>
+              <span>审核中项目</span>
+              <strong>{summary?.review_in_progress_count ?? "—"}</strong>
+            </div>
+            <div>
+              <span>已审核项目</span>
+              <strong>{summary?.reviewed_count ?? "—"}</strong>
+            </div>
           </article>
         </div>
       </header>
@@ -288,9 +346,18 @@ function App() {
                 onClick={() => setActiveGroup(group.key)}
               >
                 <span className="group-index">0{index + 1}</span>
-                <div>
+                <div className="group-main">
                   <p>{group.label}</p>
                   <strong>{group.count}</strong>
+                </div>
+                <div className="group-budget">
+                  <span>预算 {formatCurrency(group.total_budget)} 万</span>
+                  {group.key !== "pre_establish" ? (
+                    <span>审核 {formatCurrency(group.total_approved_budget)} 万</span>
+                  ) : null}
+                  {group.key === "completed" ? (
+                    <span>合同 {formatCurrency(group.total_contract_amount)} 万</span>
+                  ) : null}
                 </div>
                 <ArrowUpRight size={18} />
               </button>
@@ -300,8 +367,8 @@ function App() {
           <section className="board">
             <div className="board-heading">
               <div>
-                <p className="section-kicker">项目矩阵</p>
-                <h2>让统筹视角、检索和批量勾选在同一块画布里协同。</h2>
+                <p className="section-kicker">PROJECTS</p>
+                <h2>项目列表</h2>
               </div>
               <div className="filter-row">
                 <input
@@ -310,6 +377,15 @@ function App() {
                   value={keyword}
                   onChange={(event) => setKeyword(event.target.value)}
                 />
+                <select
+                  className="select"
+                  value={selectedProjectType}
+                  onChange={(event) => setSelectedProjectType(event.target.value)}
+                >
+                  <option value="">全部类型</option>
+                  <option value="teaching_software">教学软件</option>
+                  <option value="practical_teaching_site">实践教学场所</option>
+                </select>
                 <select
                   className="select"
                   value={selectedStatus}
@@ -322,6 +398,32 @@ function App() {
                     </option>
                   ))}
                 </select>
+                <select
+                  className="select"
+                  value={selectedDepartment}
+                  onChange={(event) => setSelectedDepartment(event.target.value)}
+                >
+                  <option value="">全部部门</option>
+                  {departments.map((department) => (
+                    <option key={department} value={department}>
+                      {department}
+                    </option>
+                  ))}
+                </select>
+                {showImplementationFilter ? (
+                  <select
+                    className="select"
+                    value={selectedImplementationYear}
+                    onChange={(event) => setSelectedImplementationYear(event.target.value)}
+                  >
+                    <option value="">全部实施年份</option>
+                    {implementationYearOptions.map((year) => (
+                      <option key={year} value={year}>
+                        {year}
+                      </option>
+                    ))}
+                  </select>
+                ) : null}
               </div>
             </div>
 
@@ -344,11 +446,32 @@ function App() {
                     <tr>
                       <th>选中</th>
                       <th>项目</th>
-                      <th>类型</th>
-                      <th>状态</th>
-                      <th>部门 / 负责人</th>
+                      <th>
+                        <button className="sort-button" onClick={() => toggleSort("project_type")}>
+                          类型 {sortLabel("project_type")}
+                        </button>
+                      </th>
+                      <th>
+                        <button className="sort-button" onClick={() => toggleSort("current_status")}>
+                          状态 {sortLabel("current_status")}
+                        </button>
+                      </th>
+                      <th>
+                        <button className="sort-button" onClick={() => toggleSort("department")}>
+                          部门 / 负责人 {sortLabel("department")}
+                        </button>
+                      </th>
                       <th>预算</th>
-                      <th>状态更新时间</th>
+                      <th>
+                        <button className="sort-button" onClick={() => toggleSort("implementation_year")}>
+                          实施年份 {sortLabel("implementation_year")}
+                        </button>
+                      </th>
+                      <th>
+                        <button className="sort-button" onClick={() => toggleSort("status_updated_at")}>
+                          状态更新时间 {sortLabel("status_updated_at")}
+                        </button>
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -368,7 +491,9 @@ function App() {
                           </td>
                           <td>
                             <div className="project-cell">
-                              <strong>{project.name}</strong>
+                              <Link className="project-link" to={`/projects/${project.id}`}>
+                                {project.name}
+                              </Link>
                               <span>{project.project_code}</span>
                               <small>{project.category || "未分类"}</small>
                             </div>
@@ -389,8 +514,10 @@ function App() {
                             <div className="stacked">
                               <span>{formatCurrency(project.budget)} 万</span>
                               <small>审后 {formatCurrency(project.approved_budget)} 万</small>
+                              <small>合同 {formatCurrency(project.contract_amount)} 万</small>
                             </div>
                           </td>
+                          <td>{project.actual_start_date?.slice(0, 4) || "未记录"}</td>
                           <td>{formatDateTime(project.status_updated_at)}</td>
                         </tr>
                       );
@@ -404,8 +531,8 @@ function App() {
           <section className="import-lab">
             <div className="import-heading">
               <div>
-                <p className="section-kicker">导入试验台</p>
-                <h3>先看预览，再写入数据库。</h3>
+                <p className="section-kicker">IMPORT</p>
+                <h3>导入预览</h3>
               </div>
               <a className="mini-link" href="/api/v1/imports/projects/template" target="_blank" rel="noreferrer">
                 下载模板
@@ -457,8 +584,8 @@ function App() {
 
         <aside className="control-rail">
           <div className="rail-card">
-            <p className="section-kicker">批量流转</p>
-            <h3>让选中、预检、审批和执行始终在同一条轨道上完成。</h3>
+            <p className="section-kicker">BATCH</p>
+            <h3>批量流转</h3>
             <div className="selection-summary">
               <span>当前勾选</span>
               <strong>{selectedIds.length}</strong>
@@ -540,7 +667,7 @@ function App() {
           </div>
 
           <div className="rail-card preview-card-large">
-            <p className="section-kicker">预检结果</p>
+            <p className="section-kicker">PREVIEW</p>
             {preview ? (
               <>
                 <div className="preview-summary">
@@ -600,6 +727,161 @@ function App() {
         </aside>
       </main>
     </div>
+  );
+}
+
+function DetailField({ label, value }: { label: string; value: string | number | null | undefined }) {
+  return (
+    <div className="detail-field">
+      <span>{label}</span>
+      <strong>{value || "未记录"}</strong>
+    </div>
+  );
+}
+
+function ProjectDetailPage() {
+  const { projectId } = useParams();
+  const navigate = useNavigate();
+  const [project, setProject] = useState<Project | null>(null);
+  const [history, setHistory] = useState<StatusHistoryItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!projectId) return;
+    setLoading(true);
+    setError("");
+    void Promise.all([
+      apiGet<Project>(`/projects/${projectId}`),
+      apiGet<StatusHistoryItem[]>(`/projects/${projectId}/history`),
+    ])
+      .then(([projectData, historyData]) => {
+        setProject(projectData);
+        setHistory(historyData);
+      })
+      .catch((err) => {
+        setError(err instanceof ApiError ? err.message : "项目详情加载失败");
+      })
+      .finally(() => setLoading(false));
+  }, [projectId]);
+
+  return (
+    <div className="shell">
+      <div className="backdrop-grid" />
+      <header className="detail-hero">
+        <button className="mini-button" onClick={() => navigate(-1)}>
+          <ArrowLeft size={16} />
+          返回
+        </button>
+        <div>
+          <p className="eyebrow">PROJECT DETAIL</p>
+          <h1>{project?.name ?? "项目详情"}</h1>
+          <div className="detail-tags">
+            <span>{project?.project_code ?? "加载中"}</span>
+            {project ? <span className={`status-chip status-${project.current_status}`}>{statusLabel(project.current_status)}</span> : null}
+            <span>{projectTypeLabel(project?.project_type ?? null)}</span>
+          </div>
+        </div>
+      </header>
+
+      {error ? <div className="notice error">{error}</div> : null}
+
+      {loading ? (
+        <div className="detail-loading">
+          <LoaderCircle className="spin" size={22} />
+          正在载入项目详情
+        </div>
+      ) : project ? (
+        <main className="detail-layout">
+          <section className="detail-main">
+            <section className="detail-section">
+              <div className="section-title">
+                <p className="section-kicker">BASIC</p>
+                <h2>基本信息</h2>
+              </div>
+              <div className="detail-grid">
+                <DetailField label="申报部门" value={project.department} />
+                <DetailField label="项目负责人" value={project.project_manager} />
+                <DetailField label="发起人" value={project.sponsor} />
+                <DetailField label="项目分类" value={project.category} />
+                <DetailField label="实际开始日期" value={project.actual_start_date} />
+                <DetailField label="实际结束日期" value={project.actual_end_date} />
+              </div>
+              <div className="detail-note">
+                <span>项目描述</span>
+                <p>{project.description || "未记录"}</p>
+              </div>
+              <div className="detail-note">
+                <span>特殊说明</span>
+                <p>{project.special_note || "未记录"}</p>
+              </div>
+            </section>
+
+            <section className="detail-section">
+              <div className="section-title">
+                <p className="section-kicker">HISTORY</p>
+                <h2>状态历史</h2>
+              </div>
+              {history.length ? (
+                <div className="history-list">
+                  {history.map((item) => (
+                    <article className="history-item" key={item.id}>
+                      <div className="history-date">{formatDateTime(item.transition_date)}</div>
+                      <div>
+                        <strong>
+                          {item.from_status_name || "初始"} → {item.to_status_name || statusLabel(item.to_status)}
+                        </strong>
+                        <p>{item.action}</p>
+                        <div className="history-meta">
+                          <span>操作人：{item.operator}</span>
+                          <span>审批人：{item.approver || "无"}</span>
+                          <span>交付物：{item.deliverable || "未记录"}</span>
+                        </div>
+                        {item.comment ? <p className="history-comment">{item.comment}</p> : null}
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <div className="empty-state">暂无状态历史。</div>
+              )}
+            </section>
+          </section>
+
+          <aside className="detail-side">
+            <article className="hero-stat">
+              <span>初始预算</span>
+              <strong>{formatCurrency(project.budget)} 万</strong>
+            </article>
+            <article className="hero-stat">
+              <span>审核后预算</span>
+              <strong>{formatCurrency(project.approved_budget)} 万</strong>
+            </article>
+            <article className="hero-stat">
+              <span>合同金额</span>
+              <strong>{formatCurrency(project.contract_amount)} 万</strong>
+            </article>
+            <article className="hero-stat">
+              <span>创建时间</span>
+              <strong>{formatDateTime(project.created_at)}</strong>
+            </article>
+            <article className="hero-stat">
+              <span>状态更新时间</span>
+              <strong>{formatDateTime(project.status_updated_at)}</strong>
+            </article>
+          </aside>
+        </main>
+      ) : null}
+    </div>
+  );
+}
+
+function App() {
+  return (
+    <Routes>
+      <Route path="/" element={<DashboardPage />} />
+      <Route path="/projects/:projectId" element={<ProjectDetailPage />} />
+    </Routes>
   );
 }
 

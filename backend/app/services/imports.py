@@ -61,6 +61,7 @@ FIELD_ALIASES = {
     "project_type": ["project_type", "项目类型"],
     "budget": ["budget", "预算", "预算(万元)"],
     "approved_budget": ["approved_budget", "审核后预算", "审核后预算(万元)"],
+    "contract_amount": ["contract_amount", "合同金额", "合同金额(万元)", "合同"],
     "special_note": ["special_note", "特殊说明"],
     "actual_start_date": ["actual_start_date", "实际开始", "实际开始日期"],
     "actual_end_date": ["actual_end_date", "实际结束", "实际结束日期"],
@@ -94,6 +95,7 @@ def generate_import_template() -> bytes:
             "项目类型": "教学软件",
             "预算(万元)": 120,
             "审核后预算(万元)": "",
+            "合同金额(万元)": "",
             "特殊说明": "",
             "实际开始日期": "",
             "实际结束日期": "",
@@ -149,6 +151,7 @@ def preview_import(file_name: str, content: bytes) -> dict:
                     status = "draft"
                 budget_value = _pick_value(raw_row, FIELD_ALIASES["budget"])
                 approved_value = _pick_value(raw_row, FIELD_ALIASES["approved_budget"])
+                contract_value = _pick_value(raw_row, FIELD_ALIASES["contract_amount"])
                 record = ImportPreviewRecord(
                     row_number=index,
                     project_code=project_code,
@@ -162,6 +165,7 @@ def preview_import(file_name: str, content: bytes) -> dict:
                     project_type=project_type,
                     budget=float(budget_value or 0),
                     approved_budget=float(approved_value) if approved_value else None,
+                    contract_amount=float(contract_value) if contract_value else None,
                     special_note=_pick_value(raw_row, FIELD_ALIASES["special_note"]),
                     actual_start_date=_pick_value(raw_row, FIELD_ALIASES["actual_start_date"]),
                     actual_end_date=_pick_value(raw_row, FIELD_ALIASES["actual_end_date"]),

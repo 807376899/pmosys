@@ -5,6 +5,7 @@ import io
 import pandas as pd
 
 from backend.app.db.connection import get_connection
+from backend.app.core.config import get_settings
 from backend.app.repositories.projects import fetch_all_projects_for_export
 from backend.app.schemas.project import PROJECT_TYPE_META, ProjectType
 from backend.app.services.workflow import get_statuses
@@ -15,6 +16,7 @@ def _status_name_map() -> dict[str, str]:
 
 
 def export_projects(filters: dict) -> bytes:
+    filters = {**filters, "department_order": list(get_settings().department_order)}
     with get_connection() as conn:
         projects = fetch_all_projects_for_export(conn, filters)
     status_name_map = _status_name_map()
@@ -33,6 +35,7 @@ def export_projects(filters: dict) -> bytes:
                 "项目分类": project.get("category") or "",
                 "初始预算": project.get("budget") or 0,
                 "审核后预算": project.get("approved_budget"),
+                "合同金额": project.get("contract_amount"),
                 "状态更新时间": project.get("status_updated_at") or "",
                 "特殊说明": project.get("special_note") or "",
                 "项目描述": project.get("description") or "",
@@ -45,4 +48,3 @@ def export_projects(filters: dict) -> bytes:
         pd.DataFrame(rows).to_excel(writer, index=False, sheet_name="项目列表")
     output.seek(0)
     return output.getvalue()
-
