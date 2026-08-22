@@ -15,8 +15,10 @@ export const statusLabelMap: Record<string, string> = {
 };
 
 export const projectTypeLabelMap: Record<string, string> = {
-  teaching_software: "教学软件",
-  practical_teaching_site: "实践教学场所",
+  teaching_software: "专业教学软件项目",
+  software: "专业教学软件项目",
+  practical_teaching_site: "实践教学场所项目",
+  laboratory: "实践教学场所项目",
 };
 
 export function formatCurrency(value: number | null | undefined) {
@@ -29,6 +31,11 @@ export function formatCurrency(value: number | null | undefined) {
 export function formatDateTime(value: string | null | undefined) {
   if (!value) return "未记录";
   return value.replace("T", " ").slice(0, 16);
+}
+
+export function formatDate(value: string | null | undefined) {
+  if (!value) return "未记录";
+  return value.replace("T", " ").slice(0, 10);
 }
 
 export function statusLabel(code: string) {

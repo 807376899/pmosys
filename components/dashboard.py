@@ -167,9 +167,9 @@ def _build_selection_table(projects: list[dict], selected_ids: list[int]) -> pd.
 
 
 def _render_group_buttons(projects: list[dict]) -> None:
-    """渲染项目状态视角按钮。"""
+    """渲染项目整体情况视角按钮。"""
     counts = build_group_counts(projects)
-    st.markdown("### 项目状态")
+    st.markdown("### 整体情况")
 
     cols = st.columns(len(GROUP_ORDER))
     for col, group_key in zip(cols, GROUP_ORDER):
@@ -311,38 +311,39 @@ def render_dashboard() -> None:
 
     _render_batch_feedback()
 
-    keyword_col, department_col, detail_status_col = st.columns([2.2, 1.2, 1.2])
-    with keyword_col:
-        keyword = st.text_input(
-            "关键词",
-            key="dashboard_keyword",
-            placeholder="项目编号 / 名称 / 描述 / 发起人 / 特殊说明",
-        )
-    with department_col:
-        department_options = ["全部"] + get_departments()
-        department = st.selectbox(
-            "申报部门",
-            options=department_options,
-            key="dashboard_department",
-        )
-    with detail_status_col:
-        detail_status_options = ["全部"] + [status["status_name"] for status in get_status_definitions()]
-        detail_status = st.selectbox(
-            "细分状态",
-            options=detail_status_options,
-            key="dashboard_detail_status",
-        )
+    base_projects = get_projects()
+    _render_group_buttons(base_projects)
 
-    query_department = None if department == "全部" else department
-    base_projects = get_projects(
-        keyword=keyword.strip() or None,
-        department=query_department,
-    )
-
-    declaration_year_options = ["全部"] + get_year_options(base_projects, get_declaration_year)
-    implementation_year_options = ["全部"] + get_year_options(base_projects, get_implementation_year)
 
     with st.expander("更多筛选", expanded=False):
+        keyword_col, department_col, detail_status_col = st.columns([2, 1, 1])
+        with keyword_col:
+            keyword = st.text_input(
+                "关键词",
+                key="dashboard_keyword",
+                placeholder="项目编号 / 名称 / 描述 / 发起人 / 特殊说明",
+        )
+        with department_col:
+            department_options = ["全部"] + get_departments()
+            department = st.selectbox(
+                "申报部门",
+                options=department_options,
+                key="dashboard_department",
+        )
+        with detail_status_col:
+            detail_status_options = ["全部"] + [status["status_name"] for status in get_status_definitions()]
+            detail_status = st.selectbox(
+                "细分状态",
+                options=detail_status_options,
+                key="dashboard_detail_status",
+        )
+        query_department = None if department == "全部" else department
+        base_projects = get_projects(
+            keyword=keyword.strip() or None,
+            department=query_department,
+        )
+        declaration_year_options = ["全部"] + get_year_options(base_projects, get_declaration_year)
+        implementation_year_options = ["全部"] + get_year_options(base_projects, get_implementation_year)
         year_col1, year_col2 = st.columns(2)
         with year_col1:
             declaration_year = st.selectbox(
@@ -357,6 +358,7 @@ def render_dashboard() -> None:
                 key="dashboard_implementation_year",
             )
 
+
     filtered_projects = apply_dashboard_filters(
         base_projects,
         detail_status_name=detail_status,
@@ -364,7 +366,6 @@ def render_dashboard() -> None:
         implementation_year=st.session_state.dashboard_implementation_year,
     )
 
-    _render_group_buttons(filtered_projects)
 
     visible_projects = filter_projects_by_group(
         filtered_projects,
@@ -373,21 +374,17 @@ def render_dashboard() -> None:
     visible_ids = {project["id"] for project in visible_projects}
     prune_selected_project_ids(visible_ids)
 
-    summary_col1, summary_col2, summary_col3, summary_col4 = st.columns(4)
+    summary_col1, summary_col2 = st.columns(2)
     with summary_col1:
-        st.metric("当前结果数", len(visible_projects))
-    with summary_col2:
-        st.metric("已勾选", len(st.session_state.selected_project_ids))
-    with summary_col3:
         budget_sum = sum(float(project.get("budget") or 0) for project in visible_projects)
-        st.metric("初始申报预算合计（万元）", f"{budget_sum:,.1f}")
-    with summary_col4:
+        st.metric("预算合计（万元）", f"{budget_sum:,.1f}")
+    with summary_col2:
         approved_budget_sum = sum(
             float(project["approved_budget"])
             for project in visible_projects
             if project.get("approved_budget") is not None
         )
-        st.metric("审核后预算合计（万元）", f"{approved_budget_sum:,.1f}")
+        st.metric("审核预算合计（万元）", f"{approved_budget_sum:,.1f}")
 
     if not visible_projects:
         st.info("当前筛选条件下暂无项目。")
@@ -421,7 +418,6 @@ def render_dashboard() -> None:
         _build_main_table(visible_projects),
         use_container_width=True,
         hide_index=True,
-        height=520,
         column_config={
             "初始申报预算(万元)": st.column_config.NumberColumn("初始申报预算(万元)", format="%.2f"),
             "审核后预算(万元)": st.column_config.NumberColumn("审核后预算(万元)", format="%.2f"),

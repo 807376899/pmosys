@@ -1,0 +1,80 @@
+# PMO 项目管理系统协作约束
+
+## 当前架构
+
+- 后端：Python 3.11+、FastAPI、SQLite（WAL）、pandas、openpyxl。
+- 前端：React、TypeScript、Vite。
+- 当前运行入口：`run.ps1` 启动 FastAPI（默认 `127.0.0.1:8000`）；前端在 `frontend/` 中以 `npm.cmd run dev` 启动（默认 `127.0.0.1:5173`）。
+- `app.py`、`components/`、`lib/` 是保留的旧版 Streamlit 参考代码，不得将新功能接回该入口。
+- 运行环境必须独立于 Codex：只使用用户本机安装的 Python 3.11+ 创建 `.venv`，不得在代码、脚本或文档中依赖 Codex 缓存目录或个人盘符路径。
+- 路径必须相对仓库根目录或由脚本动态计算。迁移时复制仓库与所需 `pmo.db` 即可；`.venv` 是可再生文件，不应迁移。
+
+## 运行与验证
+
+```powershell
+# 后端：首次运行自动创建 .venv 并安装依赖
+.\run.ps1
+
+# 前端
+cd frontend
+npm.cmd install
+npm.cmd run dev
+
+# 后端测试
+.\.venv\Scripts\python.exe -m pytest backend\tests -q
+
+# 前端构建
+cd frontend
+npm.cmd run build
+```
+
+- 影响工作台或项目详情的改动，必须启动前端并在浏览器验证实际交互；API 测试和构建不能替代浏览器验收。
+- 保留现有用户数据与未关联的工作区改动。禁止重置、覆盖或删除 `pmo.db`。
+- 使用 `apply_patch` 编辑仓库文件；不要用绝对机器路径写入 README、脚本、配置或源码。
+
+## 领域实施基线
+
+- 固定五个 Stage：未立项、项目库—未实施、项目库—推进中、已完成、已废弃。Stage 是 PMO 治理口径，采购、评审等并行工作不得重新塞进状态树。
+- “项目库—未实施 → 项目库—推进中”仅能通过 PMO 的“纳入推进”专门动作完成；Work Item 不得自动推断这一管理决定。
+- `ProjectWorkItem` 承载并行工作。模板与项目实例分离，实例创建时冻结 Completion Rule 快照。
+- Work Item 完成的后果由 Completion Rule 描述；不保存“普通/重要事项”模型概念。已完成事项必须通过“重开”处理，不能覆盖原完成记录。
+- Work Item 长期排序只依赖 `flow_group + sequence_rank`。插入锚点仅用于计算 rank；主流程事项按 rank 正序，独立事项不得抢占下一关键节点。
+- 取消事项是独立留痕动作，不新增状态枚举；暂停主流程事项默认阻塞，只有 PMO 显式跳过后才不参与下一关键节点。
+- `track_as_key_node` 在界面中显示为“☆ 重点关注”；它不参与主流程排序。
+- `WorkItemProgressLog` 记录未完成事项的连续过程。默认只在事项展开区显示，只有 `is_timeline_highlight=true` 才投影到管理时间线。
+- `ExternalConstraint` 是轻量外部治理对象，不表达项目 Stage，也不替代 Work Item。它只记录当前适用的外部条件及是否仍构成阻断；推荐 Stage 仅用于推荐和筛选，不能限制创建。
+- 外部约束范围确认记录确认人、时间和说明；但当前适用阻断性约束集合为空时，项目直接计为“外部条件已具备”。`external_constraints_cleared=true` 表示没有未解除的适用阻断性约束；非阻断约束不影响该口径。
+- `effective_budget` 只能由统一领域投影计算，并带 `effective_budget_source`（`budget_constraint`、`historical_review`、`initial_budget`）；Dashboard、列表与导出不得自行重复预算来源规则。
+- Batch、BusinessRecord、供应商、合同、采购包和共享附件属于后续领域模块；不得在 Phase 1 UI 中伪装为已可用。
+
+## 推进周期与项目治理
+
+- 每次纳入推进创建一个独立的 `ProjectAdvancementRecord` 年度周期，状态为 `active`、`deferred`、`completed` 或 `cancelled`；不得覆盖既有历史。
+- 暂缓推进结束当前周期并使项目回到项目库—未实施；跨年再次纳入必须创建新周期。
+- 未立项项目可登记“提前推进准备”；如获 PMO 特批可标记“特批推进中”，仍属于未立项 Stage 与卡片统计，不能计入项目库—推进中。特批必须保存年度、原因、审批依据与操作人，并可独立筛选。
+- Stage 通用调整不能绕过纳入推进、暂缓推进、立项或恢复等专门业务动作。
+- `ProjectCategory` 与 `ProjectType` 必须分离：Category 是管理员维护的 PMO 管理分类，用于排序、筛选和统计；Type 是项目业务类型/导入字段。类别排序为 category_sort_order → department_sort_order → 名称/编号，未配置项稳定回退。
+- 所有治理写操作必须先在服务端成功，再更新局部 UI；失败不得乐观显示成功。禁止业务页面使用浏览器原生 alert/confirm/prompt，统一使用系统 Dialog 和反馈提示。
+- 已废弃项目支持 PMO 特批恢复，必须记录目标 Stage、理由、操作人和审计事件。
+
+## 前端交互约束
+
+- React 工作台是高密度 PMO 扫描、批量下发与快速办理中心；项目详情承载单项目例外和完整历史。不得新增“状态细节管理”导航页。
+- 工作台 Stage 单元只显示固定 Stage；draft、送审中、采购中等旧小状态不得作为附属文字渲染。
+- 阶段跟踪列只是 Work Item 的个人视图投影。推荐列不自动创建事项；常用事项与工作包只有在 PMO 显式保存时沉淀。
+- 批量操作在右侧原地切换，不得因预检、目标 Stage 或操作模式刷新、重排、重挂载左侧项目列表，也不得丢失其滚动与勾选状态。
+- 中窄屏优先保留项目表；右侧操作台使用折叠轨或覆盖面板。统计区和 Stage 卡应保持紧凑或横向滚动，不得挤压为重叠文字或单列巨卡。
+- 工作台响应式不变量：页面主容器不得产生意外横向滚动；超宽内容只能在统计/Stage 横向带或项目表自身滚动。Stage 带只能横向滚动，卡片不得出现纵向滚动、文字出框或字符级断行。
+- `1100–1439px` 的操作台必须是完整的窄轨或完整的覆盖面板，不能露出被裁切的半个面板；展开态必须有可见内容、关闭按钮，并支持遮罩或 Esc 收起。快速办理替换批量操作内容，不与批量表单并列。
+- 项目表中的选择、Stage、金额和日期列采用固定最小宽度；阶段跟踪 Work Item 列最低 148px，空间不足时只允许表格内部横向滚动。显示列是浮层，不得撑高页面；其默认来源仅为推荐列，其他事项必须经当前结果或搜索主动加入。
+- 新建事项首屏只展示名称、事项内容和当前状态；负责人、日期、优先级、办理方式、备注和完成设置属于折叠信息。办理方式默认仅跟踪。
+- 管理时间线不是原始 AuditEvent 列表：仅展示 Stage 迁移、推进治理、事项创建/完成/重开、里程碑、正式依据和高亮进展；细碎字段编辑仅在完整操作记录中展示。
+- 行空白区域可用于选择项目；任何 `button`、链接、输入控件、`[role=button]` 和 `[data-interactive]` 都必须阻止行选择。快速办理是独立上下文，返回时保留此前批量操作模式和勾选集合。
+- 常用事项、工作包和外部约束模板使用启用/归档生命周期；归档不得删除既有实例、快照或审计，选择器默认只显示启用模板。Progress Log 删除必须软删除并记录原因。
+- 初始预算仅可用于导入/录入纠错；当前有效预算是只读投影，界面需展示预算来源。
+
+## 长期需求治理
+
+- 需求变更必须同步更新 `docs/requirements/pmo-lifecycle-requirements.md`、`docs/requirements/decision-log.md`、`docs/requirements/acceptance-checklist.md` 与本文件（若协作规则受影响）。
+- 修改前先判断需求属于 Stage、ProjectWorkItem、Milestone、Batch、BusinessRecord、AuditEvent 或未来采购实体，禁止将并行工作重新塞入状态树。
+- 旧数据中显示为 `???` 的项目名称不可自动恢复，须由 PMO 人工补正并保留审计记录。

@@ -9,14 +9,17 @@ from backend.app.schemas.common import APIModel, PagedResponse
 
 
 class ProjectType(str, Enum):
+    """历史导入兼容枚举；新建项目运行时使用数据库类型目录。"""
+
     teaching_software = "teaching_software"
     practical_teaching_site = "practical_teaching_site"
 
 
-PROJECT_TYPE_META: dict[ProjectType, dict[str, str]] = {
-    ProjectType.teaching_software: {"label": "教学软件", "prefix": "SW"},
-    ProjectType.practical_teaching_site: {"label": "实践教学场所", "prefix": "SY"},
+PROJECT_TYPE_META = {
+    ProjectType.teaching_software: {"label": "专业教学软件项目", "prefix": "SW"},
+    ProjectType.practical_teaching_site: {"label": "实践教学场所项目", "prefix": "SY"},
 }
+
 
 PATCHABLE_PROJECT_FIELDS = {
     "name",
@@ -26,6 +29,9 @@ PATCHABLE_PROJECT_FIELDS = {
     "project_manager",
     "category",
     "project_type",
+    "major",
+    "location",
+    "establishment_document_no",
     "budget",
     "contract_amount",
     "special_note",
@@ -41,7 +47,9 @@ class ProjectBase(APIModel):
     sponsor: str = ""
     project_manager: str = ""
     category: str = ""
-    project_type: ProjectType
+    project_type: str
+    major: str = ""
+    location: str = ""
     budget: float = 0
     contract_amount: float | None = None
     special_note: str = ""
@@ -72,15 +80,20 @@ class ProjectUpdate(APIModel):
     sponsor: str | None = None
     project_manager: str | None = None
     category: str | None = None
-    project_type: ProjectType | None = None
+    project_type: str | None = None
+    major: str | None = None
+    location: str | None = None
+    establishment_document_no: str | None = None
     budget: float | None = None
     contract_amount: float | None = None
     special_note: str | None = None
     actual_start_date: str | None = None
     actual_end_date: str | None = None
+    operator: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
 
     def cleaned_updates(self) -> dict[str, Any]:
-        return self.model_dump(exclude_none=True)
+        return self.model_dump(exclude_none=True, exclude={"operator", "reason"})
 
 
 class ProjectListItem(APIModel):
@@ -91,9 +104,13 @@ class ProjectListItem(APIModel):
     department: str | None = None
     sponsor: str | None = None
     project_manager: str | None = None
-    current_status: str
+    current_status: str | None = None
     category: str | None = None
-    project_type: ProjectType | None = None
+    project_type: str | None = None
+    major: str | None = None
+    location: str | None = None
+    establishment_document_no: str | None = None
+    library_implementation_view: str | None = None
     budget: float | None = None
     approved_budget: float | None = None
     contract_amount: float | None = None
@@ -103,6 +120,18 @@ class ProjectListItem(APIModel):
     created_at: str | None = None
     updated_at: str | None = None
     status_updated_at: str | None = None
+    stage: str | None = None
+    work_item_summary: list[dict[str, Any]] = Field(default_factory=list)
+    work_item_count: int = 0
+    work_item_states: dict[str, str] = Field(default_factory=dict)
+    next_key_node: dict[str, Any] | None = None
+    advancement: dict[str, Any] | None = None
+    external_constraints_cleared: str | None = None
+    external_constraint_count: int = 0
+    external_constraint_open_count: int = 0
+    external_constraint_scope_confirmation: dict[str, Any] | None = None
+    effective_budget: float | None = None
+    effective_budget_source: str | None = None
 
 
 class ProjectDetail(ProjectListItem):

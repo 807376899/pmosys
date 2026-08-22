@@ -8,12 +8,13 @@ from backend.app.repositories.dashboard import (
 )
 from backend.app.repositories.projects import GROUP_STATUS_MAP
 from backend.app.services.workflow import get_status_stats
+from backend.app.services.projects import _hydrate_project_projection
 
 
 GROUP_LABELS = {
     "pre_establish": "未立项",
     "pool_pending": "项目库-未实施",
-    "pool_active": "项目库-实施中",
+    "pool_active": "项目库-推进中",
     "completed": "已完成",
     "abandoned": "已废弃",
 }
@@ -42,6 +43,19 @@ def get_dashboard_summary() -> dict:
                 REVIEWED_STATUSES,
             )
         )
+        projections = []
+        for row in conn.execute("SELECT * FROM projects").fetchall():
+            projections.append(_hydrate_project_projection(conn, dict(row)))
+    library = [item for item in projections if item["stage"] in {"项目库—未实施", "项目库—推进中"}]
+    ready = [item for item in library if item["external_constraints_cleared"] == "true"]
+    ongoing = [item for item in library if item["external_constraints_cleared"] == "false"]
+    summary.update({
+        "project_library_total_effective_budget": sum(item["effective_budget"] for item in library),
+        "external_conditions_ready_count": len(ready),
+        "external_conditions_ready_effective_budget": sum(item["effective_budget"] for item in ready),
+        "external_conditions_ongoing_count": len(ongoing),
+        "external_conditions_ongoing_effective_budget": sum(item["effective_budget"] for item in ongoing),
+    })
     summary["status_stats"] = get_status_stats()
     return summary
 

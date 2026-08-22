@@ -19,8 +19,8 @@ def insert_project(conn: sqlite3.Connection, payload: dict) -> int:
         INSERT INTO projects (
             project_code, name, description, department, sponsor, project_manager,
             current_status, category, project_type, budget, approved_budget,
-            contract_amount, special_note, actual_start_date, actual_end_date
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            contract_amount, special_note, actual_start_date, actual_end_date, major, location
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             payload["project_code"],
@@ -38,6 +38,8 @@ def insert_project(conn: sqlite3.Connection, payload: dict) -> int:
             payload.get("special_note", ""),
             payload.get("actual_start_date", ""),
             payload.get("actual_end_date", ""),
+            payload.get("major", ""),
+            payload.get("location", ""),
         ),
     )
     return int(cursor.lastrowid)
@@ -132,34 +134,30 @@ def fetch_status_history(conn: sqlite3.Connection, project_id: int) -> list[dict
     return [dict(row) for row in rows]
 
 
-def _department_order_expression(department_order: list[str]) -> str:
-    if not department_order:
-        return "department"
-    clauses = []
-    for index, department in enumerate(department_order):
-        escaped = department.replace("'", "''")
-        clauses.append(f"WHEN department = '{escaped}' THEN {index}")
-    cases = " ".join(clauses)
-    return f"CASE {cases} ELSE {len(department_order)} END, department"
-
-
 def _order_clause(filters: dict) -> str:
     sort_by = filters.get("sort_by") or "status_updated_at"
     sort_dir = "ASC" if filters.get("sort_dir") == "asc" else "DESC"
     department_order = list(filters.get("department_order") or [])
+    legacy_cases: list[str] = []
+    for index, department in enumerate(department_order):
+        escaped = department.replace("'", "''")
+        legacy_cases.append(f"WHEN p.department = '{escaped}' THEN {index}")
+    legacy_department_cases = " ".join(legacy_cases)
+    legacy_department_rank = f"CASE {legacy_department_cases} ELSE {len(department_order)} END" if legacy_department_cases else "0"
     mapping = {
-        "project_type": "project_type",
-        "current_status": "current_status",
-        "department": _department_order_expression(department_order),
-        "implementation_year": "substr(actual_start_date, 1, 4)",
-        "status_updated_at": "status_updated_at",
+        "project_type": "p.project_type",
+        "current_status": "p.current_status",
+        "department": f"CASE WHEN ds.sort_order IS NULL THEN 1 ELSE 0 END, ds.sort_order, {legacy_department_rank}, p.department",
+        "category": f"CASE WHEN pc.sort_order IS NULL THEN 1 ELSE 0 END, pc.sort_order, p.category, CASE WHEN ds.sort_order IS NULL THEN 1 ELSE 0 END, ds.sort_order, {legacy_department_rank}, p.department",
+        "implementation_year": "substr(p.actual_start_date, 1, 4)",
+        "status_updated_at": "p.status_updated_at",
     }
     expression = mapping.get(sort_by, "status_updated_at")
-    if sort_by == "department":
-        return f"ORDER BY {expression} {sort_dir}, updated_at DESC, id DESC"
+    if sort_by in {"department", "category"}:
+        return f"ORDER BY {expression} {sort_dir}, p.name {sort_dir}, p.project_code {sort_dir}"
     if sort_by == "implementation_year":
         return f"ORDER BY COALESCE(NULLIF({expression}, ''), '0000') {sort_dir}, updated_at DESC, id DESC"
-    return f"ORDER BY {expression} {sort_dir}, updated_at DESC, id DESC"
+    return f"ORDER BY {expression} {sort_dir}, p.updated_at DESC, p.id DESC"
 
 
 def fetch_project_page(conn: sqlite3.Connection, filters: dict) -> tuple[list[dict], int]:
@@ -173,6 +171,19 @@ def fetch_project_page(conn: sqlite3.Connection, filters: dict) -> tuple[list[di
         if statuses:
             conditions.append(f"current_status IN ({','.join('?' for _ in statuses)})")
             params.extend(statuses)
+    if filters.get("advancement_status") == "special_active":
+        conditions.append("special_advancement_active = 1")
+    if filters.get("external_conditions") == "ongoing":
+        conditions.extend([
+            "EXISTS (SELECT 1 FROM project_external_constraint_scope_confirmations ecs WHERE ecs.project_id=p.id)",
+            "EXISTS (SELECT 1 FROM project_external_constraints ec WHERE ec.project_id=p.id AND ec.is_blocking=1 AND ec.clearance_status NOT IN ('cleared','not_applicable'))",
+        ])
+    elif filters.get("external_conditions") == "ready":
+        conditions.append(
+            "(NOT EXISTS (SELECT 1 FROM project_external_constraints ec WHERE ec.project_id=p.id AND ec.is_blocking=1 AND ec.clearance_status NOT IN ('cleared','not_applicable')) "
+            "OR (EXISTS (SELECT 1 FROM project_external_constraint_scope_confirmations ecs WHERE ecs.project_id=p.id) "
+            "AND NOT EXISTS (SELECT 1 FROM project_external_constraints ec WHERE ec.project_id=p.id AND ec.is_blocking=1 AND ec.clearance_status != 'cleared')))"
+        )
     if filters.get("keyword"):
         conditions.append(
             "(name LIKE ? OR project_code LIKE ? OR description LIKE ? OR sponsor LIKE ? OR special_note LIKE ?)"
@@ -207,13 +218,15 @@ def fetch_project_page(conn: sqlite3.Connection, filters: dict) -> tuple[list[di
         params.append(str(filters["implementation_year"]))
 
     where_clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-    total = conn.execute(f"SELECT COUNT(*) FROM projects{where_clause}", params).fetchone()[0]
+    total = conn.execute(f"SELECT COUNT(*) FROM projects p{where_clause}", params).fetchone()[0]
     page = max(int(filters.get("page", 1)), 1)
     page_size = max(min(int(filters.get("page_size", 20)), 200), 1)
     offset = (page - 1) * page_size
     rows = conn.execute(
         f"""
-        SELECT * FROM projects
+        SELECT p.* FROM projects p
+        LEFT JOIN project_categories pc ON pc.name = p.category
+        LEFT JOIN department_settings ds ON ds.department = p.department
         {where_clause}
         {_order_clause(filters)}
         LIMIT ? OFFSET ?
@@ -237,6 +250,19 @@ def fetch_all_projects_for_export(conn: sqlite3.Connection, filters: dict) -> li
         if statuses:
             conditions.append(f"current_status IN ({','.join('?' for _ in statuses)})")
             params.extend(statuses)
+    if export_filters.get("advancement_status") == "special_active":
+        conditions.append("special_advancement_active = 1")
+    if export_filters.get("external_conditions") == "ongoing":
+        conditions.extend([
+            "EXISTS (SELECT 1 FROM project_external_constraint_scope_confirmations ecs WHERE ecs.project_id=p.id)",
+            "EXISTS (SELECT 1 FROM project_external_constraints ec WHERE ec.project_id=p.id AND ec.is_blocking=1 AND ec.clearance_status NOT IN ('cleared','not_applicable'))",
+        ])
+    elif export_filters.get("external_conditions") == "ready":
+        conditions.append(
+            "(NOT EXISTS (SELECT 1 FROM project_external_constraints ec WHERE ec.project_id=p.id AND ec.is_blocking=1 AND ec.clearance_status NOT IN ('cleared','not_applicable')) "
+            "OR (EXISTS (SELECT 1 FROM project_external_constraint_scope_confirmations ecs WHERE ecs.project_id=p.id) "
+            "AND NOT EXISTS (SELECT 1 FROM project_external_constraints ec WHERE ec.project_id=p.id AND ec.is_blocking=1 AND ec.clearance_status != 'cleared')))"
+        )
     if export_filters.get("keyword"):
         conditions.append(
             "(name LIKE ? OR project_code LIKE ? OR description LIKE ? OR sponsor LIKE ? OR special_note LIKE ?)"
@@ -272,7 +298,9 @@ def fetch_all_projects_for_export(conn: sqlite3.Connection, filters: dict) -> li
     where_clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
     rows = conn.execute(
         f"""
-        SELECT * FROM projects
+        SELECT p.* FROM projects p
+        LEFT JOIN project_categories pc ON pc.name = p.category
+        LEFT JOIN department_settings ds ON ds.department = p.department
         {where_clause}
         {_order_clause(export_filters)}
         """,

@@ -18,9 +18,14 @@ class DashboardSummary(APIModel):
     total_contract_amount: float
     project_library_count: int
     project_library_total_budget: float
+    project_library_total_effective_budget: float = 0
     review_in_progress_count: int
     reviewed_count: int
     reviewed_total_approved_budget: float
+    external_conditions_ready_count: int = 0
+    external_conditions_ready_effective_budget: float = 0
+    external_conditions_ongoing_count: int = 0
+    external_conditions_ongoing_effective_budget: float = 0
     status_stats: list[StatusStat]
 
 

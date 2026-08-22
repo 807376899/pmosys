@@ -1,6 +1,7 @@
 param(
-    [int]$Port = 5000,
-    [string]$Address = "0.0.0.0"
+    [int]$Port = 8000,
+    [string]$Address = "127.0.0.1",
+    [switch]$NoReload
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,65 +10,76 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $root
 
 $venvPython = Join-Path $root ".venv\Scripts\python.exe"
-$bundledPython = Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
 
-function Get-BootstrapPython {
-    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
-    if ($pythonCmd) {
-        return @($pythonCmd.Source)
+function Test-Python311OrNewer {
+    param(
+        [string]$Executable,
+        [string[]]$Arguments = @()
+    )
+
+    if (-not (Test-Path $Executable)) {
+        return $false
     }
 
-    $pyCmd = Get-Command py -ErrorAction SilentlyContinue
-    if ($pyCmd) {
-        foreach ($version in @("-3.12", "-3.11", "-3")) {
-            try {
-                & $pyCmd.Source $version -c "import sys; print(sys.version)" *> $null
-                if ($LASTEXITCODE -eq 0) {
-                    return @($pyCmd.Source, $version)
-                }
-            } catch {
+    try {
+        & $Executable @Arguments -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" *> $null
+        return $LASTEXITCODE -eq 0
+    } catch {
+        return $false
+    }
+}
+
+function New-ProjectVenv {
+    $launcher = Get-Command py -ErrorAction SilentlyContinue
+    if ($launcher) {
+        try {
+            & $launcher.Source -3.11 -m venv .venv
+            if ($LASTEXITCODE -eq 0) {
+                return
+            }
+        } catch {
+        }
+    }
+
+    $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
+    if ($pythonCommand -and $pythonCommand.Source -notlike "*WindowsApps*") {
+        if (Test-Python311OrNewer -Executable $pythonCommand.Source) {
+            & $pythonCommand.Source -m venv .venv
+            if ($LASTEXITCODE -eq 0) {
+                return
             }
         }
     }
 
-    if (Test-Path $bundledPython) {
-        return @($bundledPython)
+    $localPythonRoot = Join-Path $env:LOCALAPPDATA "Programs\Python"
+    $localPython = Get-ChildItem -Path (Join-Path $localPythonRoot "Python*\python.exe") -ErrorAction SilentlyContinue |
+        Sort-Object FullName -Descending |
+        Select-Object -First 1
+    if ($localPython -and (Test-Python311OrNewer -Executable $localPython.FullName)) {
+        & $localPython.FullName -m venv .venv
+        if ($LASTEXITCODE -eq 0) {
+            return
+        }
     }
 
-    throw "Python was not found. Install Python 3.11+ or run this project inside Codex desktop."
+    throw 'Python 3.11+ was not found. Install it with: winget install --id Python.Python.3.11 --exact. Then open a new PowerShell window and run .\run.ps1 again.'
 }
 
-function Ensure-Venv {
-    if (Test-Path $venvPython) {
-        return
-    }
-
-    Write-Host "[1/4] Creating .venv ..."
-    $bootstrap = Get-BootstrapPython
-
-    if ($bootstrap.Count -eq 2) {
-        & $bootstrap[0] $bootstrap[1] -m venv .venv
-    } else {
-        & $bootstrap[0] -m venv .venv
-    }
+if (-not (Test-Path $venvPython)) {
+    Write-Host "[1/3] Creating local Python virtual environment..."
+    New-ProjectVenv
 }
 
-function Ensure-Dependencies {
-    Write-Host "[2/4] Checking dependencies ..."
-    & $venvPython -c "import streamlit, pandas, openpyxl" *> $null
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "Dependencies are ready."
-        return
-    }
-
-    Write-Host "Installing requirements from requirements.txt ..."
-    & $venvPython -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple --default-timeout 1000
+Write-Host "[2/3] Checking Python dependencies..."
+& $venvPython -c "import fastapi, uvicorn, pandas, openpyxl" *> $null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Installing dependencies from requirements.txt..."
+    & $venvPython -m pip install -r requirements.txt
 }
 
-Ensure-Venv
-Ensure-Dependencies
-
-Write-Host "[3/4] Starting Streamlit ..."
-Write-Host "[4/4] URL: http://127.0.0.1:$Port"
-
-& $venvPython -m streamlit run app.py --server.port $Port --server.address $Address --server.headless true
+Write-Host "[3/3] Starting PMO API at http://${Address}:$Port"
+$uvicornArgs = @("-m", "uvicorn", "backend.app.main:app", "--host", $Address, "--port", $Port)
+if (-not $NoReload) {
+    $uvicornArgs += "--reload"
+}
+& $venvPython @uvicornArgs

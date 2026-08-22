@@ -50,6 +50,15 @@ export async function apiPatch<T>(path: string, body: unknown) {
   return parseResponse<T>(response);
 }
 
+export async function apiDelete<T>(path: string, body?: unknown) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "DELETE",
+    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  return parseResponse<T>(response);
+}
+
 export async function apiPostForm<T>(path: string, formData: FormData) {
   const response = await fetch(`${API_BASE}${path}`, {
     method: "POST",

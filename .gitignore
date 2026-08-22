@@ -59,6 +59,7 @@ logs/
 
 # Local database
 pmo.db
+pmo.db-*
 
 # 视频文件
 *.mp4

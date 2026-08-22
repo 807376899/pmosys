@@ -8,18 +8,14 @@ from backend.app.db.connection import get_connection
 from backend.app.core.config import get_settings
 from backend.app.repositories.projects import fetch_all_projects_for_export
 from backend.app.schemas.project import PROJECT_TYPE_META, ProjectType
-from backend.app.services.workflow import get_statuses
-
-
-def _status_name_map() -> dict[str, str]:
-    return {item["status_code"]: item["status_name"] for item in get_statuses()}
+from backend.app.services.projects import _hydrate_project_projection
 
 
 def export_projects(filters: dict) -> bytes:
     filters = {**filters, "department_order": list(get_settings().department_order)}
     with get_connection() as conn:
         projects = fetch_all_projects_for_export(conn, filters)
-    status_name_map = _status_name_map()
+        projects = [_hydrate_project_projection(conn, project) for project in projects]
     rows = []
     for project in projects:
         project_type = project.get("project_type")
@@ -28,13 +24,18 @@ def export_projects(filters: dict) -> bytes:
                 "项目编号": project["project_code"],
                 "项目名称": project["name"],
                 "项目类型": PROJECT_TYPE_META[ProjectType(project_type)]["label"] if project_type else "",
-                "当前状态": status_name_map.get(project["current_status"], project["current_status"]),
+                "Stage": project["stage"],
+                "当前进展": "；".join(f"{item['name']}·{item['status']}" for item in project["work_item_summary"]),
+                "下一关键节点": (project["next_key_node"] or {}).get("name", ""),
+                "外部推进条件": project["external_constraints_cleared"],
                 "部门": project.get("department") or "",
                 "项目负责人": project.get("project_manager") or "",
                 "发起人": project.get("sponsor") or "",
                 "项目分类": project.get("category") or "",
                 "初始预算": project.get("budget") or 0,
                 "审核后预算": project.get("approved_budget"),
+                "当前有效预算": project.get("effective_budget"),
+                "有效预算来源": project.get("effective_budget_source"),
                 "合同金额": project.get("contract_amount"),
                 "状态更新时间": project.get("status_updated_at") or "",
                 "特殊说明": project.get("special_note") or "",
