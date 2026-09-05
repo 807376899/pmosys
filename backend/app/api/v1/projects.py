@@ -12,6 +12,7 @@ from backend.app.schemas.project import (
     BatchTransitionPreviewRequest,
     BatchTransitionPreviewResponse,
     ProjectCreate,
+    ProjectDeleteRequest,
     ProjectDetail,
     ProjectListResponse,
     ProjectUpdate,
@@ -90,9 +91,9 @@ def patch_project(project_id: int, payload: ProjectUpdate):
 
 
 @router.delete("/{project_id}")
-def remove_project(project_id: int):
-    delete_project(project_id)
-    return {"success": True}
+def remove_project(project_id: int, payload: ProjectDeleteRequest):
+    delete_project(project_id, payload.operator, payload.reason)
+    return {"success": True, "soft_deleted": True}
 
 
 @router.get("/{project_id}/history", response_model=list[StatusHistoryItem])

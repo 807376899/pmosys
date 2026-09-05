@@ -1265,6 +1265,32 @@ textarea {
   white-space: nowrap;
 }
 
+/* The dashboard figures belong to the header, not the scan surface below it.
+   Keep their paper treatment while making the heading and metrics one stable
+   layout unit. */
+.hero {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(0, auto);
+  align-items: center;
+}
+.hero-metrics {
+  display: grid;
+  justify-items: end;
+  gap: 6px;
+  min-width: 0;
+}
+.hero .hero-stats {
+  justify-content: flex-end;
+  max-width: 100%;
+}
+.hero .hero-stat {
+  flex: 0 0 auto;
+  min-width: 150px;
+}
+.hero .external-ongoing-summary {
+  margin: 0;
+}
+
 .group-band {
   display: flex;
   align-items: stretch;
@@ -1667,4 +1693,9 @@ textarea {
   .quick-fields {
     grid-template-columns: 1fr;
   }
+
+  .hero { grid-template-columns: 1fr; }
+  .hero-metrics { justify-items: stretch; }
+  .hero .hero-stats { justify-content: flex-start; }
+  .hero .external-ongoing-summary { justify-self: start; }
 }

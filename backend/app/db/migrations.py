@@ -340,6 +340,9 @@ def ensure_project_schema(conn: sqlite3.Connection) -> None:
         ("advancement_year", "INTEGER"),
         ("advancement_date", "TEXT"),
         ("special_advancement_active", "INTEGER DEFAULT 0"),
+        ("deleted_at", "TEXT"),
+        ("deleted_by", "TEXT DEFAULT ''"),
+        ("deleted_reason", "TEXT DEFAULT ''"),
     ]:
         if not column_exists(conn, "projects", column):
             conn.execute(f"ALTER TABLE projects ADD COLUMN {column} {definition}")

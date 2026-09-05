@@ -96,6 +96,11 @@ class ProjectUpdate(APIModel):
         return self.model_dump(exclude_none=True, exclude={"operator", "reason"})
 
 
+class ProjectDeleteRequest(APIModel):
+    operator: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+
 class ProjectListItem(APIModel):
     id: int
     project_code: str

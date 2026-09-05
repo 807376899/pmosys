@@ -204,6 +204,8 @@ function DashboardPage() {
   const [selectedPackageId, setSelectedPackageId] = useState<number | null>(null);
   const [templateKeyword, setTemplateKeyword] = useState("");
   const [dialog, setDialog] = useState<null | { kind: "edit-log" | "delete-log" | "archive-template"; title: string; value: string; target?: WorkItemProgressLog; template?: { kind: "work-item" | "work-package" | "external-constraint"; id: number; name: string } }>(null);
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [newProject, setNewProject] = useState({ name: "", department: "", project_manager: "", project_type: "teaching_software", budget: "", description: "" });
   const [tableView, setTableView] = useState<"overview" | "stage">("overview");
   const [columnPickerOpen, setColumnPickerOpen] = useState(false);
   const [columnSearch, setColumnSearch] = useState("");
@@ -692,6 +694,20 @@ function DashboardPage() {
     }
   }
 
+  async function createManualProject() {
+    if (!newProject.name.trim()) { setError("请填写项目名称。"); return; }
+    try {
+      const created = await apiPost<Project>("/projects", {
+        name: newProject.name.trim(), department: newProject.department.trim(), project_manager: newProject.project_manager.trim(),
+        project_type: newProject.project_type, budget: Number(newProject.budget || 0), description: newProject.description.trim(), operator,
+      });
+      setNewProjectOpen(false);
+      setNewProject({ name: "", department: "", project_manager: "", project_type: "teaching_software", budget: "", description: "" });
+      setFeedback(`已新增项目“${created.name}”（${created.project_code}）。`);
+      await loadDashboard();
+    } catch (err) { setError(err instanceof ApiError ? err.message : "新增项目失败，列表未变更。"); }
+  }
+
   return (
     <div className="shell">
       <div className="backdrop-grid" />
@@ -700,6 +716,9 @@ function DashboardPage() {
           <p className="eyebrow">PMO WORKSPACE</p>
           <h1>PMO 项目管理工作台</h1>
           <div className="hero-actions">
+            <button className="action-button primary" onClick={() => setNewProjectOpen(true)}>
+              <Plus size={16} />新增项目
+            </button>
             <a className="action-button primary" href={buildExportUrl(exportQuery)} target="_blank" rel="noreferrer">
               <FileDown size={16} />
               导出当前视图
@@ -710,6 +729,17 @@ function DashboardPage() {
             </button>
           </div>
         </div>
+        <div className="hero-metrics">
+          <div className="hero-stats">
+            <article className="hero-stat"><span>项目库总量</span><strong>{summary?.project_library_count ?? "—"}</strong></article>
+            <article className="hero-stat"><span>项目库总预算</span><strong>{formatCurrency(summary?.project_library_total_effective_budget)} 万</strong></article>
+            <article className="hero-stat"><span>外部条件已具备</span><strong>{summary?.external_conditions_ready_count ?? "—"}</strong></article>
+            <article className="hero-stat"><span>外部条件已具备预算</span><strong>{formatCurrency(summary?.external_conditions_ready_effective_budget)} 万</strong></article>
+          </div>
+          <button type="button" className={`external-ongoing-summary ${selectedExternalConditions === "ongoing" ? "active" : ""}`} onClick={() => setSelectedExternalConditions((value) => value === "ongoing" ? "" : "ongoing")}>
+            外部约束办理中：{summary?.external_conditions_ongoing_count ?? 0} 个项目 · 涉及预算 {formatCurrency(summary?.external_conditions_ongoing_effective_budget)} 万
+          </button>
+        </div>
       </header>
 
       {error ? <div className="notice error">{error}</div> : null}
@@ -717,27 +747,6 @@ function DashboardPage() {
 
       <main className="workspace">
         <section className="main-stage">
-        <div className="hero-stats">
-          <article className="hero-stat">
-            <span>项目库总量</span>
-            <strong>{summary?.project_library_count ?? "—"}</strong>
-          </article>
-          <article className="hero-stat">
-            <span>项目库总预算</span>
-            <strong>{formatCurrency(summary?.project_library_total_effective_budget)} 万</strong>
-          </article>
-          <article className="hero-stat">
-            <span>外部条件已具备</span>
-            <strong>{summary?.external_conditions_ready_count ?? "—"}</strong>
-          </article>
-          <article className="hero-stat">
-            <span>外部条件已具备预算</span>
-            <strong>{formatCurrency(summary?.external_conditions_ready_effective_budget)} 万</strong>
-          </article>
-        </div>
-        <button type="button" className={`external-ongoing-summary ${selectedExternalConditions === "ongoing" ? "active" : ""}`} onClick={() => setSelectedExternalConditions((value) => value === "ongoing" ? "" : "ongoing")}>
-          外部约束办理中：{summary?.external_conditions_ongoing_count ?? 0} 个项目 · 涉及预算 {formatCurrency(summary?.external_conditions_ongoing_effective_budget)} 万
-        </button>
           <section className="group-band">
             {groups.map((group) => (
               <button
@@ -1072,6 +1081,16 @@ function DashboardPage() {
           <div className="dialog-actions"><button className="mini-button" onClick={() => setDialog(null)}>取消</button><button className="action-button primary" disabled={!dialog.value.trim()} onClick={() => void submitDialog()}>确认</button></div>
         </section>
       </div> : null}
+      {newProjectOpen ? <div className="system-dialog-backdrop" role="presentation" onMouseDown={() => setNewProjectOpen(false)}>
+        <section className="system-dialog" role="dialog" aria-modal="true" aria-label="新增项目" onMouseDown={(event) => event.stopPropagation()}>
+          <p className="section-kicker">PMO ACTION</p><h3>新增项目</h3>
+          <input className="input" autoFocus value={newProject.name} onChange={(event) => setNewProject({ ...newProject, name: event.target.value })} placeholder="项目名称（必填）" />
+          <div className="field-grid"><input className="input" value={newProject.department} onChange={(event) => setNewProject({ ...newProject, department: event.target.value })} placeholder="部门/学院" /><input className="input" value={newProject.project_manager} onChange={(event) => setNewProject({ ...newProject, project_manager: event.target.value })} placeholder="负责人" /></div>
+          <div className="field-grid"><select className="select" value={newProject.project_type} onChange={(event) => setNewProject({ ...newProject, project_type: event.target.value })}><option value="teaching_software">专业教学软件项目</option><option value="practical_teaching_site">实践教学场所项目</option></select><input className="input" type="number" value={newProject.budget} onChange={(event) => setNewProject({ ...newProject, budget: event.target.value })} placeholder="初始预算（万元）" /></div>
+          <textarea className="textarea" rows={2} value={newProject.description} onChange={(event) => setNewProject({ ...newProject, description: event.target.value })} placeholder="项目说明（可选）" />
+          <div className="dialog-actions"><button className="mini-button" onClick={() => setNewProjectOpen(false)}>取消</button><button className="action-button primary" disabled={!newProject.name.trim()} onClick={() => void createManualProject()}>确认新增</button></div>
+        </section>
+      </div> : null}
     </div>
   );
 }
@@ -1108,6 +1127,8 @@ function ProjectDetailPage() {
   const [invalidationReason, setInvalidationReason] = useState("");
   const [editingProject, setEditingProject] = useState(false);
   const [projectReason, setProjectReason] = useState("");
+  const [deleteProjectOpen, setDeleteProjectOpen] = useState(false);
+  const [deleteProjectReason, setDeleteProjectReason] = useState("");
   const [addingItem, setAddingItem] = useState(false);
   const [newDraft, setNewDraft] = useState<WorkItemDraft>(emptyDraft());
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -1254,6 +1275,14 @@ function ProjectDetailPage() {
     setProject(updated); setProjectReason(""); setEditingProject(false); await refreshTimeline();
   }
 
+  async function removeProject() {
+    if (!projectId || !project || !deleteProjectReason.trim()) return;
+    try {
+      await apiDelete(`/projects/${projectId}`, { operator: "PMO办公室", reason: deleteProjectReason.trim() });
+      navigate("/");
+    } catch (err) { setError(err instanceof ApiError ? err.message : "项目未移除，页面保持原状。"); }
+  }
+
   const detailKeyNode = useMemo(() => workItems
     .filter((item) => item.track_as_key_node && !["completed", "paused", "not_applicable"].includes(item.status))
     .sort((left, right) => (left.planned_date || "9999-12-31").localeCompare(right.planned_date || "9999-12-31"))[0], [workItems]);
@@ -1319,7 +1348,7 @@ function ProjectDetailPage() {
             <section className="detail-section">
               <div className="section-title">
                 <div><p className="section-kicker">BASIC</p><h2>基本信息</h2></div>
-                <button className="mini-button" onClick={() => setEditingProject((value) => !value)}>编辑基本信息</button>
+                <div className="work-item-actions"><button className="mini-button" onClick={() => setEditingProject((value) => !value)}>编辑基本信息</button><button className="mini-button danger" onClick={() => setDeleteProjectOpen(true)}>移除项目</button></div>
               </div>
               {editingProject ? <div className="detail-add-item"><input className="input" value={project.name} onChange={(event) => setProject({ ...project, name: event.target.value })} placeholder="项目名称" /><div className="field-grid"><input className="input" value={project.department ?? ""} onChange={(event) => setProject({ ...project, department: event.target.value })} placeholder="部门/学院" /><input className="input" value={project.major ?? ""} onChange={(event) => setProject({ ...project, major: event.target.value })} placeholder="所属专业" /></div><div className="field-grid"><input className="input" value={project.project_manager ?? ""} onChange={(event) => setProject({ ...project, project_manager: event.target.value })} placeholder="项目负责人" /><input className="input" value={project.location ?? ""} onChange={(event) => setProject({ ...project, location: event.target.value })} placeholder="地点" /></div><div className="field-grid"><label className="field"><span>项目类别（PMO 管理分类）</span><input className="input" value={project.category ?? ""} onChange={(event) => setProject({ ...project, category: event.target.value })} placeholder="例如：实验室建设项目" /></label><label className="field"><span>项目类型（业务属性）</span><input className="input" value={project.project_type ?? ""} onChange={(event) => setProject({ ...project, project_type: event.target.value })} placeholder="项目类型" /></label></div><label className="field"><span>初始预算（仅导入/录入纠错）</span><input className="input" type="number" value={project.budget ?? 0} onChange={(event) => setProject({ ...project, budget: Number(event.target.value) })} /></label><textarea className="textarea" rows={2} value={project.description ?? ""} onChange={(event) => setProject({ ...project, description: event.target.value })} placeholder="项目说明" /><textarea className="textarea" rows={2} value={projectReason} onChange={(event) => setProjectReason(event.target.value)} placeholder="修改理由（必填）" /><button className="action-button primary" disabled={!projectReason.trim()} onClick={() => void saveProjectEdits()}>保存并写入审计</button></div> : null}
               <div className="detail-grid">
@@ -1398,6 +1427,14 @@ function ProjectDetailPage() {
           </aside>
         </main>
       ) : null}
+      {deleteProjectOpen && project ? <div className="system-dialog-backdrop" role="presentation" onMouseDown={() => setDeleteProjectOpen(false)}>
+        <section className="system-dialog" role="dialog" aria-modal="true" aria-label="移除项目" onMouseDown={(event) => event.stopPropagation()}>
+          <p className="section-kicker">PMO ACTION</p><h3>移除“{project.name}”</h3>
+          <p className="muted-copy">项目将从日常列表隐藏，历史和审计记录会保留。</p>
+          <textarea className="textarea" rows={3} autoFocus value={deleteProjectReason} onChange={(event) => setDeleteProjectReason(event.target.value)} placeholder="移除原因（必填）" />
+          <div className="dialog-actions"><button className="mini-button" onClick={() => setDeleteProjectOpen(false)}>取消</button><button className="action-button primary danger-action" disabled={!deleteProjectReason.trim()} onClick={() => void removeProject()}>确认移除</button></div>
+        </section>
+      </div> : null}
     </div>
   );
 }

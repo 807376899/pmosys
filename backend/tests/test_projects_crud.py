@@ -17,8 +17,18 @@ def test_project_crud_and_patch_whitelist(client, create_project_payload):
     )
     assert invalid_patch.status_code == 422
     assert invalid_patch.json()["code"] == "VALIDATION_ERROR"
-    delete = client.delete(f"/api/v1/projects/{created['id']}")
+    missing_audit = client.request("DELETE", f"/api/v1/projects/{created['id']}", json={})
+    assert missing_audit.status_code == 422
+
+    delete = client.request(
+        "DELETE",
+        f"/api/v1/projects/{created['id']}",
+        json={"operator": "PMO", "reason": "重复导入，改由正确项目保留"},
+    )
     assert delete.status_code == 200
+    assert delete.json()["soft_deleted"] is True
+    remaining = client.get("/api/v1/projects").json()["items"]
+    assert created["id"] not in [project["id"] for project in remaining]
 
 
 def test_project_list_supports_project_type_filter(client, create_project_payload):

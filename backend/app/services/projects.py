@@ -219,10 +219,16 @@ def update_project(project_id: int, payload: ProjectUpdate) -> dict:
         return _hydrate_project_projection(conn, updated)
 
 
-def delete_project(project_id: int) -> None:
+def delete_project(project_id: int, operator: str, reason: str) -> None:
+    operator, reason = operator.strip(), reason.strip()
+    if not operator or not reason:
+        raise ValidationError("删除项目必须填写操作人和原因")
     with get_connection() as conn:
-        if not project_repo.delete_project(conn, project_id):
+        project = project_repo.fetch_project_by_id(conn, project_id)
+        if not project:
             raise NotFoundError(f"项目不存在: {project_id}")
+        project_repo.delete_project(conn, project_id, operator, reason)
+        _audit(conn, project_id, "PROJECT_SOFT_DELETED", operator, reason, {"project_code": project["project_code"], "name": project["name"]})
 
 
 def get_project_history(project_id: int) -> list[dict]:

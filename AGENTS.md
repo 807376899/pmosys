@@ -55,6 +55,7 @@ npm.cmd run build
 - Stage 通用调整不能绕过纳入推进、暂缓推进、立项或恢复等专门业务动作。
 - `ProjectCategory` 与 `ProjectType` 必须分离：Category 是管理员维护的 PMO 管理分类，用于排序、筛选和统计；Type 是项目业务类型/导入字段。类别排序为 category_sort_order → department_sort_order → 名称/编号，未配置项稳定回退。
 - 所有治理写操作必须先在服务端成功，再更新局部 UI；失败不得乐观显示成功。禁止业务页面使用浏览器原生 alert/confirm/prompt，统一使用系统 Dialog 和反馈提示。
+- PMO 手动移除项目采用软删除：必须填写操作人和原因，日常列表与导出隐藏项目，但数据库记录和审计永久保留；手动新增项目复用项目类型目录和编号生成规则。
 - 已废弃项目支持 PMO 特批恢复，必须记录目标 Stage、理由、操作人和审计事件。
 
 ## 前端交互约束

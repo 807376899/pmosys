@@ -68,7 +68,7 @@ def insert_status_history(
 
 
 def fetch_project_by_id(conn: sqlite3.Connection, project_id: int) -> dict | None:
-    row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    row = conn.execute("SELECT * FROM projects WHERE id = ? AND deleted_at IS NULL", (project_id,)).fetchone()
     return dict(row) if row else None
 
 
@@ -77,7 +77,7 @@ def fetch_projects_by_ids(conn: sqlite3.Connection, project_ids: list[int]) -> l
         return []
     placeholders = ",".join("?" for _ in project_ids)
     rows = conn.execute(
-        f"SELECT * FROM projects WHERE id IN ({placeholders}) ORDER BY id",
+        f"SELECT * FROM projects WHERE id IN ({placeholders}) AND deleted_at IS NULL ORDER BY id",
         project_ids,
     ).fetchall()
     return [dict(row) for row in rows]
@@ -106,8 +106,11 @@ def update_project_fields(conn: sqlite3.Connection, project_id: int, updates: di
     return cursor.rowcount > 0
 
 
-def delete_project(conn: sqlite3.Connection, project_id: int) -> bool:
-    cursor = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+def delete_project(conn: sqlite3.Connection, project_id: int, operator: str, reason: str) -> bool:
+    cursor = conn.execute(
+        "UPDATE projects SET deleted_at=?, deleted_by=?, deleted_reason=? WHERE id=? AND deleted_at IS NULL",
+        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), operator, reason, project_id),
+    )
     return cursor.rowcount > 0
 
 
@@ -161,7 +164,7 @@ def _order_clause(filters: dict) -> str:
 
 
 def fetch_project_page(conn: sqlite3.Connection, filters: dict) -> tuple[list[dict], int]:
-    conditions: list[str] = []
+    conditions: list[str] = ["p.deleted_at IS NULL"]
     params: list[object] = []
     if filters.get("status"):
         conditions.append("current_status = ?")
@@ -240,7 +243,7 @@ def fetch_all_projects_for_export(conn: sqlite3.Connection, filters: dict) -> li
     export_filters = dict(filters)
     export_filters.pop("page", None)
     export_filters.pop("page_size", None)
-    conditions: list[str] = []
+    conditions: list[str] = ["p.deleted_at IS NULL"]
     params: list[object] = []
     if export_filters.get("status"):
         conditions.append("current_status = ?")
