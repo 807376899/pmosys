@@ -14,7 +14,7 @@ from backend.app.services.projects import _hydrate_project_projection
 GROUP_LABELS = {
     "pre_establish": "未立项",
     "pool_pending": "项目库-未实施",
-    "pool_active": "项目库-推进中",
+    "pool_active": "推进中",
     "completed": "已完成",
     "abandoned": "已废弃",
 }
@@ -44,7 +44,7 @@ def get_dashboard_summary() -> dict:
             )
         )
         projections = []
-        for row in conn.execute("SELECT * FROM projects").fetchall():
+        for row in conn.execute("SELECT * FROM projects WHERE deleted_at IS NULL").fetchall():
             projections.append(_hydrate_project_projection(conn, dict(row)))
     library = [item for item in projections if item["stage"] in {"项目库—未实施", "项目库—推进中"}]
     ready = [item for item in library if item["external_constraints_cleared"] == "true"]

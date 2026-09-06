@@ -9,7 +9,6 @@ from backend.app.core.errors import DuplicateProjectCodeError, ValidationError
 from backend.app.db.connection import get_connection
 from backend.app.repositories import projects as project_repo
 from backend.app.schemas.import_export import ImportPreviewErrorItem, ImportPreviewRecord
-from backend.app.schemas.project import ProjectType
 from backend.app.services.project_codes import generate_project_code, validate_manual_project_code
 from backend.app.services.projects import create_project_internal
 
@@ -43,10 +42,12 @@ STATUS_CN_TO_EN = {
 }
 
 PROJECT_TYPE_ALIASES = {
-    "teaching_software": ProjectType.teaching_software,
-    "教学软件": ProjectType.teaching_software,
-    "practical_teaching_site": ProjectType.practical_teaching_site,
-    "实践教学场所": ProjectType.practical_teaching_site,
+    "teaching_software": "software",
+    "教学软件": "software",
+    "专业教学软件项目": "software",
+    "practical_teaching_site": "laboratory",
+    "实践教学场所": "laboratory",
+    "实践教学场所项目": "laboratory",
 }
 
 FIELD_ALIASES = {
@@ -68,7 +69,7 @@ FIELD_ALIASES = {
 }
 
 
-def _next_reserved_safe_code(conn, project_type: ProjectType, reserved_codes: set[str]) -> str:
+def _next_reserved_safe_code(conn, project_type: str, reserved_codes: set[str]) -> str:
     candidate = generate_project_code(conn, project_type)
     if candidate not in reserved_codes:
         return candidate
@@ -128,15 +129,23 @@ def preview_import(file_name: str, content: bytes) -> dict:
     errors: list[ImportPreviewErrorItem] = []
     reserved_codes: set[str] = set()
     with get_connection() as conn:
+        project_types = {
+            row["code"]: row["code"]
+            for row in conn.execute("SELECT code FROM project_types WHERE is_active=1").fetchall()
+        }
+        project_types.update({
+            row["name"]: row["code"]
+            for row in conn.execute("SELECT code, name FROM project_types WHERE is_active=1").fetchall()
+        })
         for index, raw_row in enumerate(df.to_dict(orient="records"), start=1):
             try:
                 name = _pick_value(raw_row, FIELD_ALIASES["name"])
                 if not name:
                     raise ValidationError("项目名称不能为空")
                 raw_type = _pick_value(raw_row, FIELD_ALIASES["project_type"])
-                if raw_type not in PROJECT_TYPE_ALIASES:
-                    raise ValidationError("项目类型必须为 教学软件 或 实践教学场所")
-                project_type = PROJECT_TYPE_ALIASES[raw_type]
+                project_type = PROJECT_TYPE_ALIASES.get(raw_type, project_types.get(raw_type))
+                if not project_type:
+                    raise ValidationError("项目分类不存在或已停用")
                 project_code = _pick_value(raw_row, FIELD_ALIASES["project_code"])
                 if project_code:
                     project_code = validate_manual_project_code(project_code, project_type)

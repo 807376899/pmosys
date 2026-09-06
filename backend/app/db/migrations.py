@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 
 from backend.app.db.seeds import seed_statuses, seed_transitions
@@ -56,6 +57,7 @@ def init_database(conn: sqlite3.Connection) -> None:
         """
     )
     for column, definition in [
+        ("default_content", "TEXT DEFAULT ''"),
         ("flow_group", "TEXT DEFAULT 'independent'"),
         ("sequence_rank", "INTEGER DEFAULT 1000"),
         ("stage_view_priority", "INTEGER"),
@@ -65,9 +67,13 @@ def init_database(conn: sqlite3.Connection) -> None:
     ]:
         if not column_exists(conn, "work_item_templates", column):
             conn.execute(f"ALTER TABLE work_item_templates ADD COLUMN {column} {definition}")
+    # PMO begins after the college-side workflow.  Old college-flow records
+    # remain as independent history, never as default PMO work.
+    conn.execute("UPDATE project_work_items SET flow_group='independent' WHERE name IN ('学院流程','学院内部流程')")
+    conn.execute("UPDATE work_item_templates SET is_common=0, stage_view_priority=NULL, flow_group='independent' WHERE name IN ('学院流程','学院内部流程')")
     for name, stage, rank in [
-        ("学院流程", "未立项", 1), ("PMO 审核", "未立项", 2),
-        ("专家评审", "未立项", 3), ("委员会", "未立项", 4), ("会议", "未立项", 5),
+        ("PMO 审核", "未立项", 1),
+        ("专家评审", "未立项", 2), ("委员会", "未立项", 3), ("会议", "未立项", 4),
         ("预算审核", "项目库—推进中", 1), ("采购需求", "项目库—推进中", 2),
         ("采购申请", "项目库—推进中", 3), ("招标", "项目库—推进中", 4),
         ("实施", "项目库—推进中", 5), ("验收", "项目库—推进中", 6),
@@ -99,6 +105,15 @@ def init_database(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    default_package = conn.execute("SELECT id FROM work_packages WHERE name='未立项 PMO 工作包'").fetchone()
+    if not default_package:
+        cursor = conn.execute("INSERT INTO work_packages (name) VALUES ('未立项 PMO 工作包')")
+        for index, (name, rank) in enumerate([
+            ("PMO 审核", 100), ("校外专家/小组评审", 200), ("实验室建设与管理委员会", 300),
+            ("校长办公会", 400), ("党委会", 500), ("立项发文", 600),
+        ]):
+            item = {"name": name, "flow_group": "main", "sequence_rank": rank, "status": "not_started", "execution_mode": "tracking"}
+            conn.execute("INSERT INTO work_package_items (package_id,item_json,sort_order) VALUES (?,?,?)", (cursor.lastrowid, json.dumps(item, ensure_ascii=False), index))
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS work_item_progress_logs (
@@ -161,6 +176,8 @@ def init_database(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    if not column_exists(conn, "project_types", "sort_order"):
+        conn.execute("ALTER TABLE project_types ADD COLUMN sort_order INTEGER")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS projects (
@@ -180,6 +197,7 @@ def init_database(conn: sqlite3.Connection) -> None:
             special_note TEXT DEFAULT '',
             actual_start_date TEXT,
             actual_end_date TEXT,
+            procurement_nature TEXT DEFAULT '',
             created_at TEXT DEFAULT (datetime('now','localtime')),
             updated_at TEXT DEFAULT (datetime('now','localtime')),
             status_updated_at TEXT DEFAULT (datetime('now','localtime'))
@@ -249,7 +267,12 @@ def init_database(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    for column, definition in [("archived_at", "TEXT"), ("archived_by", "TEXT DEFAULT ''"), ("archived_reason", "TEXT DEFAULT ''"), ("scope_kind", "TEXT DEFAULT 'manual'"), ("scope_value", "TEXT DEFAULT ''")]:
+    for column, definition in [
+        ("archived_at", "TEXT"), ("archived_by", "TEXT DEFAULT ''"), ("archived_reason", "TEXT DEFAULT ''"),
+        ("scope_kind", "TEXT DEFAULT 'manual'"), ("scope_value", "TEXT DEFAULT ''"),
+        ("effective_from", "TEXT DEFAULT ''"), ("effective_until", "TEXT DEFAULT ''"),
+        ("applicability_basis", "TEXT DEFAULT ''"),
+    ]:
         if not column_exists(conn, "external_constraint_templates", column):
             conn.execute(f"ALTER TABLE external_constraint_templates ADD COLUMN {column} {definition}")
     conn.execute(
@@ -271,11 +294,14 @@ def init_database(conn: sqlite3.Connection) -> None:
             invalidated_at TEXT,
             invalidated_by TEXT DEFAULT '',
             invalidated_reason TEXT DEFAULT '',
+            is_effective_budget_source INTEGER DEFAULT 0,
             created_at TEXT DEFAULT (datetime('now','localtime')),
             updated_at TEXT DEFAULT (datetime('now','localtime'))
         )
         """
     )
+    if not column_exists(conn, "project_external_constraints", "is_effective_budget_source"):
+        conn.execute("ALTER TABLE project_external_constraints ADD COLUMN is_effective_budget_source INTEGER DEFAULT 0")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS project_external_constraint_scope_confirmations (
@@ -308,6 +334,16 @@ def init_database(conn: sqlite3.Connection) -> None:
     )
     conn.execute("INSERT OR IGNORE INTO project_types (code, name, code_prefix) VALUES ('software', '专业教学软件项目', 'SW')")
     conn.execute("INSERT OR IGNORE INTO project_types (code, name, code_prefix) VALUES ('laboratory', '实践教学场所项目', 'SY')")
+    conn.execute("UPDATE project_types SET sort_order=1 WHERE code='software' AND sort_order IS NULL")
+    conn.execute("UPDATE project_types SET sort_order=2 WHERE code='laboratory' AND sort_order IS NULL")
+    conn.execute("UPDATE projects SET project_type='software' WHERE project_type='teaching_software'")
+    conn.execute("UPDATE projects SET project_type='laboratory' WHERE project_type='practical_teaching_site'")
+    conn.execute(
+        """INSERT OR IGNORE INTO external_constraint_templates
+        (name,recommended_stage,is_blocking,outcome_schema_json,project_field_effects_json,is_common,scope_kind)
+        VALUES ('预算审核','',1,'{\"kind\":\"budget_determination\"}',
+                '{\"effective_budget\":\"outcome.approved_budget\"}',1,'manual')"""
+    )
     create_indexes(conn)
     seed_statuses(conn)
     seed_transitions(conn)
@@ -334,6 +370,7 @@ def ensure_project_schema(conn: sqlite3.Connection) -> None:
     for column, definition in [
         ("major", "TEXT DEFAULT ''"),
         ("location", "TEXT DEFAULT ''"),
+        ("procurement_nature", "TEXT DEFAULT ''"),
         ("establishment_document_no", "TEXT DEFAULT ''"),
         ("workflow_version_id", "INTEGER DEFAULT 1"),
         ("library_implementation_view", "TEXT DEFAULT 'unimplemented'"),
@@ -360,6 +397,7 @@ def create_indexes(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_transition_from ON transition_rules(from_status)",
         "CREATE INDEX IF NOT EXISTS idx_external_constraints_project ON project_external_constraints(project_id)",
         "CREATE INDEX IF NOT EXISTS idx_constraint_scope_project ON project_external_constraint_scope_confirmations(project_id)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_constraint_effective_budget_source ON project_external_constraints(project_id) WHERE is_effective_budget_source=1",
     ]
     for sql in statements:
         conn.execute(sql)

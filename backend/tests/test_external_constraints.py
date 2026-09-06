@@ -46,10 +46,12 @@ def test_external_constraints_need_scope_confirmation_and_expose_effective_budge
         f"/api/v1/projects/{project['id']}/external-constraints/{constraint.json()['id']}/actions",
         json={
             "action": "conclude",
-            "operator": "PMO",
-            "cleared": True,
-            "outcome": {"approved_budget": 88.5, "result": "核定通过"},
-        },
+                "operator": "PMO",
+                "cleared": True,
+                "outcome": {"approved_budget": 88.5, "result": "核定通过"},
+                "set_effective_budget_source": True,
+                "reason": "采用本次核定预算",
+            },
     )
     assert concluded.status_code == 200
     resolved = _listed_project(client, project["id"])
@@ -153,3 +155,105 @@ def test_work_package_can_preview_and_apply_external_constraints(client, create_
     assert applied.status_code == 200
     assert applied.json()["constraint_created_count"] == 1
     assert client.get(f"/api/v1/projects/{project['id']}/external-constraints").json()[0]["name"] == "采购准入确认"
+
+
+def test_known_unresolved_blocking_constraint_is_pending_without_scope_confirmation(client, create_project_payload):
+    project = client.post("/api/v1/projects", json=create_project_payload()).json()
+    constraint = client.post(
+        f"/api/v1/projects/{project['id']}/external-constraints",
+        json={"name": "待核实政策", "is_blocking": True, "operator": "PMO"},
+    )
+    assert constraint.status_code == 200
+
+    listed = _listed_project(client, project["id"])
+    assert listed["external_constraints_cleared"] == "false"
+
+
+def test_marking_constraint_not_applicable_requires_a_reason(client, create_project_payload):
+    project = client.post("/api/v1/projects", json=create_project_payload()).json()
+    constraint = client.post(
+        f"/api/v1/projects/{project['id']}/external-constraints",
+        json={"name": "专项备案", "is_blocking": True, "operator": "PMO"},
+    ).json()
+
+    response = client.post(
+        f"/api/v1/projects/{project['id']}/external-constraints/{constraint['id']}/actions",
+        json={"action": "mark_not_applicable", "operator": "PMO"},
+    )
+    assert response.status_code == 422
+
+
+def test_budget_source_is_explicit_and_switches_atomically(client, create_project_payload):
+    project = client.post("/api/v1/projects", json=create_project_payload()).json()
+    first = client.post(
+        f"/api/v1/projects/{project['id']}/external-constraints",
+        json={"name": "预算核定甲", "is_blocking": True, "operator": "PMO"},
+    ).json()
+    second = client.post(
+        f"/api/v1/projects/{project['id']}/external-constraints",
+        json={"name": "预算核定乙", "is_blocking": True, "operator": "PMO"},
+    ).json()
+
+    for constraint, budget, current in ((first, 88.5, True), (second, 90, False)):
+        response = client.post(
+            f"/api/v1/projects/{project['id']}/external-constraints/{constraint['id']}/actions",
+            json={
+                "action": "conclude",
+                "operator": "PMO",
+                "cleared": True,
+                "outcome": {"approved_budget": budget},
+                "set_effective_budget_source": current,
+                "reason": "登记预算核定结论",
+            },
+        )
+        assert response.status_code == 200
+
+    assert _listed_project(client, project["id"])["effective_budget"] == 88.5
+    switched = client.post(
+        f"/api/v1/projects/{project['id']}/external-constraints/{second['id']}/actions",
+        json={"action": "set_effective_budget_source", "operator": "PMO", "reason": "采用最新核定"},
+    )
+    assert switched.status_code == 200
+    assert _listed_project(client, project["id"])["effective_budget"] == 90
+    constraints = client.get(f"/api/v1/projects/{project['id']}/external-constraints").json()
+    assert sum(item["is_effective_budget_source"] for item in constraints) == 1
+
+
+def test_batch_template_scope_rejects_mismatched_project_type_before_creating(client, create_project_payload):
+    software = client.post("/api/v1/projects", json=create_project_payload(project_type="teaching_software")).json()
+    laboratory = client.post("/api/v1/projects", json=create_project_payload(name="场所项目", project_type="practical_teaching_site")).json()
+    template = client.post(
+        "/api/v1/external-constraint-templates",
+        json={"name": "软件专项审核", "scope_kind": "project_type", "scope_value": "software", "operator": "PMO"},
+    ).json()
+
+    response = client.post(
+        "/api/v1/projects/batch-external-constraints",
+        json={"project_ids": [software["id"], laboratory["id"]], "operator": "PMO", "constraints": [{"template_id": template["id"]}]},
+    )
+    assert response.status_code == 422
+    assert client.get(f"/api/v1/projects/{software['id']}/external-constraints").json() == []
+    assert client.get(f"/api/v1/projects/{laboratory['id']}/external-constraints").json() == []
+
+
+def test_constraint_template_rejects_unsupported_scope_kind(client):
+    response = client.post(
+        "/api/v1/external-constraint-templates",
+        json={"name": "无效范围模板", "scope_kind": "year", "operator": "PMO"},
+    )
+    assert response.status_code == 422
+
+
+def test_constraint_conclusion_is_visible_in_management_timeline(client, create_project_payload):
+    project = client.post("/api/v1/projects", json=create_project_payload()).json()
+    constraint = client.post(
+        f"/api/v1/projects/{project['id']}/external-constraints",
+        json={"name": "备案", "is_blocking": False, "operator": "PMO"},
+    ).json()
+    assert client.post(
+        f"/api/v1/projects/{project['id']}/external-constraints/{constraint['id']}/actions",
+        json={"action": "conclude", "operator": "PMO", "outcome": {"result": "已备案"}, "reason": "登记备案结果"},
+    ).status_code == 200
+
+    timeline = client.get(f"/api/v1/projects/{project['id']}/management-timeline").json()
+    assert any(item["kind"] == "EXTERNAL_CONSTRAINT_CONCLUDE" for item in timeline)

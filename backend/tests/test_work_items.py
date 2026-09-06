@@ -25,6 +25,18 @@ def test_include_in_advancement_is_explicit_pmo_action(client, create_project_pa
     assert response.json()["library_implementation_view"] == "advancing"
 
 
+def test_batch_advancement_preflight_rejects_mixed_projects_without_partial_writes(client, create_project_payload):
+    eligible = client.post("/api/v1/projects", json=create_project_payload(name="已立项项目")).json()
+    ineligible = client.post("/api/v1/projects", json=create_project_payload(name="未立项项目")).json()
+    client.post(f"/api/v1/projects/{eligible['id']}/pmo-override", json={"operator": "PMO", "comment": "测试立项", "to_status": "established"})
+    result = client.post(
+        "/api/v1/projects/batch-include-in-advancement",
+        json={"project_ids": [eligible["id"], ineligible["id"]], "operator": "PMO", "reason": "年度安排", "advancement_year": 2026},
+    )
+    assert result.status_code == 422
+    assert client.get(f"/api/v1/projects/{eligible['id']}").json()["stage"] == "项目库—未实施"
+
+
 def test_batch_work_items_are_projected_into_list_and_can_be_saved_as_a_package(client, create_project_payload):
     first = client.post("/api/v1/projects", json=create_project_payload(name="项目 A")).json()
     second = client.post("/api/v1/projects", json=create_project_payload(name="项目 B")).json()
@@ -64,7 +76,7 @@ def test_batch_work_items_are_projected_into_list_and_can_be_saved_as_a_package(
     templates = client.get("/api/v1/work-item-templates").json()
     packages = client.get("/api/v1/work-packages").json()
     assert any(item["name"] == "预算审核" for item in templates)
-    assert packages[0]["name"] == "采购前期准备"
+    assert any(package["name"] == "采购前期准备" for package in packages)
 
 
 def test_apply_work_package_and_batch_include_advancement(client, create_project_payload):
@@ -87,6 +99,72 @@ def test_apply_work_package_and_batch_include_advancement(client, create_project
     )
     assert advancement.status_code == 200
     assert advancement.json()["success"] == 1
+
+
+def test_default_pmo_package_starts_at_pmo_review_and_is_snapshotted(client, create_project_payload):
+    package = next(item for item in client.get("/api/v1/work-packages").json() if item["name"] == "未立项 PMO 工作包")
+    assert [item["name"] for item in package["items"]] == [
+        "PMO 审核", "校外专家/小组评审", "实验室建设与管理委员会", "校长办公会", "党委会", "立项发文",
+    ]
+
+    project = client.post("/api/v1/projects", json=create_project_payload()).json()
+    assert client.get(f"/api/v1/projects/{project['id']}/work-items").json() == []
+    assert client.post("/api/v1/projects/apply-work-package", json={"project_ids": [project["id"]], "package_id": package["id"], "operator": "PMO"}).status_code == 200
+    items = client.get(f"/api/v1/projects/{project['id']}/work-items").json()
+    assert [item["name"] for item in items] == [entry["name"] for entry in package["items"]]
+    listed = next(item for item in client.get("/api/v1/projects", params={"page_size": 20}).json()["items"] if item["id"] == project["id"])
+    assert listed["next_key_node"]["name"] == "PMO 审核"
+
+
+def test_updating_a_package_changes_future_applications_not_existing_items(client, create_project_payload):
+    package = client.post("/api/v1/work-packages", json={"name": "评审包", "operator": "PMO", "items": [{"name": "PMO 审核", "flow_group": "main", "sequence_rank": 100}]}).json()
+    first = client.post("/api/v1/projects", json=create_project_payload(name="项目 A")).json()
+    assert client.post("/api/v1/projects/apply-work-package", json={"project_ids": [first["id"]], "package_id": package["id"], "operator": "PMO"}).status_code == 200
+
+    updated = client.patch("/api/v1/work-packages/" + str(package["id"]), json={"operator": "PMO", "name": "更新后的评审包", "items": [{"name": "党委会", "flow_group": "main", "sequence_rank": 600}]})
+    assert updated.status_code == 200
+    assert updated.json()["id"] == package["id"]
+    assert updated.json()["name"] == "更新后的评审包"
+    second = client.post("/api/v1/projects", json=create_project_payload(name="项目 B")).json()
+    assert client.post("/api/v1/projects/apply-work-package", json={"project_ids": [second["id"]], "package_id": package["id"], "operator": "PMO"}).status_code == 200
+    assert [item["name"] for item in client.get(f"/api/v1/projects/{first['id']}/work-items").json()] == ["PMO 审核"]
+    assert [item["name"] for item in client.get(f"/api/v1/projects/{second['id']}/work-items").json()] == ["党委会"]
+
+
+def test_package_order_is_normalized_and_applied_to_future_projects(client, create_project_payload):
+    package = client.post(
+        "/api/v1/work-packages",
+        json={"name": "排序包", "operator": "PMO", "items": [
+            {"name": "党委会", "flow_group": "main", "sequence_rank": 600},
+            {"name": "PMO 审核", "flow_group": "main", "sequence_rank": 100},
+        ]},
+    ).json()
+    updated = client.patch(
+        f"/api/v1/work-packages/{package['id']}",
+        json={"operator": "PMO", "items": [
+            {"name": "党委会", "flow_group": "main", "sequence_rank": 600},
+            {"name": "PMO 审核", "flow_group": "main", "sequence_rank": 100},
+        ]},
+    )
+    assert updated.status_code == 200
+    assert [item["sequence_rank"] for item in updated.json()["items"]] == [100, 200]
+
+    project = client.post("/api/v1/projects", json=create_project_payload()).json()
+    assert client.post("/api/v1/projects/apply-work-package", json={"project_ids": [project["id"]], "package_id": package["id"], "operator": "PMO"}).status_code == 200
+    assert [item["name"] for item in client.get(f"/api/v1/projects/{project['id']}/work-items").json()] == ["党委会", "PMO 审核"]
+
+
+def test_quick_update_saves_work_item_and_progress_log_together(client, create_project_payload):
+    project = client.post("/api/v1/projects", json=create_project_payload()).json()
+    item = client.post(f"/api/v1/projects/{project['id']}/work-items", json={"name": "PMO 审核", "operator": "PMO"}).json()
+    updated = client.post(
+        f"/api/v1/projects/{project['id']}/work-items/{item['id']}/quick-update",
+        json={"operator": "PMO", "status": "in_progress", "progress_content": "已通知学院补齐材料"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["work_item"]["status"] == "in_progress"
+    logs = client.get(f"/api/v1/projects/{project['id']}/work-items/{item['id']}/progress-logs").json()
+    assert [log["content"] for log in logs] == ["已通知学院补齐材料"]
 
 
 def test_progress_summary_prioritizes_overdue_items_before_waiting_external(client, create_project_payload):
@@ -155,6 +233,19 @@ def test_main_flow_order_skips_cancelled_and_paused_item_blocks_key_node(client,
     projection = next(item for item in client.get("/api/v1/projects", params={"page_size": 20}).json()["items"] if item["id"] == project["id"])
     assert projection["next_key_node"]["name"] == "专家评审"
     assert first["flow_group"] == "main"
+
+
+def test_project_main_flow_can_be_reordered_without_exposing_ranks(client, create_project_payload):
+    project = client.post("/api/v1/projects", json=create_project_payload()).json()
+    first = client.post(f"/api/v1/projects/{project['id']}/work-items", json={"name": "PMO 审核", "operator": "PMO", "flow_group": "main"}).json()
+    second = client.post(f"/api/v1/projects/{project['id']}/work-items", json={"name": "党委会", "operator": "PMO", "flow_group": "main"}).json()
+    reordered = client.post(
+        f"/api/v1/projects/{project['id']}/work-items/reorder",
+        json={"operator": "PMO", "item_ids": [second["id"], first["id"]]},
+    )
+    assert reordered.status_code == 200
+    assert [item["name"] for item in reordered.json()] == ["党委会", "PMO 审核"]
+    assert [item["sequence_rank"] for item in reordered.json()] == [100, 200]
 
 
 def test_advancement_cycle_can_be_deferred_and_restarted(client, create_project_payload):

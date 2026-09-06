@@ -34,3 +34,20 @@ def test_import_preview_and_commit(client):
     )
     assert commit.status_code == 200
     assert commit.json()["success"] == 1
+
+
+def test_import_uses_active_project_type_dictionary(client):
+    created = client.post(
+        "/api/v1/project-types",
+        json={"name": "教学设备项目", "code_prefix": "EQ", "sort_order": 3, "operator": "PMO"},
+    )
+    assert created.status_code == 200
+    df = pd.DataFrame([{"项目名称": "设备导入项目", "项目类型": "教学设备项目"}])
+    output = io.BytesIO()
+    df.to_excel(output, index=False)
+    preview = client.post(
+        "/api/v1/imports/projects/preview",
+        files={"file": ("equipment.xlsx", output.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert preview.status_code == 200
+    assert preview.json()["records"][0]["project_type"] == created.json()["code"]

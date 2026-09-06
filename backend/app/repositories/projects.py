@@ -12,6 +12,49 @@ GROUP_STATUS_MAP = {
     "abandoned": ["terminated"],
 }
 
+_STAGE_TERMINAL_STATUSES = "'closed','terminated'"
+_STAGE_UNESTABLISHED_STATUSES = "'draft','under_review'"
+
+
+def external_conditions_filter_condition(state: str, alias: str = "p") -> str | None:
+    """One predicate for list/export external-condition views.
+
+    A project is ready when it has no unresolved blocking constraint; an empty
+    constraint set is therefore ready by design.
+    """
+    unresolved = (
+        "EXISTS (SELECT 1 FROM project_external_constraints ec "
+        f"WHERE ec.project_id={alias}.id AND ec.is_blocking=1 "
+        "AND ec.clearance_status NOT IN ('cleared','not_applicable'))"
+    )
+    if state == "ongoing":
+        return unresolved
+    if state == "ready":
+        return f"NOT {unresolved}"
+    return None
+
+
+def stage_group_condition(group: str, alias: str = "p") -> str | None:
+    """Single SQL projection used by cards and list filters."""
+    if group == "pre_establish":
+        return f"{alias}.current_status IN ({_STAGE_UNESTABLISHED_STATUSES})"
+    if group == "completed":
+        return f"{alias}.current_status = 'closed'"
+    if group == "abandoned":
+        return f"{alias}.current_status = 'terminated'"
+    base = f"{alias}.current_status NOT IN ({_STAGE_UNESTABLISHED_STATUSES},{_STAGE_TERMINAL_STATUSES})"
+    if group == "pool_active":
+        # "推进中" is a PMO management view, not a mutually-exclusive Stage.
+        # Specially advanced unestablished projects stay in the 未立项 view too.
+        return (
+            f"(({base} AND COALESCE({alias}.library_implementation_view, 'unimplemented') = 'advancing') "
+            f"OR ({alias}.current_status IN ({_STAGE_UNESTABLISHED_STATUSES}) "
+            f"AND COALESCE({alias}.special_advancement_active, 0) = 1))"
+        )
+    if group == "pool_pending":
+        return f"({base} AND COALESCE({alias}.library_implementation_view, 'unimplemented') != 'advancing')"
+    return None
+
 
 def insert_project(conn: sqlite3.Connection, payload: dict) -> int:
     cursor = conn.execute(
@@ -19,8 +62,8 @@ def insert_project(conn: sqlite3.Connection, payload: dict) -> int:
         INSERT INTO projects (
             project_code, name, description, department, sponsor, project_manager,
             current_status, category, project_type, budget, approved_budget,
-            contract_amount, special_note, actual_start_date, actual_end_date, major, location
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            contract_amount, special_note, actual_start_date, actual_end_date, major, location, procurement_nature
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             payload["project_code"],
@@ -40,6 +83,7 @@ def insert_project(conn: sqlite3.Connection, payload: dict) -> int:
             payload.get("actual_end_date", ""),
             payload.get("major", ""),
             payload.get("location", ""),
+            payload.get("procurement_nature", ""),
         ),
     )
     return int(cursor.lastrowid)
@@ -70,6 +114,19 @@ def insert_status_history(
 def fetch_project_by_id(conn: sqlite3.Connection, project_id: int) -> dict | None:
     row = conn.execute("SELECT * FROM projects WHERE id = ? AND deleted_at IS NULL", (project_id,)).fetchone()
     return dict(row) if row else None
+
+
+def fetch_project_any_by_id(conn: sqlite3.Connection, project_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def restore_project(conn: sqlite3.Connection, project_id: int) -> bool:
+    cursor = conn.execute(
+        "UPDATE projects SET deleted_at=NULL, deleted_by='', deleted_reason='' WHERE id=? AND deleted_at IS NOT NULL",
+        (project_id,),
+    )
+    return cursor.rowcount > 0
 
 
 def fetch_projects_by_ids(conn: sqlite3.Connection, project_ids: list[int]) -> list[dict]:
@@ -148,7 +205,7 @@ def _order_clause(filters: dict) -> str:
     legacy_department_cases = " ".join(legacy_cases)
     legacy_department_rank = f"CASE {legacy_department_cases} ELSE {len(department_order)} END" if legacy_department_cases else "0"
     mapping = {
-        "project_type": "p.project_type",
+        "project_type": "CASE WHEN pt.sort_order IS NULL THEN 1 ELSE 0 END, pt.sort_order, p.project_type, CASE WHEN ds.sort_order IS NULL THEN 1 ELSE 0 END, ds.sort_order, p.department",
         "current_status": "p.current_status",
         "department": f"CASE WHEN ds.sort_order IS NULL THEN 1 ELSE 0 END, ds.sort_order, {legacy_department_rank}, p.department",
         "category": f"CASE WHEN pc.sort_order IS NULL THEN 1 ELSE 0 END, pc.sort_order, p.category, CASE WHEN ds.sort_order IS NULL THEN 1 ELSE 0 END, ds.sort_order, {legacy_department_rank}, p.department",
@@ -156,7 +213,7 @@ def _order_clause(filters: dict) -> str:
         "status_updated_at": "p.status_updated_at",
     }
     expression = mapping.get(sort_by, "status_updated_at")
-    if sort_by in {"department", "category"}:
+    if sort_by in {"department", "category", "project_type"}:
         return f"ORDER BY {expression} {sort_dir}, p.name {sort_dir}, p.project_code {sort_dir}"
     if sort_by == "implementation_year":
         return f"ORDER BY COALESCE(NULLIF({expression}, ''), '0000') {sort_dir}, updated_at DESC, id DESC"
@@ -164,40 +221,37 @@ def _order_clause(filters: dict) -> str:
 
 
 def fetch_project_page(conn: sqlite3.Connection, filters: dict) -> tuple[list[dict], int]:
-    conditions: list[str] = ["p.deleted_at IS NULL"]
+    # The only caller setting include_deleted is the PMO "已移除项目" view.
+    # Keep that view focused on recoverable projects instead of mixing active rows
+    # back into it.
+    conditions: list[str] = ["p.deleted_at IS NOT NULL"] if filters.get("include_deleted") else ["p.deleted_at IS NULL"]
     params: list[object] = []
     if filters.get("status"):
         conditions.append("current_status = ?")
         params.append(filters["status"])
     if filters.get("group"):
-        statuses = GROUP_STATUS_MAP.get(filters["group"])
-        if statuses:
-            conditions.append(f"current_status IN ({','.join('?' for _ in statuses)})")
-            params.extend(statuses)
+        condition = stage_group_condition(filters["group"])
+        if condition:
+            conditions.append(condition)
     if filters.get("advancement_status") == "special_active":
         conditions.append("special_advancement_active = 1")
-    if filters.get("external_conditions") == "ongoing":
-        conditions.extend([
-            "EXISTS (SELECT 1 FROM project_external_constraint_scope_confirmations ecs WHERE ecs.project_id=p.id)",
-            "EXISTS (SELECT 1 FROM project_external_constraints ec WHERE ec.project_id=p.id AND ec.is_blocking=1 AND ec.clearance_status NOT IN ('cleared','not_applicable'))",
-        ])
-    elif filters.get("external_conditions") == "ready":
-        conditions.append(
-            "(NOT EXISTS (SELECT 1 FROM project_external_constraints ec WHERE ec.project_id=p.id AND ec.is_blocking=1 AND ec.clearance_status NOT IN ('cleared','not_applicable')) "
-            "OR (EXISTS (SELECT 1 FROM project_external_constraint_scope_confirmations ecs WHERE ecs.project_id=p.id) "
-            "AND NOT EXISTS (SELECT 1 FROM project_external_constraints ec WHERE ec.project_id=p.id AND ec.is_blocking=1 AND ec.clearance_status != 'cleared')))"
-        )
+    external_condition = external_conditions_filter_condition(str(filters.get("external_conditions") or ""))
+    if external_condition:
+        conditions.append(external_condition)
     if filters.get("keyword"):
         conditions.append(
             "(name LIKE ? OR project_code LIKE ? OR description LIKE ? OR sponsor LIKE ? OR special_note LIKE ?)"
         )
         like_value = f"%{filters['keyword']}%"
         params.extend([like_value] * 5)
-    for field in ("department", "project_manager", "project_type", "category"):
+    for field in ("department", "project_manager", "category"):
         value = filters.get(field)
         if value:
             conditions.append(f"{field} = ?")
             params.append(value)
+    if filters.get("project_type"):
+        conditions.append("CASE project_type WHEN 'teaching_software' THEN 'software' WHEN 'practical_teaching_site' THEN 'laboratory' ELSE project_type END = ?")
+        params.append({"teaching_software": "software", "practical_teaching_site": "laboratory"}.get(filters["project_type"], filters["project_type"]))
     if filters.get("min_budget") is not None:
         conditions.append("budget >= ?")
         params.append(filters["min_budget"])
@@ -229,6 +283,7 @@ def fetch_project_page(conn: sqlite3.Connection, filters: dict) -> tuple[list[di
         f"""
         SELECT p.* FROM projects p
         LEFT JOIN project_categories pc ON pc.name = p.category
+        LEFT JOIN project_types pt ON pt.code = p.project_type
         LEFT JOIN department_settings ds ON ds.department = p.department
         {where_clause}
         {_order_clause(filters)}
@@ -249,34 +304,28 @@ def fetch_all_projects_for_export(conn: sqlite3.Connection, filters: dict) -> li
         conditions.append("current_status = ?")
         params.append(export_filters["status"])
     if export_filters.get("group"):
-        statuses = GROUP_STATUS_MAP.get(export_filters["group"])
-        if statuses:
-            conditions.append(f"current_status IN ({','.join('?' for _ in statuses)})")
-            params.extend(statuses)
+        condition = stage_group_condition(export_filters["group"])
+        if condition:
+            conditions.append(condition)
     if export_filters.get("advancement_status") == "special_active":
         conditions.append("special_advancement_active = 1")
-    if export_filters.get("external_conditions") == "ongoing":
-        conditions.extend([
-            "EXISTS (SELECT 1 FROM project_external_constraint_scope_confirmations ecs WHERE ecs.project_id=p.id)",
-            "EXISTS (SELECT 1 FROM project_external_constraints ec WHERE ec.project_id=p.id AND ec.is_blocking=1 AND ec.clearance_status NOT IN ('cleared','not_applicable'))",
-        ])
-    elif export_filters.get("external_conditions") == "ready":
-        conditions.append(
-            "(NOT EXISTS (SELECT 1 FROM project_external_constraints ec WHERE ec.project_id=p.id AND ec.is_blocking=1 AND ec.clearance_status NOT IN ('cleared','not_applicable')) "
-            "OR (EXISTS (SELECT 1 FROM project_external_constraint_scope_confirmations ecs WHERE ecs.project_id=p.id) "
-            "AND NOT EXISTS (SELECT 1 FROM project_external_constraints ec WHERE ec.project_id=p.id AND ec.is_blocking=1 AND ec.clearance_status != 'cleared')))"
-        )
+    external_condition = external_conditions_filter_condition(str(export_filters.get("external_conditions") or ""))
+    if external_condition:
+        conditions.append(external_condition)
     if export_filters.get("keyword"):
         conditions.append(
             "(name LIKE ? OR project_code LIKE ? OR description LIKE ? OR sponsor LIKE ? OR special_note LIKE ?)"
         )
         like_value = f"%{export_filters['keyword']}%"
         params.extend([like_value] * 5)
-    for field in ("department", "project_manager", "project_type", "category"):
+    for field in ("department", "project_manager", "category"):
         value = export_filters.get(field)
         if value:
             conditions.append(f"{field} = ?")
             params.append(value)
+    if export_filters.get("project_type"):
+        conditions.append("CASE project_type WHEN 'teaching_software' THEN 'software' WHEN 'practical_teaching_site' THEN 'laboratory' ELSE project_type END = ?")
+        params.append({"teaching_software": "software", "practical_teaching_site": "laboratory"}.get(export_filters["project_type"], export_filters["project_type"]))
     if export_filters.get("min_budget") is not None:
         conditions.append("budget >= ?")
         params.append(export_filters["min_budget"])
@@ -303,6 +352,7 @@ def fetch_all_projects_for_export(conn: sqlite3.Connection, filters: dict) -> li
         f"""
         SELECT p.* FROM projects p
         LEFT JOIN project_categories pc ON pc.name = p.category
+        LEFT JOIN project_types pt ON pt.code = p.project_type
         LEFT JOIN department_settings ds ON ds.department = p.department
         {where_clause}
         {_order_clause(export_filters)}

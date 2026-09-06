@@ -45,6 +45,47 @@ def test_completed_group_includes_contract_amount(client, create_project_payload
     assert completed["total_contract_amount"] == 66.0
 
 
+def test_included_project_uses_advancing_stage_for_groups_and_list(client, create_project_payload):
+    project = client.post("/api/v1/projects", json=create_project_payload(name="推进项目")).json()
+    client.post(f"/api/v1/projects/{project['id']}/transitions", json={"to_status": "under_review", "operator": "PMO", "operator_role": "PMO", "approver": "PMO", "comment": "历史流程"})
+    client.post(f"/api/v1/projects/{project['id']}/transitions", json={"to_status": "established", "operator": "PMO", "operator_role": "PMO", "approver": "PMO", "comment": "立项"})
+    client.post(f"/api/v1/projects/{project['id']}/transitions", json={"to_status": "submission_review", "operator": "PMO", "operator_role": "PMO", "comment": "历史送审"})
+    included = client.post(f"/api/v1/projects/{project['id']}/include-in-advancement", json={"operator": "PMO", "reason": "年度计划", "advancement_year": 2026})
+    assert included.status_code == 200
+
+    advancing = client.get("/api/v1/projects", params={"group": "pool_active"}).json()["items"]
+    pending = client.get("/api/v1/projects", params={"group": "pool_pending"}).json()["items"]
+    groups = {item["key"]: item for item in client.get("/api/v1/dashboard/groups").json()}
+
+    assert [item["id"] for item in advancing] == [project["id"]]
+    assert pending == []
+    assert groups["pool_active"]["count"] == 1
+
+
+def test_advancing_management_view_overlaps_special_unestablished_projects(client, create_project_payload):
+    normal = client.post("/api/v1/projects", json=create_project_payload(name="正常推进项目")).json()
+    client.post(f"/api/v1/projects/{normal['id']}/pmo-override", json={"operator": "PMO", "comment": "测试立项", "to_status": "established"})
+    assert client.post(
+        f"/api/v1/projects/{normal['id']}/include-in-advancement",
+        json={"operator": "PMO", "reason": "年度安排", "advancement_year": 2026},
+    ).status_code == 200
+
+    special = client.post("/api/v1/projects", json=create_project_payload(name="特批推进项目")).json()
+    assert client.post(
+        f"/api/v1/projects/{special['id']}/special-include-in-advancement",
+        json={"operator": "PMO", "reason": "窗口紧张", "approval_basis": "PMO 特批", "advancement_year": 2026},
+    ).status_code == 200
+
+    active_ids = {item["id"] for item in client.get("/api/v1/projects", params={"group": "pool_active"}).json()["items"]}
+    unestablished_ids = {item["id"] for item in client.get("/api/v1/projects", params={"group": "pre_establish"}).json()["items"]}
+    groups = {item["key"]: item for item in client.get("/api/v1/dashboard/groups").json()}
+
+    assert active_ids == {normal["id"], special["id"]}
+    assert special["id"] in unestablished_ids
+    assert groups["pool_active"]["label"] == "推进中"
+    assert groups["pool_active"]["count"] == 2
+
+
 def test_dashboard_summary_project_library_metrics(client, create_project_payload):
     client.post("/api/v1/projects", json=create_project_payload(name="草稿项目", budget=10))
     reviewing = client.post("/api/v1/projects", json=create_project_payload(name="评审项目", budget=20)).json()

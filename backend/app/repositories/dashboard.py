@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from backend.app.repositories.projects import GROUP_STATUS_MAP
+from backend.app.repositories.projects import GROUP_STATUS_MAP, stage_group_condition
 
 
 def fetch_budget_summary(conn: sqlite3.Connection) -> dict:
@@ -14,6 +14,7 @@ def fetch_budget_summary(conn: sqlite3.Connection) -> dict:
             COALESCE(SUM(approved_budget), 0) AS total_approved_budget,
             COALESCE(SUM(contract_amount), 0) AS total_contract_amount
         FROM projects
+        WHERE deleted_at IS NULL
         """
     ).fetchone()
     return dict(row)
@@ -47,6 +48,7 @@ def fetch_project_library_summary(
             ), 0)
                 AS reviewed_total_approved_budget
         FROM projects
+        WHERE deleted_at IS NULL
         """,
         [*library_statuses, *library_statuses, review_status, *reviewed_statuses, *reviewed_statuses],
     ).fetchone()
@@ -56,7 +58,7 @@ def fetch_project_library_summary(
 def fetch_group_budget_summaries(conn: sqlite3.Connection) -> dict[str, dict]:
     summaries: dict[str, dict] = {}
     for key, statuses in GROUP_STATUS_MAP.items():
-        placeholders = ",".join("?" for _ in statuses)
+        condition = stage_group_condition(key) or "0"
         row = conn.execute(
             f"""
             SELECT
@@ -64,10 +66,9 @@ def fetch_group_budget_summaries(conn: sqlite3.Connection) -> dict[str, dict]:
                 COALESCE(SUM(budget), 0) AS total_budget,
                 COALESCE(SUM(approved_budget), 0) AS total_approved_budget,
                 COALESCE(SUM(contract_amount), 0) AS total_contract_amount
-            FROM projects
-            WHERE current_status IN ({placeholders})
+            FROM projects p
+            WHERE p.deleted_at IS NULL AND {condition}
             """,
-            statuses,
         ).fetchone()
         summaries[key] = dict(row)
     return summaries

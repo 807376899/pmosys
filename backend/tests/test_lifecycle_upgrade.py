@@ -45,4 +45,4 @@ def test_dashboard_has_five_pmo_views(client):
         "completed",
         "abandoned",
     ]
-    assert response.json()[2]["label"] == "项目库-推进中"
+    assert response.json()[2]["label"] == "推进中"

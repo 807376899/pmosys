@@ -54,6 +54,8 @@ export interface Project {
   project_type: string | null;
   major?: string | null;
   location?: string | null;
+  procurement_nature?: "goods" | "service" | "mixed" | "" | null;
+  project_summary_display?: string | null;
   budget: number | null;
   approved_budget: number | null;
   contract_amount: number | null;
@@ -63,11 +65,15 @@ export interface Project {
   created_at: string | null;
   updated_at: string | null;
   status_updated_at: string | null;
+  deleted_at?: string | null;
+  deleted_reason?: string | null;
   stage?: string | null;
   work_item_summary?: WorkItemSummary[];
   work_item_count?: number;
+  active_work_item_count?: number;
   work_item_states?: Record<string, string>;
   next_key_node?: WorkItemSummary | null;
+  progress_focus_item?: WorkItemSummary | null;
   advancement?: { year: number | null; date: string | null; view: string; status?: "active" | "special_active" | "none" } | null;
   external_constraints_cleared?: "true" | "false" | "unknown" | null;
   external_constraint_count?: number;
@@ -148,6 +154,7 @@ export interface WorkItemSummary {
 export interface WorkItemTemplate {
   id: number;
   name: string;
+  default_content?: string;
   recommended_stage: string;
   execution_mode: string;
   completion_rule_json: string;
@@ -174,8 +181,11 @@ export interface ExternalConstraintTemplate {
   is_blocking: boolean | number;
   outcome_schema_json: Record<string, unknown>;
   project_field_effects_json: Record<string, unknown>;
-  scope_kind?: "all" | "year" | "project_type" | "manual";
+  scope_kind?: "all" | "project_type" | "manual";
   scope_value?: string;
+  effective_from?: string;
+  effective_until?: string;
+  applicability_basis?: string;
   archived_at?: string | null;
 }
 
@@ -184,6 +194,15 @@ export interface ProjectCategory {
   name: string;
   sort_order: number | null;
   is_active: boolean | number;
+}
+
+export interface ProjectTypeDefinition {
+  id: number;
+  code: string;
+  name: string;
+  code_prefix: string;
+  is_active: boolean | number;
+  sort_order: number | null;
 }
 
 export interface DepartmentSetting {
@@ -198,8 +217,10 @@ export interface ProjectExternalConstraint {
   handling_status: string;
   clearance_status: string;
   outcome_json: Record<string, unknown>;
+  template_snapshot_json?: { outcome_schema_json?: { kind?: string } };
   evidence_note: string;
   concluded_at?: string | null;
+  is_effective_budget_source?: boolean | number;
 }
 
 export interface WorkItemDraft {
@@ -225,6 +246,15 @@ export interface WorkItemProgressLog {
   operator: string;
   is_timeline_highlight: number;
   created_at: string;
+}
+
+export interface Milestone {
+  id: number;
+  title: string;
+  occurred_on: string;
+  result: string;
+  note: string;
+  is_void: boolean | number;
 }
 
 export interface ManagementTimelineEvent {

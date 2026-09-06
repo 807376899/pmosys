@@ -18,6 +18,9 @@ from backend.app.repositories import workflow as workflow_repo
 from backend.app.schemas.project import PATCHABLE_PROJECT_FIELDS, ProjectUpdate
 from backend.app.services.project_codes import generate_project_code, validate_manual_project_code
 
+_PROJECT_TYPE_ALIASES = {"teaching_software": "software", "practical_teaching_site": "laboratory"}
+_PROCUREMENT_NATURES = {"goods", "service", "mixed"}
+
 
 def transition_allows_budget_adjustment(from_status: str, to_status: str) -> bool:
     return from_status == "submission_review" or to_status == "submission_review"
@@ -26,7 +29,12 @@ def transition_allows_budget_adjustment(from_status: str, to_status: str) -> boo
 def create_project_internal(payload: dict) -> dict:
     with get_connection() as conn:
         project_code = payload.get("project_code", "").strip()
-        project_type = payload["project_type"]
+        project_type = _PROJECT_TYPE_ALIASES.get(payload["project_type"], payload["project_type"])
+        procurement_nature = str(payload.get("procurement_nature") or "").strip()
+        if project_type != "software":
+            procurement_nature = ""
+        elif procurement_nature and procurement_nature not in _PROCUREMENT_NATURES:
+            raise ValidationError("采购属性必须为 goods、service 或 mixed")
         if project_code:
             project_code = validate_manual_project_code(conn, project_code, project_type)
             if project_repo.project_code_exists(conn, project_code):
@@ -37,6 +45,8 @@ def create_project_internal(payload: dict) -> dict:
             conn,
             {
                 **payload,
+                "project_type": project_type,
+                "procurement_nature": procurement_nature,
                 "project_code": project_code,
                 "current_status": payload.get("current_status", "draft"),
             },
@@ -100,8 +110,6 @@ def _external_constraint_projection(conn: sqlite3.Connection, project_id: int, p
     # visible and actionable, but must not suppress this dashboard signal.
     if not blocking:
         cleared = "true"
-    elif not confirmed:
-        cleared = "unknown"
     elif any(row.get("clearance_status") != "cleared" for row in blocking):
         cleared = "false"
     else:
@@ -109,7 +117,7 @@ def _external_constraint_projection(conn: sqlite3.Connection, project_id: int, p
 
     effective_budget = None
     for row in rows:
-        if row.get("clearance_status") != "cleared":
+        if not row.get("is_effective_budget_source") or row.get("clearance_status") != "cleared":
             continue
         try:
             outcome = json.loads(row.get("outcome_json") or "{}")
@@ -154,6 +162,10 @@ def _hydrate_project_projection(conn: sqlite3.Connection, project: dict, *, omit
     project["work_item_count"] = len(work_items)
     project["work_item_states"] = {item["name"]: item["status"] for item in work_items}
     project["next_key_node"] = _next_key_node(work_items)
+    active_items = _active_work_items(work_items)
+    project["active_work_item_count"] = len(active_items)
+    project["progress_focus_item"] = _progress_focus_item(active_items, project["next_key_node"])
+    project["project_summary_display"] = _project_summary_display(conn, project)
     project.update(_external_constraint_projection(conn, project["id"], project))
     if omit_legacy_status:
         project.pop("current_status", None)
@@ -176,8 +188,54 @@ def _work_item_order(item: dict) -> tuple:
 
 
 def _work_item_summary(items: list[dict]) -> list[dict]:
-    active = [item for item in items if item.get("status") not in {"completed", "paused", "not_applicable"} and not item.get("cancelled_at") and not item.get("skipped_at")]
-    return [{"id": item["id"], "name": item["name"], "status": item["status"], "planned_date": item.get("planned_date") or "", "track_as_key_node": bool(item.get("track_as_key_node"))} for item in sorted(active, key=_work_item_order)[:2]]
+    return [_work_item_projection(item) for item in sorted(_active_work_items(items), key=_work_item_order)[:2]]
+
+
+def _active_work_items(items: list[dict]) -> list[dict]:
+    return [
+        item for item in items
+        if item.get("status") not in {"completed", "paused", "not_applicable"}
+        and not item.get("cancelled_at") and not item.get("skipped_at")
+    ]
+
+
+def _work_item_projection(item: dict) -> dict:
+    return {
+        "id": item["id"],
+        "name": item["name"],
+        "status": item["status"],
+        "planned_date": item.get("planned_date") or "",
+        "track_as_key_node": bool(item.get("track_as_key_node")),
+    }
+
+
+def _progress_focus_item(active_items: list[dict], next_key_node: dict | None) -> dict | None:
+    next_id = (next_key_node or {}).get("id")
+    candidates = [item for item in active_items if item["id"] != next_id]
+    if not candidates:
+        return None
+    status_rank = {"in_progress": 0, "waiting_external": 1, "not_started": 3}
+    candidates.sort(
+        key=lambda item: (
+            status_rank.get(item.get("status"), 9),
+            -int(bool(item.get("track_as_key_node"))),
+            item.get("planned_date") or "9999-12-31",
+            {"high": 0, "normal": 1, "low": 2}.get(item.get("priority"), 1),
+            item["id"],
+        )
+    )
+    return _work_item_projection(candidates[0])
+
+
+def _project_summary_display(conn: sqlite3.Connection, project: dict) -> str:
+    row = conn.execute("SELECT name FROM project_types WHERE code=?", (project.get("project_type"),)).fetchone()
+    name = row["name"] if row else "未分类"
+    if project.get("project_type") == "software":
+        nature = {"goods": "货物", "service": "服务", "mixed": "混合"}.get(project.get("procurement_nature"), "未设置")
+        return f"{name} · {nature}"
+    if project.get("project_type") == "laboratory":
+        return f"{name} · {project.get('location') or '未设置'}"
+    return name
 
 
 def _next_key_node(items: list[dict]) -> dict | None:
@@ -187,7 +245,7 @@ def _next_key_node(items: list[dict]) -> dict | None:
     if not candidates:
         return None
     item = sorted(candidates, key=_work_item_order)[0]
-    return {"id": item["id"], "name": item["name"], "status": item["status"], "planned_date": item.get("planned_date") or ""}
+    return _work_item_projection(item)
 
 
 def get_project(project_id: int) -> dict:
@@ -209,6 +267,13 @@ def update_project(project_id: int, payload: ProjectUpdate) -> dict:
         project = project_repo.fetch_project_by_id(conn, project_id)
         if not project:
             raise NotFoundError(f"项目不存在: {project_id}")
+        next_type = _PROJECT_TYPE_ALIASES.get(updates.get("project_type", project.get("project_type")), updates.get("project_type", project.get("project_type")))
+        if "project_type" in updates:
+            updates["project_type"] = next_type
+        if next_type != "software":
+            updates["procurement_nature"] = ""
+        elif "procurement_nature" in updates and updates["procurement_nature"] and updates["procurement_nature"] not in _PROCUREMENT_NATURES:
+            raise ValidationError("采购属性必须为 goods、service 或 mixed")
         if "project_type" in updates and project["project_code"]:
             updates["project_code"] = validate_manual_project_code(conn, project["project_code"], updates["project_type"])
         before = {field: project.get(field) for field in updates}
@@ -229,6 +294,23 @@ def delete_project(project_id: int, operator: str, reason: str) -> None:
             raise NotFoundError(f"项目不存在: {project_id}")
         project_repo.delete_project(conn, project_id, operator, reason)
         _audit(conn, project_id, "PROJECT_SOFT_DELETED", operator, reason, {"project_code": project["project_code"], "name": project["name"]})
+
+
+def restore_project(project_id: int, operator: str, reason: str) -> dict:
+    operator, reason = operator.strip(), reason.strip()
+    if not operator or not reason:
+        raise ValidationError("恢复项目必须填写操作人和原因")
+    with get_connection() as conn:
+        project = project_repo.fetch_project_any_by_id(conn, project_id)
+        if not project:
+            raise NotFoundError("项目不存在")
+        if not project.get("deleted_at"):
+            raise ValidationError("项目未处于移除状态")
+        project_repo.restore_project(conn, project_id)
+        _audit(conn, project_id, "PROJECT_RESTORED", operator, reason, {"project_code": project["project_code"], "name": project["name"]})
+        restored = project_repo.fetch_project_by_id(conn, project_id)
+        assert restored is not None
+        return _hydrate_project_projection(conn, restored)
 
 
 def get_project_history(project_id: int) -> list[dict]:
@@ -483,15 +565,22 @@ def create_external_constraint_template(payload: dict) -> dict:
     operator = str(payload.get("operator") or "").strip()
     if not name or not operator:
         raise ValidationError("约束名称和操作人不能为空")
+    scope_kind = str(payload.get("scope_kind") or "manual")
+    if scope_kind not in {"all", "project_type", "manual"}:
+        raise ValidationError("外部约束模板的适用范围仅支持全部项目、项目分类或手工指定")
+    if scope_kind == "project_type" and not str(payload.get("scope_value") or "").strip():
+        raise ValidationError("按项目分类适用时必须选择项目分类")
     with get_connection() as conn:
         conn.execute(
             """INSERT INTO external_constraint_templates
-            (name,recommended_stage,is_blocking,outcome_schema_json,project_field_effects_json,is_common,scope_kind,scope_value)
-            VALUES (?,?,?,?,?,?,?,?)
+            (name,recommended_stage,is_blocking,outcome_schema_json,project_field_effects_json,is_common,scope_kind,scope_value,effective_from,effective_until,applicability_basis)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(name) DO UPDATE SET recommended_stage=excluded.recommended_stage,
                 is_blocking=excluded.is_blocking,outcome_schema_json=excluded.outcome_schema_json,
                 project_field_effects_json=excluded.project_field_effects_json,is_common=excluded.is_common,
                 scope_kind=excluded.scope_kind,scope_value=excluded.scope_value,
+                effective_from=excluded.effective_from,effective_until=excluded.effective_until,
+                applicability_basis=excluded.applicability_basis,
                 archived_at=NULL,archived_by='',archived_reason=''""",
             (
                 name,
@@ -500,8 +589,11 @@ def create_external_constraint_template(payload: dict) -> dict:
                 json.dumps(payload.get("outcome_schema") or {}, ensure_ascii=False),
                 json.dumps(payload.get("project_field_effects") or {}, ensure_ascii=False),
                 int(bool(payload.get("is_common", True))),
-                str(payload.get("scope_kind") or "manual"),
+                scope_kind,
                 str(payload.get("scope_value") or ""),
+                str(payload.get("effective_from") or ""),
+                str(payload.get("effective_until") or ""),
+                str(payload.get("applicability_basis") or ""),
             ),
         )
         row = conn.execute("SELECT * FROM external_constraint_templates WHERE name=?", (name,)).fetchone()
@@ -600,10 +692,26 @@ def update_template(kind: str, template_id: int, payload: dict) -> dict:
     if not operator:
         raise ValidationError("编辑模板必须填写操作人")
     table = _template_table(kind)
+    if kind == "work_package" and "items" in payload:
+        with get_connection() as conn:
+            current = _get_work_package(conn, template_id)
+            name = str(payload.get("name") or current["name"]).strip()
+            items = _normalise_package_items(payload.get("items") or [])
+            if not name or not items:
+                raise ValidationError("工作包名称和事项不能为空")
+            constraints = payload.get("constraints", current.get("constraints") or [])
+            duplicate = conn.execute("SELECT id FROM work_packages WHERE name=? AND id<>?", (name, template_id)).fetchone()
+            if duplicate:
+                raise ValidationError("工作包名称已存在")
+            conn.execute("UPDATE work_packages SET name=?, constraints_json=? WHERE id=?", (name, json.dumps(constraints, ensure_ascii=False), template_id))
+            conn.execute("DELETE FROM work_package_items WHERE package_id=?", (template_id,))
+            for index, item in enumerate(items):
+                conn.execute("INSERT INTO work_package_items (package_id,item_json,sort_order) VALUES (?,?,?)", (template_id, json.dumps(item, ensure_ascii=False), index))
+            return _get_work_package(conn, template_id)
     allowed = {
-        "work_item": {"name", "recommended_stage", "execution_mode", "completion_rule_json", "is_common", "flow_group", "sequence_rank", "stage_view_priority"},
+        "work_item": {"name", "default_content", "recommended_stage", "execution_mode", "completion_rule_json", "is_common", "flow_group", "sequence_rank", "stage_view_priority"},
         "work_package": {"name", "constraints_json"},
-        "external_constraint": {"name", "recommended_stage", "is_blocking", "outcome_schema_json", "project_field_effects_json", "is_common", "scope_kind", "scope_value"},
+        "external_constraint": {"name", "recommended_stage", "is_blocking", "outcome_schema_json", "project_field_effects_json", "is_common", "scope_kind", "scope_value", "effective_from", "effective_until", "applicability_basis"},
     }[kind]
     updates = {key: value for key, value in payload.items() if key in allowed}
     if not updates:
@@ -615,6 +723,13 @@ def update_template(kind: str, template_id: int, payload: dict) -> dict:
         row = conn.execute(f"SELECT * FROM {table} WHERE id=?", (template_id,)).fetchone()
         if not row:
             raise NotFoundError("模板不存在")
+        if kind == "external_constraint":
+            scope_kind = str(updates.get("scope_kind", row["scope_kind"]) or "manual")
+            scope_value = str(updates.get("scope_value", row["scope_value"]) or "").strip()
+            if scope_kind not in {"all", "project_type", "manual"}:
+                raise ValidationError("外部约束模板的适用范围仅支持全部项目、项目分类或手工指定")
+            if scope_kind == "project_type" and not scope_value:
+                raise ValidationError("按项目分类适用时必须选择项目分类")
         assignments = ", ".join(f"{key}=?" for key in updates)
         conn.execute(f"UPDATE {table} SET {assignments} WHERE id=?", [*updates.values(), template_id])
         result = conn.execute(f"SELECT * FROM {table} WHERE id=?", (template_id,)).fetchone()
@@ -628,6 +743,21 @@ def _serialize_template_result(kind: str, row: dict) -> dict:
     return row
 
 
+def _normalise_package_items(items: list[dict]) -> list[dict]:
+    """The package array is the PMO-facing order; ranks stay internal."""
+    main_rank = 100
+    result: list[dict] = []
+    for item in items:
+        entry = dict(item)
+        if entry.get("flow_group") == "main":
+            entry["sequence_rank"] = main_rank
+            main_rank += 100
+        else:
+            entry.pop("sequence_rank", None)
+        result.append(entry)
+    return result
+
+
 def _serialize_project_constraint(constraint: dict) -> dict:
     result = dict(constraint)
     for field in ("template_snapshot_json", "outcome_json"):
@@ -636,6 +766,25 @@ def _serialize_project_constraint(constraint: dict) -> dict:
         except json.JSONDecodeError:
             result[field] = {}
     return result
+
+
+def _template_applies_to_project(template: dict, project: dict) -> bool:
+    """Scope metadata is a PMO guardrail, never a date or stage inference engine."""
+    if template.get("scope_kind") != "project_type":
+        return True
+    expected = _PROJECT_TYPE_ALIASES.get(str(template.get("scope_value") or ""), str(template.get("scope_value") or ""))
+    actual = _PROJECT_TYPE_ALIASES.get(str(project.get("project_type") or ""), str(project.get("project_type") or ""))
+    return bool(expected) and actual == expected
+
+
+def _validate_constraint_scope(conn: sqlite3.Connection, project_id: int, template: dict | None) -> None:
+    if not template:
+        return
+    project = project_repo.fetch_project_by_id(conn, project_id)
+    if not project:
+        raise NotFoundError("项目不存在")
+    if not _template_applies_to_project(template, project):
+        raise ValidationError(f"外部约束模板“{template['name']}”不适用于项目“{project['name']}”的项目分类")
 
 
 def create_project_external_constraint(project_id: int, payload: dict) -> dict:
@@ -651,6 +800,7 @@ def create_project_external_constraint(project_id: int, payload: dict) -> dict:
             if not template:
                 raise NotFoundError("外部约束模板不存在")
             template = _serialize_constraint_template(dict(template))
+        _validate_constraint_scope(conn, project_id, template)
         name = str(payload.get("name") or (template or {}).get("name") or "").strip()
         if not name:
             raise ValidationError("外部约束名称不能为空")
@@ -715,6 +865,16 @@ def batch_create_project_external_constraints(payload: dict) -> dict:
                 item["template_id"] = template_id
             prepared.append(item)
         constraints = prepared
+    with get_connection() as conn:
+        for project_id in project_ids:
+            for constraint in constraints:
+                template = None
+                if constraint.get("template_id"):
+                    row = conn.execute("SELECT * FROM external_constraint_templates WHERE id=?", (constraint["template_id"],)).fetchone()
+                    if not row:
+                        raise NotFoundError("外部约束模板不存在")
+                    template = _serialize_constraint_template(dict(row))
+                _validate_constraint_scope(conn, project_id, template)
     count = 0
     for project_id in project_ids:
         for constraint in constraints:
@@ -743,40 +903,69 @@ def confirm_external_constraint_scope(project_id: int, payload: dict) -> dict:
 def act_on_project_external_constraint(project_id: int, constraint_id: int, payload: dict) -> dict:
     operator = str(payload.get("operator") or "").strip()
     action = str(payload.get("action") or "").strip()
-    if not operator or action not in {"begin", "needs_supplement", "conclude", "mark_not_applicable", "invalidate"}:
+    if not operator or action not in {"begin", "needs_supplement", "conclude", "mark_not_applicable", "invalidate", "set_effective_budget_source"}:
         raise ValidationError("请提供有效的约束办理动作和操作人")
     with get_connection() as conn:
         row = conn.execute("SELECT * FROM project_external_constraints WHERE id=? AND project_id=?", (constraint_id, project_id)).fetchone()
         if not row:
             raise NotFoundError("外部约束不存在")
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        current = dict(row)
+        reason = str(payload.get("reason") or "").strip()
         updates: dict[str, object] = {"updated_at": now}
         if action == "begin":
             updates.update({"handling_status": "in_progress", "clearance_status": "unresolved"})
         elif action == "needs_supplement":
+            if not reason:
+                raise ValidationError("要求补充必须填写说明")
             updates.update({"handling_status": "needs_supplement", "clearance_status": "unresolved"})
         elif action == "conclude":
+            outcome = payload.get("outcome") or {}
+            if not isinstance(outcome, dict):
+                raise ValidationError("结论内容格式不正确")
+            make_source = bool(payload.get("set_effective_budget_source"))
+            if make_source and (not bool(payload.get("cleared")) or not isinstance(outcome.get("approved_budget"), (int, float))):
+                raise ValidationError("设为当前有效预算来源需要已解除阻断的核定金额")
+            if make_source:
+                conn.execute("UPDATE project_external_constraints SET is_effective_budget_source=0 WHERE project_id=?", (project_id,))
             updates.update({
                 "handling_status": "concluded",
                 "clearance_status": "cleared" if bool(payload.get("cleared")) else "unresolved",
-                "outcome_json": json.dumps(payload.get("outcome") or {}, ensure_ascii=False),
+                "outcome_json": json.dumps(outcome, ensure_ascii=False),
                 "evidence_note": str(payload.get("evidence_note") or ""),
-                "concluded_at": now,
+                "concluded_at": str(payload.get("concluded_on") or now[:10]),
                 "concluded_by": operator,
+                "is_effective_budget_source": int(make_source),
             })
         elif action == "mark_not_applicable":
-            updates.update({"handling_status": "not_applicable", "clearance_status": "not_applicable"})
-        else:
-            reason = str(payload.get("reason") or "").strip()
+            if not reason:
+                raise ValidationError("标记不适用必须填写原因")
+            updates.update({"handling_status": "not_started", "clearance_status": "not_applicable", "is_effective_budget_source": 0})
+        elif action == "invalidate":
             if not reason:
                 raise ValidationError("结论失效必须填写原因")
             updates.update({
                 "handling_status": "in_progress", "clearance_status": "unresolved", "invalidated_at": now,
-                "invalidated_by": operator, "invalidated_reason": reason,
+                "invalidated_by": operator, "invalidated_reason": reason, "is_effective_budget_source": 0,
             })
+        else:
+            try:
+                outcome = json.loads(current.get("outcome_json") or "{}")
+            except json.JSONDecodeError:
+                outcome = {}
+            if current.get("handling_status") != "concluded" or current.get("clearance_status") != "cleared" or not isinstance(outcome.get("approved_budget"), (int, float)):
+                raise ValidationError("仅已解除的预算核定结论可设为当前有效预算来源")
+            if not reason:
+                raise ValidationError("切换当前有效预算来源必须填写原因")
+            conn.execute("UPDATE project_external_constraints SET is_effective_budget_source=0 WHERE project_id=?", (project_id,))
+            updates["is_effective_budget_source"] = 1
         assignments = ", ".join(f"{field}=?" for field in updates)
         conn.execute(f"UPDATE project_external_constraints SET {assignments} WHERE id=?", [*updates.values(), constraint_id])
-        _audit(conn, project_id, f"EXTERNAL_CONSTRAINT_{action.upper()}", operator, str(payload.get("reason") or ""), {"constraint_id": constraint_id})
+        _audit(conn, project_id, f"EXTERNAL_CONSTRAINT_{action.upper()}", operator, reason, {
+            "constraint_id": constraint_id,
+            "before": {"handling_status": current.get("handling_status"), "clearance_status": current.get("clearance_status"), "outcome_json": current.get("outcome_json"), "is_effective_budget_source": current.get("is_effective_budget_source")},
+            "after": {**updates, "outcome": payload.get("outcome") if action == "conclude" else None},
+        })
         result = conn.execute("SELECT * FROM project_external_constraints WHERE id=?", (constraint_id,)).fetchone()
         assert result is not None
         return _serialize_project_constraint(dict(result))
@@ -852,6 +1041,27 @@ def _renumber_main_flow(conn: sqlite3.Connection, project_id: int) -> None:
         conn.execute("UPDATE project_work_items SET sequence_rank=? WHERE id=?", (index * 100, row["id"]))
 
 
+def reorder_main_work_items(project_id: int, payload: dict) -> list[dict]:
+    operator = str(payload.get("operator") or "").strip()
+    item_ids = [int(item_id) for item_id in payload.get("item_ids") or []]
+    if not operator or not item_ids:
+        raise ValidationError("操作人和主流程事项顺序不能为空")
+    if len(item_ids) != len(set(item_ids)):
+        raise ValidationError("主流程事项不能重复")
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT id FROM project_work_items WHERE project_id=? AND flow_group='main' AND id IN ({','.join('?' for _ in item_ids)})",
+            [project_id, *item_ids],
+        ).fetchall()
+        if {row["id"] for row in rows} != set(item_ids):
+            raise ValidationError("只能重排当前项目的主流程事项")
+        for index, item_id in enumerate(item_ids, start=1):
+            conn.execute("UPDATE project_work_items SET sequence_rank=?,updated_at=? WHERE id=?", (index * 100, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), item_id))
+        _audit(conn, project_id, "WORK_ITEM_REORDERED", operator, payload={"item_ids": item_ids})
+        items = [dict(row) for row in conn.execute("SELECT * FROM project_work_items WHERE project_id=?", (project_id,)).fetchall()]
+        return [_serialize_work_item(item) for item in sorted(items, key=_work_item_order)]
+
+
 def _serialize_work_item(item: dict) -> dict:
     item = dict(item)
     for field in ("completion_rule_snapshot", "completion_record_json"):
@@ -877,6 +1087,36 @@ def update_work_item(project_id: int, item_id: int, payload: dict) -> dict:
         conn.execute(f"UPDATE project_work_items SET {assignments} WHERE id=?", [*updates.values(), item_id])
         _audit(conn, project_id, "WORK_ITEM_UPDATED", operator, payload={"work_item_id": item_id, "fields": list(updates)})
         return _serialize_work_item(dict(conn.execute("SELECT * FROM project_work_items WHERE id=?", (item_id,)).fetchone()))
+
+
+def quick_update_work_item(project_id: int, item_id: int, payload: dict) -> dict:
+    """Save item fields and an optional progress entry atomically."""
+    operator = str(payload.get("operator") or "").strip()
+    progress_content = str(payload.get("progress_content") or "").strip()
+    if not operator:
+        raise ValidationError("操作人不能为空")
+    updates = {key: value for key, value in payload.items() if key in {"status", "track_as_key_node", "planned_date"}}
+    if not updates and not progress_content:
+        raise ValidationError("请至少保存事项变更或进展记录")
+    with get_connection() as conn:
+        item = conn.execute("SELECT * FROM project_work_items WHERE id=? AND project_id=?", (item_id, project_id)).fetchone()
+        if not item:
+            raise NotFoundError("事项不存在")
+        if updates:
+            updates["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            assignments = ", ".join(f"{field}=?" for field in updates)
+            conn.execute(f"UPDATE project_work_items SET {assignments} WHERE id=?", [*updates.values(), item_id])
+            _audit(conn, project_id, "WORK_ITEM_UPDATED", operator, payload={"work_item_id": item_id, "fields": list(updates)})
+        log = None
+        if progress_content:
+            cursor = conn.execute(
+                "INSERT INTO work_item_progress_logs (project_work_item_id,content,operator,is_timeline_highlight) VALUES (?,?,?,?)",
+                (item_id, progress_content, operator, int(bool(payload.get("is_timeline_highlight")))),
+            )
+            log = dict(conn.execute("SELECT * FROM work_item_progress_logs WHERE id=?", (cursor.lastrowid,)).fetchone())
+            _audit(conn, project_id, "WORK_ITEM_PROGRESS_RECORDED", operator, payload={"work_item_id": item_id, "progress_log_id": log["id"], "highlight": bool(log["is_timeline_highlight"])})
+        updated = _serialize_work_item(dict(conn.execute("SELECT * FROM project_work_items WHERE id=?", (item_id,)).fetchone()))
+        return {"work_item": updated, "progress_log": log}
 
 
 def cancel_work_item(project_id: int, item_id: int, payload: dict) -> dict:
@@ -926,7 +1166,7 @@ def batch_create_work_items(payload: dict) -> dict:
 def _save_work_item_template(conn: sqlite3.Connection, payload: dict) -> dict:
     name = str(payload.get("name") or "").strip()
     rule = _completion_rule(payload)
-    conn.execute("INSERT OR IGNORE INTO work_item_templates (name,recommended_stage,execution_mode,completion_rule_json,is_common,flow_group,sequence_rank) VALUES (?,?,?,?,1,?,?)", (name, payload.get("recommended_stage") or "", payload.get("execution_mode") or "tracking", json.dumps(rule, ensure_ascii=False), payload.get("flow_group") or "independent", int(payload.get("sequence_rank") or 1000)))
+    conn.execute("INSERT OR IGNORE INTO work_item_templates (name,default_content,recommended_stage,execution_mode,completion_rule_json,is_common,flow_group,sequence_rank) VALUES (?,?,?,?,?,1,?,?)", (name, payload.get("content") or payload.get("default_content") or "", payload.get("recommended_stage") or "", payload.get("execution_mode") or "tracking", json.dumps(rule, ensure_ascii=False), payload.get("flow_group") or "independent", int(payload.get("sequence_rank") or 1000)))
     return dict(conn.execute("SELECT * FROM work_item_templates WHERE name=?", (name,)).fetchone())
 
 
@@ -950,7 +1190,7 @@ def _save_work_package(conn: sqlite3.Connection, name: str, items: list[dict], c
     package = dict(conn.execute("SELECT * FROM work_packages WHERE name=?", (name,)).fetchone())
     conn.execute("UPDATE work_packages SET constraints_json=? WHERE id=?", (json.dumps(constraints or [], ensure_ascii=False), package["id"]))
     conn.execute("DELETE FROM work_package_items WHERE package_id=?", (package["id"],))
-    for index, item in enumerate(items):
+    for index, item in enumerate(_normalise_package_items(items)):
         conn.execute("INSERT INTO work_package_items (package_id,item_json,sort_order) VALUES (?,?,?)", (package["id"], json.dumps(item, ensure_ascii=False), index))
     return _get_work_package(conn, package["id"])
 
@@ -998,6 +1238,15 @@ def apply_work_package(payload: dict) -> dict:
 
 def batch_include_in_advancement(payload: dict) -> dict:
     project_ids = list(dict.fromkeys(payload.get("project_ids") or []))
+    if not project_ids:
+        raise ValidationError("请选择项目")
+    with get_connection() as conn:
+        projects = project_repo.fetch_projects_by_ids(conn, project_ids)
+        if len(projects) != len(project_ids):
+            raise NotFoundError("项目不存在")
+        invalid = [project["name"] for project in projects if _project_stage(project) != "项目库—未实施"]
+        if invalid:
+            raise ValidationError(f"仅项目库—未实施项目可纳入推进：{'、'.join(invalid)}")
     success = 0
     for project_id in project_ids:
         include_in_advancement(project_id, payload)
@@ -1007,6 +1256,15 @@ def batch_include_in_advancement(payload: dict) -> dict:
 
 def batch_defer_advancement(payload: dict) -> dict:
     project_ids = list(dict.fromkeys(payload.get("project_ids") or []))
+    if not project_ids:
+        raise ValidationError("请选择项目")
+    with get_connection() as conn:
+        projects = project_repo.fetch_projects_by_ids(conn, project_ids)
+        if len(projects) != len(project_ids):
+            raise NotFoundError("项目不存在")
+        invalid = [project["name"] for project in projects if project.get("library_implementation_view") != "advancing" and not project.get("special_advancement_active")]
+        if invalid:
+            raise ValidationError(f"仅推进中或特批推进中项目可暂缓推进：{'、'.join(invalid)}")
     for project_id in project_ids:
         defer_advancement(project_id, payload)
     return {"total": len(project_ids), "success": len(project_ids)}
@@ -1235,9 +1493,21 @@ def get_management_timeline(project_id: int) -> list[dict]:
             item = dict(row)
             labels = {
                 "PROJECT_INCLUDED_IN_ADVANCEMENT": "纳入年度推进",
+                "PROJECT_SPECIAL_INCLUDED_IN_ADVANCEMENT": "特批纳入推进",
+                "PROJECT_ADVANCEMENT_DEFERRED": "暂缓年度推进",
+                "PROJECT_ADVANCEMENT_COMPLETED": "结束年度推进周期",
                 "WORK_ITEM_CREATED": "新增跟踪事项",
+                "WORK_ITEM_CANCELLED": "取消跟踪事项",
+                "WORK_ITEM_SKIPPED": "跳过主流程节点",
                 "WORK_ITEM_COMPLETED": "事项已完成",
                 "WORK_ITEM_REOPENED": "事项已重开",
+                "EXTERNAL_CONSTRAINT_CREATED": "新增外部约束",
+                "EXTERNAL_CONSTRAINT_BEGIN": "开始办理外部约束",
+                "EXTERNAL_CONSTRAINT_NEEDS_SUPPLEMENT": "外部约束需补充",
+                "EXTERNAL_CONSTRAINT_CONCLUDE": "形成外部约束结论",
+                "EXTERNAL_CONSTRAINT_MARK_NOT_APPLICABLE": "外部约束标记为不适用",
+                "EXTERNAL_CONSTRAINT_INVALIDATE": "外部约束结论失效",
+                "EXTERNAL_CONSTRAINT_SET_EFFECTIVE_BUDGET_SOURCE": "切换当前有效预算来源",
             }
             if item["event_type"] in labels:
                 events.append({"id": f"audit-{item['id']}", "summary": labels[item["event_type"]], "created_at": item["created_at"], "operator": item["operator"], "kind": item["event_type"]})

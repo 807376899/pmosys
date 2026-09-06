@@ -70,6 +70,43 @@ def test_unestablished_special_advancement_keeps_stage_and_exposes_management_la
     assert [item["id"] for item in listed] == [project["id"]]
 
 
+def test_project_list_projects_next_node_and_one_separate_focus_item(client, create_project_payload):
+    project = client.post("/api/v1/projects", json=create_project_payload()).json()
+    first = client.post(
+        f"/api/v1/projects/{project['id']}/work-items",
+        json={"name": "PMO 审核", "flow_group": "main", "sequence_rank": 100, "status": "not_started", "operator": "PMO"},
+    ).json()
+    client.post(
+        f"/api/v1/projects/{project['id']}/work-items",
+        json={"name": "等待外部预算结论", "flow_group": "independent", "status": "waiting_external", "operator": "PMO"},
+    )
+    client.post(
+        f"/api/v1/projects/{project['id']}/work-items",
+        json={"name": "材料补充", "flow_group": "independent", "status": "in_progress", "operator": "PMO"},
+    )
+
+    listed = client.get("/api/v1/projects").json()["items"]
+    projection = next(item for item in listed if item["id"] == project["id"])
+    assert projection["next_key_node"]["id"] == first["id"]
+    assert projection["progress_focus_item"]["name"] == "材料补充"
+    assert projection["active_work_item_count"] == 3
+
+
+def test_project_projection_exposes_a_single_category_summary_display(client, create_project_payload):
+    software = client.post(
+        "/api/v1/projects",
+        json=create_project_payload(project_type="software", procurement_nature="service"),
+    ).json()
+    laboratory = client.post(
+        "/api/v1/projects",
+        json=create_project_payload(project_type="laboratory", location="下沙实验室"),
+    ).json()
+
+    listed = {item["id"]: item for item in client.get("/api/v1/projects").json()["items"]}
+    assert listed[software["id"]]["project_summary_display"] == "专业教学软件项目 · 服务"
+    assert listed[laboratory["id"]]["project_summary_display"] == "实践教学场所项目 · 下沙实验室"
+
+
 def test_category_and_department_dictionary_order_project_lists(client, create_project_payload):
     client.post("/api/v1/meta/project-categories", json={"name": "教学软件项目", "sort_order": 20, "operator": "PMO"})
     client.post("/api/v1/meta/project-categories", json={"name": "实验室建设项目", "sort_order": 10, "operator": "PMO"})

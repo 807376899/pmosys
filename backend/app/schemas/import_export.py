@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 from backend.app.schemas.common import APIModel
-from backend.app.schemas.project import ProjectType
-
-
 class ImportPreviewRecord(APIModel):
     row_number: int
     project_code: str
@@ -14,7 +11,9 @@ class ImportPreviewRecord(APIModel):
     project_manager: str = ""
     current_status: str = "draft"
     category: str = ""
-    project_type: ProjectType
+    # Project types are administered from SQLite.  The old enum is retained
+    # only for historic import aliases, not as a runtime restriction.
+    project_type: str
     budget: float = 0
     approved_budget: float | None = None
     contract_amount: float | None = None

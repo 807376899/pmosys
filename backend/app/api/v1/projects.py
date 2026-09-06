@@ -23,6 +23,7 @@ from backend.app.schemas.project import (
 from backend.app.services.projects import (
     create_project,
     delete_project,
+    restore_project,
     execute_batch_transition,
     get_project,
     get_project_history,
@@ -33,7 +34,7 @@ from backend.app.services.projects import (
     pmo_override_project,
     complete_submission_review,
     create_work_item, complete_work_item, reopen_work_item, include_in_advancement, get_audit_events, get_work_items,
-    batch_create_work_items, batch_include_in_advancement, batch_defer_advancement, apply_work_package, update_work_item,
+    batch_create_work_items, batch_include_in_advancement, batch_defer_advancement, apply_work_package, update_work_item, quick_update_work_item, reorder_main_work_items,
     create_progress_log, get_progress_logs, update_progress_log, delete_progress_log, get_management_timeline, cancel_work_item, skip_work_item,
     defer_advancement, complete_advancement_cycle, get_advancement_cycles, create_early_preparation, special_include_in_advancement,
     create_project_external_constraint, get_project_external_constraints, confirm_external_constraint_scope,
@@ -96,6 +97,11 @@ def remove_project(project_id: int, payload: ProjectDeleteRequest):
     return {"success": True, "soft_deleted": True}
 
 
+@router.post("/{project_id}/restore", response_model=ProjectDetail)
+def restore_removed_project(project_id: int, payload: ProjectDeleteRequest):
+    return restore_project(project_id, payload.operator, payload.reason)
+
+
 @router.get("/{project_id}/history", response_model=list[StatusHistoryItem])
 def history(project_id: int):
     return get_project_history(project_id)
@@ -135,6 +141,11 @@ def submission_review_complete(project_id: int, payload: dict = Body(...)):
 def add_work_item(project_id: int, payload: dict = Body(...)):
     return create_work_item(project_id, payload)
 
+
+@router.post("/{project_id}/work-items/reorder")
+def reorder_work_items(project_id: int, payload: dict = Body(...)):
+    return reorder_main_work_items(project_id, payload)
+
 @router.get("/{project_id}/external-constraints")
 def list_external_constraints(project_id: int):
     return get_project_external_constraints(project_id)
@@ -157,6 +168,11 @@ def confirm_external_scope(project_id: int, payload: dict = Body(...)):
 @router.patch("/{project_id}/work-items/{item_id}")
 def patch_work_item(project_id: int, item_id: int, payload: dict = Body(...)):
     return update_work_item(project_id, item_id, payload)
+
+
+@router.post("/{project_id}/work-items/{item_id}/quick-update")
+def quick_patch_work_item(project_id: int, item_id: int, payload: dict = Body(...)):
+    return quick_update_work_item(project_id, item_id, payload)
 
 @router.get("/{project_id}/work-items")
 def list_work_items(project_id: int):

@@ -31,6 +31,7 @@ PATCHABLE_PROJECT_FIELDS = {
     "project_type",
     "major",
     "location",
+    "procurement_nature",
     "establishment_document_no",
     "budget",
     "contract_amount",
@@ -50,6 +51,7 @@ class ProjectBase(APIModel):
     project_type: str
     major: str = ""
     location: str = ""
+    procurement_nature: str = ""
     budget: float = 0
     contract_amount: float | None = None
     special_note: str = ""
@@ -83,6 +85,7 @@ class ProjectUpdate(APIModel):
     project_type: str | None = None
     major: str | None = None
     location: str | None = None
+    procurement_nature: str | None = None
     establishment_document_no: str | None = None
     budget: float | None = None
     contract_amount: float | None = None
@@ -114,6 +117,8 @@ class ProjectListItem(APIModel):
     project_type: str | None = None
     major: str | None = None
     location: str | None = None
+    procurement_nature: str | None = None
+    project_summary_display: str | None = None
     establishment_document_no: str | None = None
     library_implementation_view: str | None = None
     budget: float | None = None
@@ -128,8 +133,10 @@ class ProjectListItem(APIModel):
     stage: str | None = None
     work_item_summary: list[dict[str, Any]] = Field(default_factory=list)
     work_item_count: int = 0
+    active_work_item_count: int = 0
     work_item_states: dict[str, str] = Field(default_factory=dict)
     next_key_node: dict[str, Any] | None = None
+    progress_focus_item: dict[str, Any] | None = None
     advancement: dict[str, Any] | None = None
     external_constraints_cleared: str | None = None
     external_constraint_count: int = 0

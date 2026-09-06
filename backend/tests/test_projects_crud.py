@@ -31,6 +31,65 @@ def test_project_crud_and_patch_whitelist(client, create_project_payload):
     assert created["id"] not in [project["id"] for project in remaining]
 
 
+def test_software_procurement_nature_is_structured_project_data(client, create_project_payload):
+    created = client.post(
+        "/api/v1/projects",
+        json=create_project_payload(project_type="software", procurement_nature="service"),
+    )
+    assert created.status_code == 200
+    assert created.json()["procurement_nature"] == "service"
+
+    updated = client.patch(
+        f"/api/v1/projects/{created.json()['id']}",
+        json={"procurement_nature": "mixed", "operator": "PMO", "reason": "补充采购属性"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["procurement_nature"] == "mixed"
+
+
+def test_project_edit_persists_name_and_procurement_nature_with_audit(client, create_project_payload):
+    project = client.post(
+        "/api/v1/projects",
+        json=create_project_payload(name="原项目名称", project_type="software", procurement_nature="goods"),
+    ).json()
+
+    updated = client.patch(
+        f"/api/v1/projects/{project['id']}",
+        json={
+            "name": "更新后的项目名称",
+            "procurement_nature": "service",
+            "operator": "PMO办公室",
+            "reason": "修正导入分类属性",
+        },
+    )
+
+    assert updated.status_code == 200
+    assert updated.json()["name"] == "更新后的项目名称"
+    assert updated.json()["procurement_nature"] == "service"
+    assert updated.json()["project_summary_display"] == "专业教学软件项目 · 服务"
+    assert client.get(f"/api/v1/projects/{project['id']}").json()["name"] == "更新后的项目名称"
+    audit = client.get(f"/api/v1/projects/{project['id']}/audit-events").json()
+    assert audit[0]["event_type"] == "PROJECT_UPDATED"
+    assert audit[0]["reason"] == "修正导入分类属性"
+
+
+def test_soft_deleted_project_can_be_listed_and_restored(client, create_project_payload):
+    created = client.post("/api/v1/projects", json=create_project_payload()).json()
+    assert client.request(
+        "DELETE", f"/api/v1/projects/{created['id']}", json={"operator": "PMO", "reason": "误导入"}
+    ).status_code == 200
+
+    removed = client.get("/api/v1/projects", params={"include_deleted": True}).json()["items"]
+    assert [project["id"] for project in removed] == [created["id"]]
+
+    restored = client.post(
+        f"/api/v1/projects/{created['id']}/restore", json={"operator": "PMO", "reason": "确认应保留"}
+    )
+    assert restored.status_code == 200
+    assert restored.json()["id"] == created["id"]
+    assert client.get("/api/v1/projects").json()["items"][0]["id"] == created["id"]
+
+
 def test_project_list_supports_project_type_filter(client, create_project_payload):
     client.post(
         "/api/v1/projects",
@@ -44,7 +103,48 @@ def test_project_list_supports_project_type_filter(client, create_project_payloa
     assert response.status_code == 200
     items = response.json()["items"]
     assert len(items) == 1
-    assert items[0]["project_type"] == "teaching_software"
+    assert items[0]["project_type"] == "software"
+
+
+def test_legacy_project_type_aliases_are_normalized_for_filtering(client, create_project_payload):
+    client.post("/api/v1/projects", json=create_project_payload(name="旧软件项目", project_type="teaching_software"))
+    client.post("/api/v1/projects", json=create_project_payload(name="旧场所项目", project_type="practical_teaching_site"))
+
+    software = client.get("/api/v1/projects", params={"project_type": "software"}).json()["items"]
+    laboratory = client.get("/api/v1/projects", params={"project_type": "laboratory"}).json()["items"]
+
+    assert [item["name"] for item in software] == ["旧软件项目"]
+    assert [item["name"] for item in laboratory] == ["旧场所项目"]
+    assert software[0]["project_type"] == "software"
+
+
+def test_project_types_are_the_single_configurable_project_classification(client, create_project_payload):
+    initial = client.get("/api/v1/project-types")
+    assert initial.status_code == 200
+    assert [item["name"] for item in initial.json()] == ["专业教学软件项目", "实践教学场所项目"]
+
+    created_type = client.post(
+        "/api/v1/project-types",
+        json={"code": "equipment", "name": "教学设备项目", "code_prefix": "EQ", "sort_order": 3, "operator": "PMO"},
+    )
+    assert created_type.status_code == 200
+
+    project = client.post(
+        "/api/v1/projects",
+        json=create_project_payload(name="设备项目", project_type="equipment", category=""),
+    )
+    assert project.status_code == 200
+    assert project.json()["project_type"] == "equipment"
+    assert project.json()["category"] in {"", None}
+
+
+def test_project_type_creation_generates_internal_code(client):
+    created = client.post(
+        "/api/v1/project-types",
+        json={"name": "教学设备项目", "code_prefix": "EQ", "sort_order": 3, "operator": "PMO"},
+    )
+    assert created.status_code == 200
+    assert created.json()["code"].startswith("custom_")
 
 
 def test_project_list_sorting_and_department_order(client, create_project_payload, monkeypatch):
