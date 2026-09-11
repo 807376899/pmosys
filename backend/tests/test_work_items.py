@@ -167,6 +167,53 @@ def test_quick_update_saves_work_item_and_progress_log_together(client, create_p
     assert [log["content"] for log in logs] == ["已通知学院补齐材料"]
 
 
+def test_batch_work_item_action_preflight_and_execution_write_total_and_project_audits(client, create_project_payload):
+    first = client.post("/api/v1/projects", json=create_project_payload(name="批量事项甲")).json()
+    second = client.post("/api/v1/projects", json=create_project_payload(name="批量事项乙")).json()
+    first_item = client.post(f"/api/v1/projects/{first['id']}/work-items", json={"name": "统一材料准备", "operator": "PMO"}).json()
+    second_item = client.post(f"/api/v1/projects/{second['id']}/work-items", json={"name": "统一材料准备", "operator": "PMO"}).json()
+    targets = [{"project_id": first["id"], "work_item_id": first_item["id"]}, {"project_id": second["id"], "work_item_id": second_item["id"]}]
+
+    preview = client.post("/api/v1/projects/batch-work-item-actions/preflight", json={"targets": targets, "action": "progress", "operator": "PMO"})
+    assert preview.status_code == 200
+    assert len(preview.json()["eligible"]) == 2
+
+    executed = client.post("/api/v1/projects/batch-work-item-actions", json={"targets": targets, "action": "progress", "operator": "PMO", "defaults": {"progress_content": "已统一发送材料清单"}})
+    assert executed.status_code == 200
+    assert executed.json()["processed_count"] == 2
+    assert [log["content"] for log in client.get(f"/api/v1/projects/{first['id']}/work-items/{first_item['id']}/progress-logs").json()] == ["已统一发送材料清单"]
+    assert any(event["event_type"] == "WORK_ITEM_PROGRESS_RECORDED" for event in client.get(f"/api/v1/projects/{second['id']}/audit-events").json())
+
+
+def test_batch_work_item_status_update_returns_and_projects_every_target(client, create_project_payload):
+    first = client.post("/api/v1/projects", json=create_project_payload(name="批量状态甲")).json()
+    second = client.post("/api/v1/projects", json=create_project_payload(name="批量状态乙")).json()
+    first_item = client.post(f"/api/v1/projects/{first['id']}/work-items", json={"name": "同列事项", "operator": "PMO"}).json()
+    second_item = client.post(f"/api/v1/projects/{second['id']}/work-items", json={"name": "同列事项", "operator": "PMO"}).json()
+    targets = [{"project_id": first["id"], "work_item_id": first_item["id"]}, {"project_id": second["id"], "work_item_id": second_item["id"]}]
+
+    preview = client.post("/api/v1/projects/batch-work-item-actions/preflight", json={"targets": targets, "action": "update", "operator": "PMO", "defaults": {"status": "in_progress"}})
+    assert [item["work_item_id"] for item in preview.json()["eligible"]] == [first_item["id"], second_item["id"]]
+
+    result = client.post("/api/v1/projects/batch-work-item-actions", json={"targets": targets, "action": "update", "operator": "PMO", "defaults": {"status": "in_progress"}})
+    assert result.status_code == 200
+    assert result.json()["processed_targets"] == targets
+
+    projections = {item["id"]: item for item in client.get("/api/v1/projects", params={"page_size": 20}).json()["items"]}
+    assert projections[first["id"]]["work_item_column_states"][0]["status"] == "in_progress"
+    assert projections[second["id"]]["work_item_column_states"][0]["status"] == "in_progress"
+    assert any(event["event_type"] == "WORK_ITEM_UPDATED" for event in client.get(f"/api/v1/projects/{first['id']}/audit-events").json())
+    assert any(event["event_type"] == "WORK_ITEM_UPDATED" for event in client.get(f"/api/v1/projects/{second['id']}/audit-events").json())
+
+
+def test_batch_work_item_action_rejects_invalid_target_without_partial_write(client, create_project_payload):
+    project = client.post("/api/v1/projects", json=create_project_payload()).json()
+    item = client.post(f"/api/v1/projects/{project['id']}/work-items", json={"name": "待处理事项", "operator": "PMO"}).json()
+    bad = client.post("/api/v1/projects/batch-work-item-actions", json={"targets": [{"project_id": project["id"], "work_item_id": item["id"]}, {"project_id": project["id"] + 999, "work_item_id": item["id"]}], "action": "update", "operator": "PMO", "defaults": {"status": "in_progress"}})
+    assert bad.status_code == 422
+    assert client.get(f"/api/v1/projects/{project['id']}/work-items").json()[0]["status"] == "not_started"
+
+
 def test_progress_summary_prioritizes_overdue_items_before_waiting_external(client, create_project_payload):
     project = client.post("/api/v1/projects", json=create_project_payload()).json()
     response = client.post(

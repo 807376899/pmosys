@@ -257,3 +257,89 @@ def test_constraint_conclusion_is_visible_in_management_timeline(client, create_
 
     timeline = client.get(f"/api/v1/projects/{project['id']}/management-timeline").json()
     assert any(item["kind"] == "EXTERNAL_CONSTRAINT_CONCLUDE" for item in timeline)
+
+
+def test_constraint_progress_logs_are_editable_soft_deleted_and_excluded_from_default_list(client, create_project_payload):
+    project = client.post("/api/v1/projects", json=create_project_payload()).json()
+    constraint = client.post(
+        f"/api/v1/projects/{project['id']}/external-constraints",
+        json={"name": "数据安全审核", "operator": "PMO"},
+    ).json()
+    endpoint = f"/api/v1/projects/{project['id']}/external-constraints/{constraint['id']}/progress-logs"
+
+    created = client.post(endpoint, json={"operator": "PMO", "content": "已提交材料"})
+    assert created.status_code == 200
+    edited = client.patch(f"{endpoint}/{created.json()['id']}", json={"operator": "PMO", "content": "已补充材料"})
+    assert edited.status_code == 200
+    assert edited.json()["content"] == "已补充材料"
+    assert client.request("DELETE", f"{endpoint}/{created.json()['id']}", json={"operator": "PMO", "reason": "重复记录"}).status_code == 200
+    assert client.get(endpoint).json() == []
+    audit = client.get(f"/api/v1/projects/{project['id']}/audit-events").json()
+    assert any(event["event_type"] == "EXTERNAL_CONSTRAINT_PROGRESS_DELETED" for event in audit)
+
+
+def test_external_pending_count_ignores_non_blocking_constraints_and_exposes_compact_cells(client, create_project_payload):
+    project = client.post("/api/v1/projects", json=create_project_payload()).json()
+    non_blocking = client.post(
+        f"/api/v1/projects/{project['id']}/external-constraints",
+        json={"name": "普通备案", "is_blocking": False, "operator": "PMO"},
+    )
+    assert non_blocking.status_code == 200
+    listed = _listed_project(client, project["id"])
+    assert listed["external_constraints_cleared"] == "true"
+    assert listed["external_constraint_open_count"] == 0
+    assert listed["external_constraint_states"][0]["name"] == "普通备案"
+
+
+def test_batch_clear_creates_per_project_and_batch_audit_records(client, create_project_payload):
+    first = client.post("/api/v1/projects", json=create_project_payload(name="项目甲")).json()
+    second = client.post("/api/v1/projects", json=create_project_payload(name="项目乙")).json()
+    template = client.post("/api/v1/external-constraint-templates", json={"name": "统一政策", "operator": "PMO"}).json()
+    created = client.post("/api/v1/projects/batch-external-constraints", json={
+        "project_ids": [first["id"], second["id"]], "operator": "PMO", "constraints": [{"template_id": template["id"]}],
+    })
+    assert created.status_code == 200
+    preview = client.post("/api/v1/projects/batch-external-constraint-actions/preflight", json={
+        "project_ids": [first["id"], second["id"]], "template_id": template["id"], "action": "clear", "operator": "PMO",
+    })
+    assert preview.status_code == 200
+    assert len(preview.json()["eligible"]) == 2
+    executed = client.post("/api/v1/projects/batch-external-constraint-actions", json={
+        "project_ids": [first["id"], second["id"]], "template_id": template["id"], "action": "clear", "operator": "PMO", "reason": "政策已明确",
+    })
+    assert executed.status_code == 200
+    for project in (first, second):
+        constraint = client.get(f"/api/v1/projects/{project['id']}/external-constraints").json()[0]
+        assert constraint["clearance_status"] == "cleared"
+        audit = client.get(f"/api/v1/projects/{project['id']}/audit-events").json()
+        assert any(event["event_type"] == "EXTERNAL_CONSTRAINT_CLEAR" for event in audit)
+    assert executed.json()["batch_audit_id"]
+
+
+def test_batch_constraint_action_accepts_exact_project_instance_targets(client, create_project_payload):
+    first = client.post("/api/v1/projects", json=create_project_payload(name="精确目标甲")).json()
+    second = client.post("/api/v1/projects", json=create_project_payload(name="精确目标乙")).json()
+    created = client.post("/api/v1/projects/batch-external-constraints", json={
+        "project_ids": [first["id"], second["id"]], "operator": "PMO", "constraints": [{"name": "同名约束", "outcome_schema": {"kind": "custom"}}],
+    })
+    assert created.status_code == 200
+    first_constraint = client.get(f"/api/v1/projects/{first['id']}/external-constraints").json()[0]
+    second_constraint = client.get(f"/api/v1/projects/{second['id']}/external-constraints").json()[0]
+    payload = {
+        "project_ids": [first["id"], second["id"]],
+        "targets": [{"project_id": first["id"], "constraint_id": first_constraint["id"]}, {"project_id": second["id"], "constraint_id": second_constraint["id"]}],
+        "action": "progress", "operator": "PMO", "defaults": {"content": "统一办理进展"},
+    }
+    assert client.post("/api/v1/projects/batch-external-constraint-actions/preflight", json=payload).json()["ineligible"] == []
+    assert client.post("/api/v1/projects/batch-external-constraint-actions", json=payload).status_code == 200
+    assert client.get(f"/api/v1/projects/{first['id']}/external-constraints/{first_constraint['id']}/progress-logs").json()[0]["content"] == "统一办理进展"
+
+
+def test_batch_budget_conclusion_requires_per_project_results(client, create_project_payload):
+    first = client.post("/api/v1/projects", json=create_project_payload(name="预算项目甲")).json()
+    second = client.post("/api/v1/projects", json=create_project_payload(name="预算项目乙")).json()
+    template = client.post("/api/v1/external-constraint-templates", json={"name": "预算批量核定", "outcome_schema": {"kind": "budget_determination"}, "operator": "PMO"}).json()
+    assert client.post("/api/v1/projects/batch-external-constraints", json={"project_ids": [first["id"], second["id"]], "operator": "PMO", "constraints": [{"template_id": template["id"]}]}).status_code == 200
+    rejected = client.post("/api/v1/projects/batch-external-constraint-actions", json={"project_ids": [first["id"], second["id"]], "template_id": template["id"], "action": "conclude", "operator": "PMO", "outcome": {"approved_budget": 80}})
+    assert rejected.status_code == 422
+    assert all(item["handling_status"] == "not_started" for project in (first, second) for item in client.get(f"/api/v1/projects/{project['id']}/external-constraints").json())

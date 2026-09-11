@@ -216,63 +216,74 @@ def _order_clause(filters: dict) -> str:
     if sort_by in {"department", "category", "project_type"}:
         return f"ORDER BY {expression} {sort_dir}, p.name {sort_dir}, p.project_code {sort_dir}"
     if sort_by == "implementation_year":
-        return f"ORDER BY COALESCE(NULLIF({expression}, ''), '0000') {sort_dir}, updated_at DESC, id DESC"
+        return f"ORDER BY COALESCE(NULLIF({expression}, ''), '0000') {sort_dir}, p.updated_at DESC, p.id DESC"
     return f"ORDER BY {expression} {sort_dir}, p.updated_at DESC, p.id DESC"
 
 
-def fetch_project_page(conn: sqlite3.Connection, filters: dict) -> tuple[list[dict], int]:
-    # The only caller setting include_deleted is the PMO "已移除项目" view.
-    # Keep that view focused on recoverable projects instead of mixing active rows
-    # back into it.
-    conditions: list[str] = ["p.deleted_at IS NOT NULL"] if filters.get("include_deleted") else ["p.deleted_at IS NULL"]
+def _project_keyword_condition(alias: str = "p") -> str:
+    return (
+        f"({alias}.name LIKE ? OR {alias}.project_code LIKE ? OR {alias}.description LIKE ? "
+        f"OR {alias}.sponsor LIKE ? OR {alias}.special_note LIKE ?)"
+    )
+
+
+def _project_filter_parts(filters: dict, *, include_deleted: bool) -> tuple[list[str], list[object]]:
+    """Build list/export predicates against the same qualified project alias."""
+    conditions: list[str] = ["p.deleted_at IS NOT NULL"] if include_deleted else ["p.deleted_at IS NULL"]
     params: list[object] = []
     if filters.get("status"):
-        conditions.append("current_status = ?")
+        conditions.append("p.current_status = ?")
         params.append(filters["status"])
     if filters.get("group"):
         condition = stage_group_condition(filters["group"])
         if condition:
             conditions.append(condition)
     if filters.get("advancement_status") == "special_active":
-        conditions.append("special_advancement_active = 1")
+        conditions.append("p.special_advancement_active = 1")
     external_condition = external_conditions_filter_condition(str(filters.get("external_conditions") or ""))
     if external_condition:
         conditions.append(external_condition)
     if filters.get("keyword"):
-        conditions.append(
-            "(name LIKE ? OR project_code LIKE ? OR description LIKE ? OR sponsor LIKE ? OR special_note LIKE ?)"
-        )
+        conditions.append(_project_keyword_condition())
         like_value = f"%{filters['keyword']}%"
         params.extend([like_value] * 5)
     for field in ("department", "project_manager", "category"):
         value = filters.get(field)
         if value:
-            conditions.append(f"{field} = ?")
+            conditions.append(f"p.{field} = ?")
             params.append(value)
     if filters.get("project_type"):
-        conditions.append("CASE project_type WHEN 'teaching_software' THEN 'software' WHEN 'practical_teaching_site' THEN 'laboratory' ELSE project_type END = ?")
+        conditions.append("CASE p.project_type WHEN 'teaching_software' THEN 'software' WHEN 'practical_teaching_site' THEN 'laboratory' ELSE p.project_type END = ?")
         params.append({"teaching_software": "software", "practical_teaching_site": "laboratory"}.get(filters["project_type"], filters["project_type"]))
     if filters.get("min_budget") is not None:
-        conditions.append("budget >= ?")
+        conditions.append("p.budget >= ?")
         params.append(filters["min_budget"])
     if filters.get("max_budget") is not None:
-        conditions.append("budget <= ?")
+        conditions.append("p.budget <= ?")
         params.append(filters["max_budget"])
     if filters.get("status_updated_from"):
-        conditions.append("status_updated_at >= ?")
+        conditions.append("p.status_updated_at >= ?")
         params.append(filters["status_updated_from"])
     if filters.get("status_updated_to"):
-        conditions.append("status_updated_at <= ?")
+        conditions.append("p.status_updated_at <= ?")
         params.append(filters["status_updated_to"])
     if filters.get("declaration_year"):
         year = str(filters["declaration_year"])
         conditions.append(
-            "(project_code LIKE ? OR project_code LIKE ? OR project_code LIKE ? OR substr(created_at, 1, 4) = ?)"
+            "(p.project_code LIKE ? OR p.project_code LIKE ? OR p.project_code LIKE ? OR substr(p.created_at, 1, 4) = ?)"
         )
         params.extend([f"SW{year}%", f"SY{year}%", f"PMO-{year}-%", year])
     if filters.get("implementation_year"):
-        conditions.append("substr(actual_start_date, 1, 4) = ?")
+        conditions.append("substr(p.actual_start_date, 1, 4) = ?")
         params.append(str(filters["implementation_year"]))
+    return conditions, params
+
+
+def fetch_project_page(conn: sqlite3.Connection, filters: dict) -> tuple[list[dict], int]:
+    # The only caller setting include_deleted is the PMO "已移除项目" view.
+    # Keep that view focused on recoverable projects instead of mixing active rows
+    # back into it.
+    conditions, params = _project_filter_parts(filters, include_deleted=bool(filters.get("include_deleted")))
 
     where_clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
     total = conn.execute(f"SELECT COUNT(*) FROM projects p{where_clause}", params).fetchone()[0]
@@ -298,55 +309,7 @@ def fetch_all_projects_for_export(conn: sqlite3.Connection, filters: dict) -> li
     export_filters = dict(filters)
     export_filters.pop("page", None)
     export_filters.pop("page_size", None)
-    conditions: list[str] = ["p.deleted_at IS NULL"]
-    params: list[object] = []
-    if export_filters.get("status"):
-        conditions.append("current_status = ?")
-        params.append(export_filters["status"])
-    if export_filters.get("group"):
-        condition = stage_group_condition(export_filters["group"])
-        if condition:
-            conditions.append(condition)
-    if export_filters.get("advancement_status") == "special_active":
-        conditions.append("special_advancement_active = 1")
-    external_condition = external_conditions_filter_condition(str(export_filters.get("external_conditions") or ""))
-    if external_condition:
-        conditions.append(external_condition)
-    if export_filters.get("keyword"):
-        conditions.append(
-            "(name LIKE ? OR project_code LIKE ? OR description LIKE ? OR sponsor LIKE ? OR special_note LIKE ?)"
-        )
-        like_value = f"%{export_filters['keyword']}%"
-        params.extend([like_value] * 5)
-    for field in ("department", "project_manager", "category"):
-        value = export_filters.get(field)
-        if value:
-            conditions.append(f"{field} = ?")
-            params.append(value)
-    if export_filters.get("project_type"):
-        conditions.append("CASE project_type WHEN 'teaching_software' THEN 'software' WHEN 'practical_teaching_site' THEN 'laboratory' ELSE project_type END = ?")
-        params.append({"teaching_software": "software", "practical_teaching_site": "laboratory"}.get(export_filters["project_type"], export_filters["project_type"]))
-    if export_filters.get("min_budget") is not None:
-        conditions.append("budget >= ?")
-        params.append(export_filters["min_budget"])
-    if export_filters.get("max_budget") is not None:
-        conditions.append("budget <= ?")
-        params.append(export_filters["max_budget"])
-    if export_filters.get("status_updated_from"):
-        conditions.append("status_updated_at >= ?")
-        params.append(export_filters["status_updated_from"])
-    if export_filters.get("status_updated_to"):
-        conditions.append("status_updated_at <= ?")
-        params.append(export_filters["status_updated_to"])
-    if export_filters.get("declaration_year"):
-        year = str(export_filters["declaration_year"])
-        conditions.append(
-            "(project_code LIKE ? OR project_code LIKE ? OR project_code LIKE ? OR substr(created_at, 1, 4) = ?)"
-        )
-        params.extend([f"SW{year}%", f"SY{year}%", f"PMO-{year}-%", year])
-    if export_filters.get("implementation_year"):
-        conditions.append("substr(actual_start_date, 1, 4) = ?")
-        params.append(str(export_filters["implementation_year"]))
+    conditions, params = _project_filter_parts(export_filters, include_deleted=False)
     where_clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
     rows = conn.execute(
         f"""

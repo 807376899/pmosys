@@ -32,3 +32,16 @@ def test_export_uses_advancing_management_view_and_structured_attributes(client,
 
     assert exported["项目名称"].tolist() == ["特批软件项目"]
     assert exported.loc[0, "采购属性"] == "混合"
+
+
+def test_export_keyword_filter_uses_the_same_project_fields_as_the_list(client, create_project_payload):
+    client.post(
+        "/api/v1/projects",
+        json=create_project_payload(name="导出检索项目", description="导出检索说明"),
+    )
+
+    response = client.get("/api/v1/exports/projects", params={"keyword": "导出检索说明"})
+
+    assert response.status_code == 200
+    exported = pd.read_excel(io.BytesIO(response.content))
+    assert exported["项目名称"].tolist() == ["导出检索项目"]

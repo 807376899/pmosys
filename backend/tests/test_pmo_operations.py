@@ -92,6 +92,30 @@ def test_project_list_projects_next_node_and_one_separate_focus_item(client, cre
     assert projection["active_work_item_count"] == 3
 
 
+def test_progress_focus_prefers_marked_attention_over_more_recent_work_item(client, create_project_payload):
+    project = client.post("/api/v1/projects", json=create_project_payload()).json()
+    client.post(
+        f"/api/v1/projects/{project['id']}/work-items",
+        json={"name": "主流程节点", "flow_group": "main", "sequence_rank": 100, "operator": "PMO"},
+    )
+    attention = client.post(
+        f"/api/v1/projects/{project['id']}/work-items",
+        json={"name": "持续重点关注", "track_as_key_node": True, "operator": "PMO"},
+    ).json()
+    recent = client.post(
+        f"/api/v1/projects/{project['id']}/work-items",
+        json={"name": "刚刚推进的事项", "status": "in_progress", "operator": "PMO"},
+    ).json()
+    assert client.post(
+        f"/api/v1/projects/{project['id']}/work-items/{recent['id']}/progress-logs",
+        json={"operator": "PMO", "content": "刚完成本次沟通"},
+    ).status_code == 200
+
+    projection = next(item for item in client.get("/api/v1/projects", params={"page_size": 20}).json()["items"] if item["id"] == project["id"])
+    assert projection["next_key_node"]["name"] == "主流程节点"
+    assert projection["progress_focus_item"]["id"] == attention["id"]
+
+
 def test_project_projection_exposes_a_single_category_summary_display(client, create_project_payload):
     software = client.post(
         "/api/v1/projects",

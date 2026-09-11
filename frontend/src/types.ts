@@ -72,12 +72,14 @@ export interface Project {
   work_item_count?: number;
   active_work_item_count?: number;
   work_item_states?: Record<string, string>;
+  work_item_column_states?: WorkItemColumnState[];
   next_key_node?: WorkItemSummary | null;
   progress_focus_item?: WorkItemSummary | null;
   advancement?: { year: number | null; date: string | null; view: string; status?: "active" | "special_active" | "none" } | null;
   external_constraints_cleared?: "true" | "false" | "unknown" | null;
   external_constraint_count?: number;
   external_constraint_open_count?: number;
+  external_constraint_states?: ExternalConstraintState[];
   effective_budget?: number | null;
   effective_budget_source?: "budget_constraint" | "historical_review" | "initial_budget" | null;
 }
@@ -149,6 +151,18 @@ export interface WorkItemSummary {
   status: string;
   planned_date: string;
   track_as_key_node: boolean;
+  last_progress_at?: string | null;
+  last_activity_at?: string | null;
+}
+
+export interface WorkItemColumnState {
+  id: number;
+  source_template_id?: number | null;
+  name: string;
+  status: string;
+  cancelled_at?: string | null;
+  skipped_at?: string | null;
+  actionable: boolean;
 }
 
 export interface WorkItemTemplate {
@@ -221,6 +235,36 @@ export interface ProjectExternalConstraint {
   evidence_note: string;
   concluded_at?: string | null;
   is_effective_budget_source?: boolean | number;
+  recent_progress_logs?: ExternalConstraintProgressLog[];
+  latest_progress_summary?: string;
+}
+
+export interface ExternalConstraintState {
+  id: number;
+  template_id?: number | null;
+  name: string;
+  outcome_kind?: string;
+  is_blocking: boolean;
+  handling_status: string;
+  clearance_status: string;
+  latest_progress_summary?: string;
+  latest_progress_at?: string | null;
+}
+
+export interface ExternalConstraintProgressLog {
+  id: number;
+  project_external_constraint_id: number;
+  content: string;
+  operator: string;
+  created_at: string;
+  updated_at?: string;
+  updated_by?: string;
+}
+
+export interface StageColumn {
+  kind: "work_item" | "external_constraint";
+  key: string;
+  label: string;
 }
 
 export interface WorkItemDraft {

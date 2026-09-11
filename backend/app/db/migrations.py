@@ -302,6 +302,53 @@ def init_database(conn: sqlite3.Connection) -> None:
     )
     if not column_exists(conn, "project_external_constraints", "is_effective_budget_source"):
         conn.execute("ALTER TABLE project_external_constraints ADD COLUMN is_effective_budget_source INTEGER DEFAULT 0")
+    for column, definition in [
+        ("cleared_at", "TEXT"), ("cleared_by", "TEXT DEFAULT ''"), ("clearance_reason", "TEXT DEFAULT ''"),
+    ]:
+        if not column_exists(conn, "project_external_constraints", column):
+            conn.execute(f"ALTER TABLE project_external_constraints ADD COLUMN {column} {definition}")
+    # The old intermediate label represented process detail.  Preserve audit
+    # history but use the compact Phase 2 handling-state vocabulary at runtime.
+    conn.execute("UPDATE project_external_constraints SET handling_status='in_progress' WHERE handling_status='needs_supplement'")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS external_constraint_progress_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_external_constraint_id INTEGER NOT NULL REFERENCES project_external_constraints(id) ON DELETE CASCADE,
+            content TEXT NOT NULL,
+            operator TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now','localtime')),
+            updated_at TEXT DEFAULT (datetime('now','localtime')),
+            updated_by TEXT DEFAULT '',
+            deleted_at TEXT,
+            deleted_by TEXT DEFAULT '',
+            deleted_reason TEXT DEFAULT ''
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS external_constraint_batch_operations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            action TEXT NOT NULL,
+            operator TEXT NOT NULL,
+            reason TEXT DEFAULT '',
+            payload_json TEXT DEFAULT '{}',
+            created_at TEXT DEFAULT (datetime('now','localtime'))
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS work_item_batch_operations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            action TEXT NOT NULL,
+            operator TEXT NOT NULL,
+            payload_json TEXT DEFAULT '{}',
+            created_at TEXT DEFAULT (datetime('now','localtime'))
+        )
+        """
+    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS project_external_constraint_scope_confirmations (
@@ -396,6 +443,7 @@ def create_indexes(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_history_project ON status_history(project_id)",
         "CREATE INDEX IF NOT EXISTS idx_transition_from ON transition_rules(from_status)",
         "CREATE INDEX IF NOT EXISTS idx_external_constraints_project ON project_external_constraints(project_id)",
+        "CREATE INDEX IF NOT EXISTS idx_constraint_progress_constraint ON external_constraint_progress_logs(project_external_constraint_id)",
         "CREATE INDEX IF NOT EXISTS idx_constraint_scope_project ON project_external_constraint_scope_confirmations(project_id)",
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_constraint_effective_budget_source ON project_external_constraints(project_id) WHERE is_effective_budget_source=1",
     ]

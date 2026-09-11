@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 
 def test_project_crud_and_patch_whitelist(client, create_project_payload):
     created = client.post("/api/v1/projects", json=create_project_payload()).json()
@@ -71,6 +73,25 @@ def test_project_edit_persists_name_and_procurement_nature_with_audit(client, cr
     audit = client.get(f"/api/v1/projects/{project['id']}/audit-events").json()
     assert audit[0]["event_type"] == "PROJECT_UPDATED"
     assert audit[0]["reason"] == "修正导入分类属性"
+
+
+@pytest.mark.parametrize("keyword", ["检索项目", "SW20260001", "检索说明", "检索发起人", "检索备注"])
+def test_project_keyword_search_supports_all_project_fields_after_join(client, create_project_payload, keyword):
+    project = client.post(
+        "/api/v1/projects",
+        json=create_project_payload(
+            name="检索项目",
+            project_code="SW20260001",
+            description="检索说明",
+            sponsor="检索发起人",
+            special_note="检索备注",
+        ),
+    ).json()
+
+    response = client.get("/api/v1/projects", params={"keyword": keyword})
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["items"]] == [project["id"]]
 
 
 def test_soft_deleted_project_can_be_listed_and_restored(client, create_project_payload):

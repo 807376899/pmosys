@@ -34,12 +34,15 @@ from backend.app.services.projects import (
     pmo_override_project,
     complete_submission_review,
     create_work_item, complete_work_item, reopen_work_item, include_in_advancement, get_audit_events, get_work_items,
-    batch_create_work_items, batch_include_in_advancement, batch_defer_advancement, apply_work_package, update_work_item, quick_update_work_item, reorder_main_work_items,
+    batch_create_work_items, batch_include_in_advancement, batch_defer_advancement, apply_work_package, update_work_item, quick_update_work_item, reorder_main_work_items, preview_batch_work_item_action, execute_batch_work_item_action,
     create_progress_log, get_progress_logs, update_progress_log, delete_progress_log, get_management_timeline, cancel_work_item, skip_work_item,
     defer_advancement, complete_advancement_cycle, get_advancement_cycles, create_early_preparation, special_include_in_advancement,
     create_project_external_constraint, get_project_external_constraints, confirm_external_constraint_scope,
     act_on_project_external_constraint,
     batch_create_project_external_constraints,
+    preview_batch_external_constraint_action, execute_batch_external_constraint_action,
+    create_external_constraint_progress_log, get_external_constraint_progress_logs,
+    update_external_constraint_progress_log, delete_external_constraint_progress_log,
     get_milestones,
 )
 
@@ -62,9 +65,29 @@ def batch_work_items(payload: dict = Body(...)):
     return batch_create_work_items(payload)
 
 
+@router.post("/batch-work-item-actions/preflight")
+def preview_batch_work_item_actions(payload: dict = Body(...)):
+    return preview_batch_work_item_action(payload)
+
+
+@router.post("/batch-work-item-actions")
+def execute_batch_work_item_actions(payload: dict = Body(...)):
+    return execute_batch_work_item_action(payload)
+
+
 @router.post("/batch-external-constraints")
 def batch_external_constraints(payload: dict = Body(...)):
     return batch_create_project_external_constraints(payload)
+
+
+@router.post("/batch-external-constraint-actions/preflight")
+def preview_batch_external_constraint_actions(payload: dict = Body(...)):
+    return preview_batch_external_constraint_action(payload)
+
+
+@router.post("/batch-external-constraint-actions")
+def execute_batch_external_constraint_actions(payload: dict = Body(...)):
+    return execute_batch_external_constraint_action(payload)
 
 
 @router.post("/batch-include-in-advancement")
@@ -159,6 +182,27 @@ def add_external_constraint(project_id: int, payload: dict = Body(...)):
 @router.post("/{project_id}/external-constraints/{constraint_id}/actions")
 def act_on_external_constraint(project_id: int, constraint_id: int, payload: dict = Body(...)):
     return act_on_project_external_constraint(project_id, constraint_id, payload)
+
+
+@router.get("/{project_id}/external-constraints/{constraint_id}/progress-logs")
+def list_external_constraint_progress_logs(project_id: int, constraint_id: int):
+    return get_external_constraint_progress_logs(project_id, constraint_id)
+
+
+@router.post("/{project_id}/external-constraints/{constraint_id}/progress-logs")
+def add_external_constraint_progress_log(project_id: int, constraint_id: int, payload: dict = Body(...)):
+    return create_external_constraint_progress_log(project_id, constraint_id, payload)
+
+
+@router.patch("/{project_id}/external-constraints/{constraint_id}/progress-logs/{log_id}")
+def patch_external_constraint_progress_log(project_id: int, constraint_id: int, log_id: int, payload: dict = Body(...)):
+    return update_external_constraint_progress_log(project_id, constraint_id, log_id, payload)
+
+
+@router.delete("/{project_id}/external-constraints/{constraint_id}/progress-logs/{log_id}")
+def remove_external_constraint_progress_log(project_id: int, constraint_id: int, log_id: int, payload: dict = Body(...)):
+    delete_external_constraint_progress_log(project_id, constraint_id, log_id, payload)
+    return {"success": True}
 
 
 @router.post("/{project_id}/confirm-external-constraint-scope")

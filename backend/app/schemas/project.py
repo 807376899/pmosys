@@ -135,12 +135,14 @@ class ProjectListItem(APIModel):
     work_item_count: int = 0
     active_work_item_count: int = 0
     work_item_states: dict[str, str] = Field(default_factory=dict)
+    work_item_column_states: list[dict[str, Any]] = Field(default_factory=list)
     next_key_node: dict[str, Any] | None = None
     progress_focus_item: dict[str, Any] | None = None
     advancement: dict[str, Any] | None = None
     external_constraints_cleared: str | None = None
     external_constraint_count: int = 0
     external_constraint_open_count: int = 0
+    external_constraint_states: list[dict[str, Any]] = []
     external_constraint_scope_confirmation: dict[str, Any] | None = None
     effective_budget: float | None = None
     effective_budget_source: str | None = None
