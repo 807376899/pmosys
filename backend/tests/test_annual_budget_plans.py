@@ -31,9 +31,9 @@ def test_annual_budget_plan_derives_carryovers_and_saves_candidate_amounts_atomi
     indexed = {row["project_id"]: row for row in plan["members"]}
     assert indexed[carryover["id"]]["plan_kind"] == "carryover"
     assert indexed[carryover["id"]]["selected"] is True
-    assert indexed[carryover["id"]]["planned_new_amount"] == 0
+    assert indexed[carryover["id"]]["planned_new_amount"] == "0"
     assert indexed[pool["id"]]["selected"] is False
-    assert indexed[pool["id"]]["default_planned_new_amount"] == 50
+    assert indexed[pool["id"]]["default_planned_new_amount"] == "50"
     assert indexed[special["id"]]["stage"] == "未立项"
     assert finished["id"] not in indexed
 
@@ -43,16 +43,16 @@ def test_annual_budget_plan_derives_carryovers_and_saves_candidate_amounts_atomi
     ]})
     assert saved.status_code == 200
     saved_rows = {row["project_id"]: row for row in saved.json()["members"]}
-    assert saved_rows[carryover["id"]]["planned_new_amount"] == 15
+    assert saved_rows[carryover["id"]]["planned_new_amount"] == "15"
     assert saved_rows[pool["id"]]["selected"] is True
-    assert saved.json()["planned_new_amount_total"] == 65
+    assert saved.json()["planned_new_amount_total"] == "65"
     assert client.get(f"/api/v1/projects/{pool['id']}").json()["stage"] == "项目库—未实施"
 
     rejected = client.put("/api/v1/projects/annual-budget-plans/2027", json={"operator": "PMO", "members": [
         {"project_id": carryover["id"], "planned_new_amount": -1},
     ]})
     assert rejected.status_code == 422
-    assert client.get("/api/v1/projects/annual-budget-plans/2027").json()["planned_new_amount_total"] == 65
+    assert client.get("/api/v1/projects/annual-budget-plans/2027").json()["planned_new_amount_total"] == "65"
 
 
 def test_annual_plan_confirmation_does_not_duplicate_carryover_cycle(client, create_project_payload):
@@ -85,7 +85,7 @@ def test_current_year_confirmed_member_stays_new_and_zero_carryover_is_excluded_
     assert rows[carryover["id"]]["plan_kind"] == "carryover"
     assert rows[candidate["id"]]["plan_kind"] == "new_confirmed"
     assert plan["planned_project_count"] == 1
-    assert plan["planned_new_amount_total"] == 40
+    assert plan["planned_new_amount_total"] == "40"
 
 
 def test_same_year_confirmation_stays_in_its_plan_and_future_year_becomes_carryover(client, create_project_payload):
@@ -106,10 +106,10 @@ def test_same_year_confirmation_stays_in_its_plan_and_future_year_becomes_carryo
     previous_year = {row["project_id"]: row for row in client.get("/api/v1/projects/annual-budget-plans/2025").json()["members"]}
     next_year = {row["project_id"]: row for row in client.get("/api/v1/projects/annual-budget-plans/2027").json()["members"]}
     assert same_year[project["id"]]["plan_kind"] == "new_confirmed"
-    assert same_year[project["id"]]["planned_new_amount"] == 40
+    assert same_year[project["id"]]["planned_new_amount"] == "40"
     assert project["id"] not in previous_year
     assert next_year[project["id"]]["plan_kind"] == "carryover"
-    assert next_year[project["id"]]["planned_new_amount"] == 0
+    assert next_year[project["id"]]["planned_new_amount"] == "0"
     confirmed = client.get(f"/api/v1/projects/{project['id']}").json()
     assert confirmed["planned_advancement_year"] == 2026
     assert confirmed["planned_advancement_status"] == "confirmed"
@@ -183,5 +183,5 @@ def test_supplement_includes_project_and_writes_same_annual_plan(client, create_
     assert response.status_code == 200
     row = next(item for item in response.json()["members"] if item["project_id"] == project["id"])
     assert row["member_status"] == "confirmed"
-    assert row["planned_new_amount"] == 35
+    assert row["planned_new_amount"] == "35"
     assert client.get(f"/api/v1/projects/{project['id']}").json()["stage"] == "项目库—推进中"

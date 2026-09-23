@@ -207,10 +207,10 @@ def _hydrate_project_projection(conn: sqlite3.Connection, project: dict, *, omit
         (project["id"],),
     ).fetchone())
     work_items = _work_items_for_project(conn, project["id"])
-    from backend.app.services.batches import current_batch_summaries_for_items
-    batch_summaries = current_batch_summaries_for_items(conn, [item["id"] for item in work_items])
+    from backend.app.services.activities import current_activity_summaries_for_items
+    activity_summaries = current_activity_summaries_for_items(conn, [item["id"] for item in work_items])
     for item in work_items:
-        item["batch_summaries"] = batch_summaries.get(item["id"], [])
+        item["activity_summaries"] = activity_summaries.get(item["id"], [])
     project["work_item_summary"] = _work_item_summary(work_items)
     project["work_item_count"] = len(work_items)
     project["work_item_states"] = {item["name"]: item["status"] for item in work_items}
@@ -317,7 +317,7 @@ def _work_item_projection(item: dict) -> dict:
         "track_as_key_node": bool(item.get("track_as_key_node")),
         "last_progress_at": item.get("last_progress_at"),
         "last_activity_at": max(item.get("last_progress_at") or "", item.get("updated_at") or "") or None,
-        "batch_summaries": item.get("batch_summaries") or [],
+        "activity_summaries": item.get("activity_summaries") or [],
     }
 
 
@@ -332,7 +332,7 @@ def _work_item_column_projection(item: dict) -> dict:
         "completion_result": record.get("result") or "", "completion_note": record.get("note") or "",
         "track_as_key_node": bool(item.get("track_as_key_node")),
         "actionable": not bool(item.get("cancelled_at")) and not bool(item.get("skipped_at")) and item["status"] not in {"completed", "paused", "not_applicable"},
-        "batch_summaries": item.get("batch_summaries") or [],
+        "activity_summaries": item.get("activity_summaries") or [],
     }
 
 
@@ -1458,7 +1458,7 @@ def execute_batch_work_item_action(payload: dict) -> dict:
             raise ValidationError(_batch_work_item_error_message(preview["ineligible"]))
         if not preview["eligible"]:
             raise ValidationError("没有可执行的事项")
-        cursor = conn.execute("INSERT INTO work_item_batch_operations (action,operator,payload_json) VALUES (?,?,?)", (action, operator, json.dumps({"targets": payload.get("targets"), "defaults": payload.get("defaults")}, ensure_ascii=False)))
+        cursor = conn.execute("INSERT INTO work_item_bulk_operations (action,operator,payload_json) VALUES (?,?,?)", (action, operator, json.dumps({"targets": payload.get("targets"), "defaults": payload.get("defaults")}, ensure_ascii=False)))
         batch_audit_id = cursor.lastrowid
         processed_targets = []
         for target in preview["eligible"]:
@@ -1933,10 +1933,10 @@ def get_work_items(project_id: int) -> list[dict]:
     with get_connection() as conn:
         if not project_repo.fetch_project_by_id(conn, project_id): raise NotFoundError("项目不存在")
         items = _work_items_for_project(conn, project_id)
-        from backend.app.services.batches import current_batch_summaries_for_items
-        summaries = current_batch_summaries_for_items(conn, [item["id"] for item in items])
+        from backend.app.services.activities import current_activity_summaries_for_items
+        summaries = current_activity_summaries_for_items(conn, [item["id"] for item in items])
         for item in items:
-            item["batch_summaries"] = summaries.get(item["id"], [])
+            item["activity_summaries"] = summaries.get(item["id"], [])
         return [_serialize_work_item(item) for item in sorted(items, key=_work_item_order)]
 
 

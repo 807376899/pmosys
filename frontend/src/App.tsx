@@ -52,7 +52,7 @@ import type {
   ExternalConstraintProgressLog,
   ExternalConstraintState,
   StageColumn,
-  WorkItemBatch,
+  WorkItemActivity,
 } from "./types";
 
 const GROUP_ACCENTS: Record<string, string> = {
@@ -173,7 +173,7 @@ function ProgressSituation({ project, onSelect, onConstraintSelect }: { project:
   </div>;
 }
 
-function StageItemCell({ project, column, onWorkItemSelect, onConstraintSelect, onBatchSelect, highlighted }: { project: Project; column: StageColumn; onWorkItemSelect?: (id: number) => void; onConstraintSelect?: (id: number) => void; onBatchSelect?: (id: number) => void; highlighted?: boolean }) {
+function StageItemCell({ project, column, onWorkItemSelect, onConstraintSelect, onActivitySelect, highlighted }: { project: Project; column: StageColumn; onWorkItemSelect?: (id: number) => void; onConstraintSelect?: (id: number) => void; onActivitySelect?: (id: number) => void; highlighted?: boolean }) {
   if (column.kind === "external_constraint") {
     const constraint = project.external_constraint_states?.find((item) => constraintMatchesColumn(item, column.key));
     if (!constraint) return <span className="muted-copy">—</span>;
@@ -183,8 +183,8 @@ function StageItemCell({ project, column, onWorkItemSelect, onConstraintSelect, 
   const item = project.work_item_column_states?.find((candidate) => candidate.name === column.key);
   if (!item) return <span className="muted-copy">—</span>;
   const [status, fact, detail] = workItemStageFacts(item);
-  const batches = item.batch_summaries || [];
-  return <div className={`stage-business-cell stage-item-cell tone-${stageTone(item.status)}${highlighted ? " column-batch-highlight" : ""}`}><button type="button" aria-label={`办理事项 ${item.name}：${status}`} onClick={() => onWorkItemSelect?.(item.id)}><strong>{item.track_as_key_node ? "☆ " : ""}{status}</strong><span>{fact}</span>{detail ? <em title={detail}>{detail}</em> : null}</button>{batches.slice(0, 2).map((batch) => <button type="button" key={batch.id} className="batch-chip" onClick={() => onBatchSelect?.(batch.id)}>{batch.scheduled_on ? `${batch.scheduled_on} · ` : ""}{batch.name}</button>)}{batches.length > 2 ? <button type="button" className="batch-chip" onClick={() => onBatchSelect?.(batches[0].id)}>+{batches.length - 2} 批</button> : null}</div>;
+  const activities = item.activity_summaries || [];
+  return <div className={`stage-business-cell stage-item-cell tone-${stageTone(item.status)}${highlighted ? " column-batch-highlight" : ""}`}><button type="button" aria-label={`办理事项 ${item.name}：${status}`} onClick={() => onWorkItemSelect?.(item.id)}><strong>{item.track_as_key_node ? "☆ " : ""}{status}</strong><span>{fact}</span>{detail ? <em title={detail}>{detail}</em> : null}</button>{activities.slice(0, 2).map((activity) => <button type="button" key={activity.id} className="activity-chip" onClick={() => onActivitySelect?.(activity.id)}>{activity.scheduled_on ? `${activity.scheduled_on} · ` : ""}{activity.name}</button>)}{activities.length > 2 ? <button type="button" className="activity-chip" onClick={() => onActivitySelect?.(activities[0].id)}>+{activities.length - 2} 个活动</button> : null}</div>;
 }
 
 function constraintSummary(constraint: ProjectExternalConstraint) {
@@ -342,12 +342,12 @@ function DashboardPage() {
   const [overviewColumnPickerOpen, setOverviewColumnPickerOpen] = useState(false);
   const [columnSearch, setColumnSearch] = useState("");
   const [columnBatchTarget, setColumnBatchTarget] = useState<ColumnBatchTarget | null>(null);
-  const [workItemBatch, setWorkItemBatch] = useState<WorkItemBatch | null>(null);
+  const [workItemActivity, setWorkItemActivity] = useState<WorkItemActivity | null>(null);
   const [batchArrangeOpen, setBatchArrangeOpen] = useState(false);
   const [batchDraft, setBatchDraft] = useState({ name: "", scheduled_on: "", note: "" });
-  const [batchCompletion, setBatchCompletion] = useState({ completed_on: today(), result: "", note: "" });
+  const [activityResult, setActivityResult] = useState({ result_on: today(), result: "", note: "" });
   const [batchHistoryOpen, setBatchHistoryOpen] = useState(false);
-  const [batchHistory, setBatchHistory] = useState<WorkItemBatch[]>([]);
+  const [batchHistory, setBatchHistory] = useState<WorkItemActivity[]>([]);
   const [batchHistoryFilters, setBatchHistoryFilters] = useState({ year: "", keyword: "", status: "" });
   const [batchReturnMode, setBatchReturnMode] = useState<"batch" | "stage">("batch");
   const [columnWorkItemAction, setColumnWorkItemAction] = useState<"progress" | "update" | "complete">("progress");
@@ -705,32 +705,32 @@ function DashboardPage() {
     setRailExpanded(true);
   }
 
-  async function openWorkItemBatch(batchId: number, returnMode: "batch" | "stage" = "batch") {
+  async function openWorkItemActivity(activityId: number, returnMode: "batch" | "stage" = "batch") {
     try {
-      const batch = await apiGet<WorkItemBatch>(`/work-item-batches/${batchId}`);
+      const activity = await apiGet<WorkItemActivity>(`/work-item-activities/${activityId}`);
       setBatchReturnMode(returnMode);
-      setWorkItemBatch(batch);
-      setSelectedIds(batch.members.filter((member) => member.member_status === "scheduled" && ["not_started", "in_progress"].includes(member.work_item_status)).map((member) => member.project_id));
+      setWorkItemActivity(activity);
+      setSelectedIds(activity.members.filter((member) => member.member_status === "active" && ["not_started", "in_progress"].includes(member.work_item_status)).map((member) => member.project_id));
       setRailExpanded(true);
-    } catch (err) { setError(err instanceof ApiError ? err.message : "无法打开批次。"); }
+    } catch (err) { setError(err instanceof ApiError ? err.message : "无法打开办理活动。"); }
   }
 
-  async function createWorkItemBatch() {
+  async function createWorkItemActivity() {
     if (!columnBatchTarget || columnBatchTarget.kind !== "work_item") return;
     try {
-      const batch = await apiPost<WorkItemBatch>("/work-item-batches", { ...batchDraft, work_item_name: columnBatchTarget.label, operator, targets: columnTargetsPayload() });
-      setBatchArrangeOpen(false); setBatchDraft({ name: "", scheduled_on: "", note: "" }); setFeedback("批次已安排；事项状态未改变。");
-      await openWorkItemBatch(batch.id); await loadDashboard();
-    } catch (err) { setError(err instanceof ApiError ? err.message : "批次未创建，请检查所选事项。"); }
+      const activity = await apiPost<WorkItemActivity>("/work-item-activities", { ...batchDraft, work_item_name: columnBatchTarget.label, operator, targets: columnTargetsPayload() });
+      setBatchArrangeOpen(false); setBatchDraft({ name: "", scheduled_on: "", note: "" }); setFeedback("办理活动已安排；事项状态未改变。");
+      await openWorkItemActivity(activity.id); await loadDashboard();
+    } catch (err) { setError(err instanceof ApiError ? err.message : "办理活动未创建，请检查所选事项。"); }
   }
 
-  async function completeCurrentBatch() {
-    if (!workItemBatch) return;
-    const memberIds = workItemBatch.members.filter((member) => selectedIds.includes(member.project_id) && member.member_status === "scheduled").map((member) => member.id);
+  async function recordCurrentActivityResults() {
+    if (!workItemActivity) return;
+    const memberIds = workItemActivity.members.filter((member) => selectedIds.includes(member.project_id) && member.member_status === "active").map((member) => member.id);
     try {
-      const batch = await apiPost<WorkItemBatch>(`/work-item-batches/${workItemBatch.id}/complete`, { operator, member_ids: memberIds, ...batchCompletion });
-      setWorkItemBatch(batch); setFeedback("已完成所选批次事项。"); await loadDashboard();
-    } catch (err) { setError(err instanceof ApiError ? err.message : "批次完成失败，未写入任何事项。"); }
+      const activity = await apiPost<WorkItemActivity>(`/work-item-activities/${workItemActivity.id}/results`, { operator, member_ids: memberIds, ...activityResult });
+      setWorkItemActivity(activity); setFeedback("已记录所选项目本次办理结果；事项状态未改变。"); await loadDashboard();
+    } catch (err) { setError(err instanceof ApiError ? err.message : "活动结果登记失败，未写入任何事项。"); }
   }
 
   async function loadBatchHistory() {
@@ -738,8 +738,8 @@ function DashboardPage() {
     if (batchHistoryFilters.year) params.set("year", batchHistoryFilters.year);
     if (batchHistoryFilters.keyword) params.set("keyword", batchHistoryFilters.keyword);
     if (batchHistoryFilters.status) params.set("status", batchHistoryFilters.status);
-    try { const result = await apiGet<{ items: WorkItemBatch[] }>(`/work-item-batches?${params}`); setBatchHistory(result.items); setBatchHistoryOpen(true); }
-    catch (err) { setError(err instanceof ApiError ? err.message : "批次记录加载失败。"); }
+    try { const result = await apiGet<{ items: WorkItemActivity[] }>(`/work-item-activities?${params}`); setBatchHistory(result.items); setBatchHistoryOpen(true); }
+    catch (err) { setError(err instanceof ApiError ? err.message : "办理活动记录加载失败。"); }
   }
 
   function queueColumnBatchSelection(column: StageColumn) {
@@ -780,7 +780,7 @@ function DashboardPage() {
 
   function closeRail() {
     if (columnBatchTarget) clearColumnBatchTarget();
-    setWorkItemBatch(null);
+    setWorkItemActivity(null);
     setRailExpanded(false);
     setQuickItem(null);
     setQuickConstraint(null);
@@ -1559,7 +1559,7 @@ function DashboardPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {projects.map((project) => {
+                    {(workItemActivity ? projects.filter((project) => workItemActivity.members.some((member) => member.project_id === project.id)) : projects).map((project) => {
                       const selected = selectedIds.includes(project.id);
                       return (
                         <tr key={project.id} className={selected && !columnBatchTarget ? "selected" : ""} onClick={(event) => handleProjectRowClick(event, project)}>
@@ -1589,7 +1589,7 @@ function DashboardPage() {
                           {showCompletionYearColumn ? <td className="year-column">{project.actual_end_date?.slice(0, 4) || "未记录"}</td> : null}
                           {stageColumns.map((column) => {
                             const columnSelected = Boolean(selected && columnBatchTarget?.kind === column.kind && columnBatchTarget.key === column.key && columnBatchTarget.instances[project.id]);
-                            return <td key={`${column.kind}:${column.key}`} className={columnSelected ? "column-batch-cell" : ""}><StageItemCell project={project} column={column} highlighted={columnSelected} onWorkItemSelect={(itemId) => void openQuickItem(project.id, itemId)} onConstraintSelect={(constraintId) => void openQuickConstraint(project.id, constraintId)} onBatchSelect={(batchId) => void openWorkItemBatch(batchId, "stage")} /></td>;
+                            return <td key={`${column.kind}:${column.key}`} className={columnSelected ? "column-batch-cell" : ""}><StageItemCell project={project} column={column} highlighted={columnSelected} onWorkItemSelect={(itemId) => void openQuickItem(project.id, itemId)} onConstraintSelect={(constraintId) => void openQuickConstraint(project.id, constraintId)} onActivitySelect={(activityId) => void openWorkItemActivity(activityId, "stage")} /></td>;
                           })}
                           <td className="department-column">
                             <div className="stacked">
@@ -1624,7 +1624,7 @@ function DashboardPage() {
           <div className={`rail-card operation-console ${railExpanded ? "is-expanded" : ""}`}>
             <button className="rail-toggle" type="button" onClick={() => railExpanded ? closeRail() : setRailExpanded(true)} aria-label={railExpanded ? "收起操作台" : "展开批量操作"}>{railExpanded ? "×" : "☰"}</button>
             <p className="section-kicker">PMO ACTIONS</p>
-            <h3>{contractPanel || quickItem || quickConstraint || quickConstraintList ? "快速办理" : workItemBatch ? "批次办理" : columnBatchTarget ? "阶段跟踪批量办理" : "批量操作"}</h3>
+            <h3>{contractPanel || quickItem || quickConstraint || quickConstraintList ? "快速办理" : workItemActivity ? "办理活动" : columnBatchTarget ? "阶段跟踪批量办理" : "批量操作"}</h3>
             {!contractPanel && !quickItem && !quickConstraint && !quickConstraintList ? <div className="selection-summary">
               <span>当前已选</span>
               <strong>{selectedIds.length}</strong>
@@ -1635,21 +1635,23 @@ function DashboardPage() {
               </div> : null}
             </div> : null}
             {!contractPanel && !quickItem && !quickConstraint && !quickConstraintList && !columnBatchTarget ? <div className="operation-tabs">
-              {([ ["advance", "推进管理"], ["batch", "批次记录"], ["stage", "Stage 推进"], ["items", "添加事项"], ["package", "应用工作包"], ["constraints", "外部约束"], ["config", "基础配置"] ] as const).map(([mode, label]) => <button key={mode} className={operationMode === mode ? "active" : ""} onClick={() => { setOperationMode(mode); setRailExpanded(true); if (mode === "batch") void loadBatchHistory(); }}>{label}</button>)}
+              {([ ["advance", "推进管理"], ["batch", "办理活动"], ["stage", "Stage 推进"], ["items", "添加事项"], ["package", "应用工作包"], ["constraints", "外部约束"], ["config", "基础配置"] ] as const).map(([mode, label]) => <button key={mode} className={operationMode === mode ? "active" : ""} onClick={() => { setOperationMode(mode); setRailExpanded(true); if (mode === "batch") void loadBatchHistory(); }}>{label}</button>)}
             </div> : null}
             <div className="operation-body">
-              {contractPanel ? <ContractPanel projectId={contractPanel.projectId} contextProject={contractPanel.contextProject} initialProjectIds={contractPanel.projectIds} initialContractId={contractPanel.contractId} operator={operator} allowCreate={contractPanel.projectIds.length > 0} defaultReadOnly={contractPanel.contextProject?.stage === "已完成"} onClose={closeRail} onChanged={refreshContractProjects} /> : workItemBatch ? <section className="column-batch-panel batch-panel">
-                <div className="quick-panel-heading"><strong>{workItemBatch.name}</strong><button type="button" className="text-button" onClick={() => { setWorkItemBatch(null); setOperationMode(batchReturnMode === "batch" ? "batch" : "advance"); if (batchReturnMode === "stage") setTableView("stage"); }}>返回{batchReturnMode === "batch" ? "批次记录" : "阶段跟踪"}</button></div>
-                <p className="operation-lead">事项 · <strong>{workItemBatch.work_item_name}</strong>{workItemBatch.scheduled_on ? ` · ${workItemBatch.scheduled_on}` : ""}</p>
-                <p className="muted-copy">批次成员 {workItemBatch.member_count} 个；当前选择只决定本次办理，不会移出批次。</p>
-                {workItemBatch.status === "open" ? <><div className="field-grid"><label className="field"><span>完成日期</span><input className="input" type="date" value={batchCompletion.completed_on} onChange={(event) => setBatchCompletion((current) => ({ ...current, completed_on: event.target.value }))} /></label><label className="field"><span>结论</span><input className="input" value={batchCompletion.result} onChange={(event) => setBatchCompletion((current) => ({ ...current, result: event.target.value }))} /></label></div><label className="field"><span>说明</span><textarea className="textarea" rows={2} value={batchCompletion.note} onChange={(event) => setBatchCompletion((current) => ({ ...current, note: event.target.value }))} /></label><button className="action-button primary full" disabled={!selectedIds.length || executing} onClick={() => void completeCurrentBatch()}>批量完成所选事项</button></> : <p className="success-copy">该批次已{workItemBatch.status === "voided" ? "作废" : "办结"}，可查看保留的成员与结果。</p>}
-                <details className="batch-member-details"><summary>管理成员</summary>{workItemBatch.members.map((member) => <div key={member.id} className="batch-member-row"><span>{member.project_code} · {member.project_name}</span><small>{member.member_status === "scheduled" ? "待办理" : member.member_status === "completed" ? "已完成" : member.member_status}</small></div>)}</details>
+              {contractPanel ? <ContractPanel projectId={contractPanel.projectId} contextProject={contractPanel.contextProject} initialProjectIds={contractPanel.projectIds} initialContractId={contractPanel.contractId} operator={operator} allowCreate={contractPanel.projectIds.length > 0} defaultReadOnly={contractPanel.contextProject?.stage === "已完成"} onClose={closeRail} onChanged={refreshContractProjects} /> : workItemActivity ? <section className="column-batch-panel activity-panel">
+                <div className="quick-panel-heading"><strong>{workItemActivity.name}</strong><button type="button" className="text-button" onClick={() => { setWorkItemActivity(null); setOperationMode(batchReturnMode === "batch" ? "batch" : "advance"); if (batchReturnMode === "stage") setTableView("stage"); }}>返回{batchReturnMode === "batch" ? "办理活动" : "阶段跟踪"}</button></div>
+                <p className="operation-lead">事项 · <strong>{workItemActivity.work_item_name}</strong>{workItemActivity.scheduled_on ? ` · ${workItemActivity.scheduled_on}` : ""}</p>
+                <p className="muted-copy">活动成员 {workItemActivity.member_count} 个，已登记结果 {workItemActivity.recorded_outcome_count} 个；当前选择只决定本次办理，不会移出活动。</p>
+                <div className="quick-actions">{workItemActivity.status === "not_started" ? <button className="mini-button" onClick={() => void apiPost<WorkItemActivity>(`/work-item-activities/${workItemActivity.id}/start`, { operator }).then(setWorkItemActivity)}>开始活动</button> : null}{["not_started", "in_progress"].includes(workItemActivity.status) ? <button className="mini-button" onClick={() => void apiPost<WorkItemActivity>(`/work-item-activities/${workItemActivity.id}/end`, { operator }).then(setWorkItemActivity)}>结束活动</button> : null}</div>
+                <section className="quick-group"><strong>活动进展</strong>{workItemActivity.progress_logs.map((log) => <p key={log.id} className="muted-copy">{formatDate(log.created_at)} · {log.content}</p>)}<textarea className="textarea" rows={2} placeholder="记录本次活动进展" onBlur={(event) => { const content = event.target.value.trim(); if (content) void apiPost<WorkItemActivity>(`/work-item-activities/${workItemActivity.id}/progress-logs`, { operator, content }).then((activity) => { setWorkItemActivity(activity); event.target.value = ""; }); }} /></section>
+                {workItemActivity.status === "not_started" || workItemActivity.status === "in_progress" ? <><div className="field-grid"><label className="field"><span>结果日期</span><input className="input" type="date" value={activityResult.result_on} onChange={(event) => setActivityResult((current) => ({ ...current, result_on: event.target.value }))} /></label><label className="field"><span>本次结果（可选）</span><input className="input" value={activityResult.result} onChange={(event) => setActivityResult((current) => ({ ...current, result: event.target.value }))} /></label></div><label className="field"><span>说明（可选）</span><textarea className="textarea" rows={2} value={activityResult.note} onChange={(event) => setActivityResult((current) => ({ ...current, note: event.target.value }))} /></label><button className="action-button primary full" disabled={!selectedIds.length || executing} onClick={() => void recordCurrentActivityResults()}>记录本次办理结果</button></> : <p className="success-copy">该办理活动已{workItemActivity.status === "voided" ? "作废" : "结束"}，可查看保留的成员与结果。</p>}
+                <details className="batch-member-details"><summary>管理成员</summary>{workItemActivity.members.map((member) => <div key={member.id} className="batch-member-row"><span>{member.project_code} · {member.project_name}</span><small>{member.outcome_status === "recorded" ? "已登记结果" : "未登记结果"}</small></div>)}</details>
               </section> : columnBatchTarget ? <section className="column-batch-panel">
                 <div className="quick-panel-heading"><strong>阶段跟踪批量办理</strong><button type="button" className="text-button" onClick={clearColumnBatchTarget}>取消列选择</button></div>
                 <p className="operation-lead">{columnBatchTarget.kind === "work_item" ? "事项" : "约束"} · <strong>{columnBatchTarget.label}</strong>，已选 {selectedIds.length} 个实际存在的实例。</p>
                 {columnBatchTarget.kind === "work_item" ? <>
-                  <button type="button" className="mini-button" disabled={!selectedIds.length} onClick={() => setBatchArrangeOpen((value) => !value)}>安排批次</button>
-                  {batchArrangeOpen ? <section className="batch-arrange-form"><label className="field"><span>批次名称</span><input className="input" value={batchDraft.name} onChange={(event) => setBatchDraft((current) => ({ ...current, name: event.target.value }))} /></label><label className="field"><span>日期（可选）</span><input className="input" type="date" value={batchDraft.scheduled_on} onChange={(event) => setBatchDraft((current) => ({ ...current, scheduled_on: event.target.value }))} /></label><label className="field"><span>说明（可选）</span><textarea className="textarea" rows={2} value={batchDraft.note} onChange={(event) => setBatchDraft((current) => ({ ...current, note: event.target.value }))} /></label><button className="action-button primary full" disabled={!batchDraft.name.trim() || executing} onClick={() => void createWorkItemBatch()}>保存批次安排</button></section> : null}
+                  <button type="button" className="mini-button" disabled={!selectedIds.length} onClick={() => setBatchArrangeOpen((value) => !value)}>安排办理活动</button>
+                  {batchArrangeOpen ? <section className="batch-arrange-form"><label className="field"><span>活动名称</span><input className="input" value={batchDraft.name} onChange={(event) => setBatchDraft((current) => ({ ...current, name: event.target.value }))} /></label><label className="field"><span>日期（可选）</span><input className="input" type="date" value={batchDraft.scheduled_on} onChange={(event) => setBatchDraft((current) => ({ ...current, scheduled_on: event.target.value }))} /></label><label className="field"><span>说明（可选）</span><textarea className="textarea" rows={2} value={batchDraft.note} onChange={(event) => setBatchDraft((current) => ({ ...current, note: event.target.value }))} /></label><button className="action-button primary full" disabled={!batchDraft.name.trim() || executing} onClick={() => void createWorkItemActivity()}>保存办理活动</button></section> : null}
                   <label className="field"><span>办理动作</span><select className="select" value={columnWorkItemAction} onChange={(event) => { setColumnWorkItemAction(event.target.value as typeof columnWorkItemAction); setColumnBatchPreview(null); }}><option value="progress">添加共同进展</option><option value="update">修改事项设置</option><option value="complete">完成事项</option></select></label>
                   {columnWorkItemAction === "progress" ? <label className="field"><span>共同进展</span><textarea className="textarea" rows={3} value={columnBatchValue.progress_content} onChange={(event) => setColumnBatchValue((current) => ({ ...current, progress_content: event.target.value }))} /></label> : null}
                 {columnWorkItemAction === "update" ? <div className="field-grid"><label className="field"><span>当前状态</span><select className="select" value={columnBatchValue.status} onChange={(event) => setColumnBatchValue((current) => ({ ...current, status: event.target.value }))}><option value="">不修改</option><option value="not_started">待办理</option><option value="in_progress">进行中</option><option value="paused">暂停</option></select></label><label className="field"><span>计划完成日期</span><input className="input" type="date" value={columnBatchValue.planned_date} onChange={(event) => setColumnBatchValue((current) => ({ ...current, planned_date: event.target.value }))} /></label><label className="field"><span>总览重点关注</span><select className="select" value={columnBatchValue.track_as_key_node} onChange={(event) => setColumnBatchValue((current) => ({ ...current, track_as_key_node: event.target.value }))}><option value="">不修改</option><option value="true">设为重点关注</option><option value="false">取消重点关注</option></select></label></div> : null}
@@ -1758,7 +1760,7 @@ function DashboardPage() {
                 <details className="force-stage-action"><summary>PMO 特批强制变更（例外）</summary><label className="field"><span>目标 Stage</span><select className="select" value={selectedTarget} onChange={(event) => setSelectedTarget(event.target.value)}><option value="">选择固定 Stage</option><option value="draft">未立项</option><option value="established">项目库—未实施</option><option value="closed">已完成</option><option value="terminated">已废弃</option></select></label><label className="field"><span>变更理由</span><textarea className="textarea" value={comment} onChange={(event) => setComment(event.target.value)} rows={3} /></label><button className="action-button primary full" disabled={!selectedIds.length || !selectedTarget || !comment || executing} onClick={() => void executeForceBatch()}><CheckCircle2 size={16} />确认特批变更</button></details>
               </> : null}
               {operationMode === "config" ? <section className="config-panel"><p className="operation-lead">项目分类是唯一的 PMO 分类字段；拖动条目调整显示与默认排序顺序。</p><div className="field-grid"><input className="input" value={newClassificationName} onChange={(event) => setNewClassificationName(event.target.value)} placeholder="新增项目分类" /><input className="input" value={newClassificationPrefix} onChange={(event) => setNewClassificationPrefix(event.target.value)} placeholder="编号前缀，例如 EQ" /></div><button className="mini-button" onClick={() => void addProjectClassification()}>新增项目分类</button><div className="template-manager config-sort-list">{projectTypes.map((item) => <div key={item.id} draggable onDragStart={() => setDraggedProjectTypeId(item.id)} onDragOver={(event) => event.preventDefault()} onDrop={() => { if (draggedProjectTypeId != null) void reorderProjectClassifications(draggedProjectTypeId, item.id); setDraggedProjectTypeId(null); }}><span className="drag-handle" aria-label="拖动调整项目分类顺序">⋮⋮</span><span>{item.name} · {item.code_prefix}</span><button className="text-button" onClick={() => void saveProjectClassification(item, { is_active: !item.is_active })}>{item.is_active ? "停用" : "恢复"}</button></div>) || <span>暂无项目分类</span>}</div><p className="mini-section-heading"><strong>部门排序</strong></p><div className="template-manager config-sort-list">{departments.map((department) => <div key={department} draggable onDragStart={() => setDraggedDepartment(department)} onDragOver={(event) => event.preventDefault()} onDrop={() => { if (draggedDepartment) void reorderDepartments(draggedDepartment, department); setDraggedDepartment(null); }}><span className="drag-handle" aria-label="拖动调整部门顺序">⋮⋮</span><span>{department}</span></div>)}</div></section> : null}
-              {operationMode === "batch" ? <section className="batch-history-panel"><div className="quick-panel-heading"><strong>批次记录</strong><button type="button" className="text-button" onClick={() => void loadBatchHistory()}>刷新</button></div><div className="field-grid"><label className="field"><span>年度</span><input className="input" inputMode="numeric" value={batchHistoryFilters.year} onChange={(event) => setBatchHistoryFilters((value) => ({ ...value, year: event.target.value }))} placeholder="例如 2026" /></label><label className="field"><span>办理情况</span><select className="select" value={batchHistoryFilters.status} onChange={(event) => setBatchHistoryFilters((value) => ({ ...value, status: event.target.value }))}><option value="">全部</option><option value="open">办理中</option><option value="closed">已办结</option><option value="voided">已作废</option></select></label></div><label className="field"><span>事项、项目或批次名称</span><input className="input" value={batchHistoryFilters.keyword} onChange={(event) => setBatchHistoryFilters((value) => ({ ...value, keyword: event.target.value }))} /></label><button className="mini-button" onClick={() => void loadBatchHistory()}>查询批次记录</button><div className="batch-history">{batchHistory.map((batch) => <button type="button" key={batch.id} className="batch-history-row" onClick={() => void openWorkItemBatch(batch.id, "batch")}><strong>{batch.name}</strong><small>{batch.work_item_name} · {batch.scheduled_on || "未设日期"} · {batch.member_count} 项 · {batch.status === "open" ? "办理中" : batch.status === "closed" ? "已办结" : "已作废"}</small></button>)}{batchHistoryOpen && !batchHistory.length ? <small>暂无符合条件的批次记录。</small> : null}</div></section> : null}</>}
+              {operationMode === "batch" ? <section className="batch-history-panel"><div className="quick-panel-heading"><strong>办理活动</strong><button type="button" className="text-button" onClick={() => void loadBatchHistory()}>刷新</button></div><div className="field-grid"><label className="field"><span>年度</span><input className="input" inputMode="numeric" value={batchHistoryFilters.year} onChange={(event) => setBatchHistoryFilters((value) => ({ ...value, year: event.target.value }))} placeholder="例如 2026" /></label><label className="field"><span>状态</span><select className="select" value={batchHistoryFilters.status} onChange={(event) => setBatchHistoryFilters((value) => ({ ...value, status: event.target.value }))}><option value="">全部</option><option value="not_started">待办理</option><option value="in_progress">进行中</option><option value="ended">已结束</option><option value="voided">已作废</option></select></label></div><label className="field"><span>事项、项目或活动名称</span><input className="input" value={batchHistoryFilters.keyword} onChange={(event) => setBatchHistoryFilters((value) => ({ ...value, keyword: event.target.value }))} /></label><button className="mini-button" onClick={() => void loadBatchHistory()}>查询办理活动</button><div className="batch-history">{batchHistory.map((activity) => <button type="button" key={activity.id} className="batch-history-row" onClick={() => void openWorkItemActivity(activity.id, "batch")}><strong>{activity.name}</strong><small>{activity.work_item_name} · {activity.scheduled_on || "未设日期"} · {activity.member_count} 项 · {activity.status === "not_started" ? "待办理" : activity.status === "in_progress" ? "进行中" : activity.status === "ended" ? "已结束" : "已作废"}</small></button>)}{batchHistoryOpen && !batchHistory.length ? <small>暂无符合条件的办理活动。</small> : null}</div></section> : null}</>}
             </div>
           </div>
 

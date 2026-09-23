@@ -8,7 +8,7 @@ def test_zero_blocking_constraints_are_ready_and_dashboard_uses_effective_budget
     assert next(item for item in listed if item["id"] == project["id"])["external_constraints_cleared"] == "true"
     summary = client.get("/api/v1/dashboard/summary").json()
     assert summary["external_conditions_ready_count"] == 1
-    assert summary["external_conditions_ready_effective_budget"] == 120
+    assert summary["external_conditions_ready_effective_budget"] == "120"
 
 
 def test_project_edit_requires_audited_operator_and_reason(client, create_project_payload):
@@ -116,8 +116,8 @@ def test_summary_keeps_focus_items_without_reordering_the_list(client, create_pr
     assert projection["work_item_summary"][1]["id"] == attention["id"]
 
 
-def test_batch_groups_existing_same_name_items_without_creating_or_changing_them(client, create_project_payload):
-    """A batch schedules existing instances; it never creates a second Work Item."""
+def test_activity_groups_existing_same_name_items_without_creating_or_changing_them(client, create_project_payload):
+    """An activity organizes existing instances; it never creates a second Work Item."""
     first = client.post("/api/v1/projects", json=create_project_payload(name="批次甲")).json()
     second = client.post("/api/v1/projects", json=create_project_payload(name="批次乙")).json()
     first_item = client.post(
@@ -130,9 +130,9 @@ def test_batch_groups_existing_same_name_items_without_creating_or_changing_them
     ).json()
 
     created = client.post(
-        "/api/v1/work-item-batches",
+        "/api/v1/work-item-activities",
         json={
-            "name": "9 月第 1 批专家评审",
+            "name": "9 月第 1 次专家评审活动",
             "work_item_name": "专家评审",
             "scheduled_on": "2026-09-25",
             "operator": "PMO",
@@ -145,43 +145,34 @@ def test_batch_groups_existing_same_name_items_without_creating_or_changing_them
 
     assert created.status_code == 200
     body = created.json()
-    assert body["status"] == "open"
+    assert body["status"] == "not_started"
     assert [member["work_item_id"] for member in body["members"]] == [first_item["id"], second_item["id"]]
     for project, item in ((first, first_item), (second, second_item)):
         items = client.get(f"/api/v1/projects/{project['id']}/work-items").json()
         assert [(entry["id"], entry["status"]) for entry in items] == [(item["id"], "not_started")]
 
 
-def test_batch_completion_and_rehandle_preserve_the_original_item_instance(client, create_project_payload):
-    project = client.post("/api/v1/projects", json=create_project_payload(name="批次完成项目")).json()
+def test_activity_results_preserve_the_original_item_instance_until_item_is_completed(client, create_project_payload):
+    project = client.post("/api/v1/projects", json=create_project_payload(name="活动结果项目")).json()
     item = client.post(
         f"/api/v1/projects/{project['id']}/work-items",
         json={"name": "专家评审", "operator": "PMO"},
     ).json()
-    batch = client.post(
-        "/api/v1/work-item-batches",
-        json={"name": "9 月专家评审", "work_item_name": "专家评审", "operator": "PMO", "targets": [{"project_id": project["id"], "work_item_id": item["id"]}]},
+    activity = client.post(
+        "/api/v1/work-item-activities",
+        json={"name": "9 月专家评审活动", "work_item_name": "专家评审", "operator": "PMO", "targets": [{"project_id": project["id"], "work_item_id": item["id"]}]},
     ).json()
 
-    completed = client.post(
-        f"/api/v1/work-item-batches/{batch['id']}/complete",
-        json={"operator": "PMO", "member_ids": [batch["members"][0]["id"]], "completed_on": "2026-09-25", "result": "通过", "note": "评审通过"},
+    recorded = client.post(
+        f"/api/v1/work-item-activities/{activity['id']}/results",
+        json={"operator": "PMO", "member_ids": [activity["members"][0]["id"]], "result_on": "2026-09-25", "result": "通过", "note": "评审通过"},
     )
 
-    assert completed.status_code == 200
-    assert completed.json()["status"] == "closed"
-    assert client.get(f"/api/v1/projects/{project['id']}/work-items").json()[0]["status"] == "completed"
-
-    reopened = client.post(
-        f"/api/v1/work-item-batches/{batch['id']}/follow-up",
-        json={"operator": "PMO", "action": "rehandle", "member_ids": [batch["members"][0]["id"]]},
-    )
-
-    assert reopened.status_code == 200
+    assert recorded.status_code == 200
+    assert recorded.json()["status"] == "ended"
     restored = client.get(f"/api/v1/projects/{project['id']}/work-items").json()[0]
     assert restored["id"] == item["id"]
     assert restored["status"] == "not_started"
-    assert restored["completion_record_json"]["result"] == "通过"
 
 
 def test_project_projection_exposes_a_single_category_summary_display(client, create_project_payload):

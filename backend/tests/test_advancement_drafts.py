@@ -42,6 +42,63 @@ def test_draft_summary_reuses_same_year_funding_arrangements(client, create_proj
     assert draft["arrangements"][0]["name"] == "2027 年筹划资金"
 
 
+def test_current_year_active_project_can_be_reconciled_into_annual_plan_without_new_cycle(client, create_project_payload):
+    project = client.post("/api/v1/projects", json=create_project_payload(name="当年已推进待补录", budget=50)).json()
+    _establish(client, project["id"])
+    assert client.post(f"/api/v1/projects/{project['id']}/include-in-advancement", json={
+        "advancement_year": 2027, "operator": "PMO", "reason": "历史导入已推进",
+    }).status_code == 200
+    cycles_before = client.get(f"/api/v1/projects/{project['id']}/advancement-cycles").json()
+
+    plan = client.get("/api/v1/projects/annual-budget-plans/2027").json()
+    member = next(item for item in plan["members"] if item["project_id"] == project["id"])
+    assert member["plan_kind"] == "current_year_unplanned"
+    assert member["can_select"] is True
+    assert member["selected"] is False
+    assert member["planned_new_amount"] == "50"
+
+    saved = client.put("/api/v1/projects/annual-budget-plans/2027", json={
+        "operator": "PMO",
+        "members": [{"project_id": project["id"], "planned_new_amount": "50"}],
+    })
+    assert saved.status_code == 200
+    saved_member = next(item for item in saved.json()["members"] if item["project_id"] == project["id"])
+    assert saved_member["plan_kind"] == "current_year_planned"
+    assert saved_member["member_status"] == "confirmed"
+    assert saved_member["selected"] is True
+    assert saved.json()["planned_project_count"] == 1
+    assert saved.json()["draft_count"] == 0
+    assert client.get(f"/api/v1/projects/{project['id']}/advancement-cycles").json() == cycles_before
+
+    refreshed = client.get("/api/v1/projects/annual-budget-plans/2027").json()
+    assert next(item for item in refreshed["members"] if item["project_id"] == project["id"])["plan_kind"] == "current_year_planned"
+    assert all(item["project_id"] != project["id"] for item in client.get("/api/v1/projects/annual-budget-plans/2026").json()["members"])
+    next_year_member = next(item for item in client.get("/api/v1/projects/annual-budget-plans/2028").json()["members"] if item["project_id"] == project["id"])
+    assert next_year_member["plan_kind"] == "carryover"
+    assert next_year_member["planned_new_amount"] == "0"
+
+
+def test_current_year_reconciled_member_with_manual_zero_stays_visible_but_is_not_counted(client, create_project_payload):
+    project = client.post("/api/v1/projects", json=create_project_payload(name="当年推进零安排", budget=50)).json()
+    _establish(client, project["id"])
+    assert client.post(f"/api/v1/projects/{project['id']}/include-in-advancement", json={
+        "advancement_year": 2027, "operator": "PMO", "reason": "已推进",
+    }).status_code == 200
+
+    saved = client.put("/api/v1/projects/annual-budget-plans/2027", json={
+        "operator": "PMO",
+        "members": [{"project_id": project["id"], "planned_new_amount": "0", "planned_amount_is_manual": True}],
+    })
+    assert saved.status_code == 200
+    member = next(item for item in saved.json()["members"] if item["project_id"] == project["id"])
+    assert member["plan_kind"] == "current_year_planned"
+    assert member["selected"] is True
+    assert member["planned_new_amount"] == "0"
+    assert member["counts_toward_stats"] is False
+    assert saved.json()["planned_project_count"] == 0
+    assert saved.json()["planned_new_amount_total"] == "0"
+
+
 def test_draft_confirmation_mixes_normal_special_and_existing_advancement_atomically(client, create_project_payload):
     special = client.post("/api/v1/projects", json=create_project_payload(name="未立项特批", budget=30)).json()
     normal = client.post("/api/v1/projects", json=create_project_payload(name="正常纳入", budget=50)).json()

@@ -99,7 +99,9 @@ def _plan_kind(conn, project: dict, row: dict | None, year: int) -> str | None:
         if cycle and int(cycle["advancement_year"]) < year:
             return "carryover"
         if cycle and int(cycle["advancement_year"]) == year:
-            return "new_confirmed" if row and row["member_status"] != "removed" else "untracked_current_year"
+            if row and row["member_status"] != "removed":
+                return "current_year_planned" if row.get("member_kind") == "current_year" else "new_confirmed"
+            return "current_year_unplanned"
         # A project cannot be a historical-year plan member before it was
         # actually included in advancement.
         return None
@@ -112,12 +114,14 @@ def _annual_plan_member(conn, project: dict, row: dict | None, year: int) -> dic
     projected = _hydrate_project_projection(conn, project, omit_legacy_status=True)
     kind = _plan_kind(conn, project, row, year)
     assert kind is not None
-    selected = kind in {"carryover", "new_confirmed"} or bool(row and row["member_status"] != "removed")
+    selected = kind in {"carryover", "new_confirmed", "current_year_planned"} or bool(row and row["member_status"] != "removed")
     manual_amount = bool(row and row.get("planned_amount_is_manual"))
     amount = preferred(row, "planned_new_amount") if row else ("0" if kind == "carryover" else None)
     # Legacy draft rows stored 0 even when that was only the former default.
     # Once a user edits an amount, including an explicit 0, the new flag wins.
-    if row and not manual_amount and kind in {"candidate", "new_confirmed"} and decimal_of(amount) == 0:
+    if row and not manual_amount and kind in {"candidate", "new_confirmed", "current_year_planned"} and decimal_of(amount) == 0:
+        amount = projected["effective_budget"] or "0"
+    if kind == "current_year_unplanned" and amount is None:
         amount = projected["effective_budget"] or "0"
     return {
         "id": row["id"] if row else None,
@@ -132,7 +136,7 @@ def _annual_plan_member(conn, project: dict, row: dict | None, year: int) -> dic
         "plan_kind": kind,
         "selected": selected,
         "member_status": row["member_status"] if row else None,
-        "can_select": kind == "candidate",
+        "can_select": kind in {"candidate", "current_year_unplanned"},
         "can_cancel": kind == "new_confirmed",
         "counts_toward_stats": selected and decimal_of(amount) > 0,
         "planned_new_amount": amount,
@@ -169,9 +173,9 @@ def get_annual_budget_plan(year_value: object) -> dict:
         # persist only rows that have never been explicitly adjusted.
         for member in members:
             row = persisted.get(member["project_id"])
-            if row and not row.get("planned_amount_is_manual") and member["plan_kind"] in {"candidate", "new_confirmed"} and decimal_of(preferred(row, "planned_new_amount")) == 0:
+            if row and not row.get("planned_amount_is_manual") and member["plan_kind"] in {"candidate", "new_confirmed", "current_year_planned"} and decimal_of(preferred(row, "planned_new_amount")) == 0:
                 conn.execute("UPDATE annual_advancement_draft_members SET planned_new_amount=?,planned_new_amount_decimal=? WHERE id=?", (legacy_number(member["planned_new_amount"]), member["planned_new_amount"], row["id"]))
-        members.sort(key=lambda item: (0 if item["plan_kind"] == "carryover" else (1 if item["stage"] == "项目库—未实施" else 2), item["department"], item["project_code"]))
+        members.sort(key=lambda item: (0 if item["plan_kind"] == "carryover" else (1 if item["plan_kind"] in {"new_confirmed", "current_year_planned", "current_year_unplanned"} else (2 if item["stage"] == "项目库—未实施" else 3)), item["department"], item["project_code"]))
         selected = [item for item in members if item["selected"]]
         arrangements = _arrangements(conn, year)
         estimated_total = total(item["estimated_amount"] for item in arrangements)
@@ -243,19 +247,24 @@ def save_annual_budget_plan(year_value: object, payload: dict) -> dict:
             raise ValidationError(f"请保留续建项目：{'、'.join(missing_carryovers)}")
         for project_id, (amount, requested_manual) in normalized.items():
             current = existing.get(project_id)
+            kind = _plan_kind(conn, projects[project_id], current, year)
             if current:
-                status = current["member_status"] if current["member_status"] == "confirmed" else ("confirmed" if _plan_kind(conn, projects[project_id], current, year) == "carryover" else "draft")
+                status = current["member_status"] if current["member_status"] == "confirmed" else ("confirmed" if kind in {"carryover", "current_year_unplanned"} else "draft")
                 manual_amount = bool(current.get("planned_amount_is_manual")) if requested_manual is None else requested_manual
                 conn.execute(
                     "UPDATE annual_advancement_draft_members SET member_status=?,planned_new_amount=?,planned_new_amount_decimal=?,planned_amount_is_manual=?,added_by=?,added_at=?,removed_by='',removed_at=NULL,removal_reason='' WHERE id=?",
                     (status, legacy_number(amount), amount, int(manual_amount), operator, now, current["id"]),
                 )
             else:
+                status = "confirmed" if kind in {"carryover", "current_year_unplanned"} else "draft"
+                member_kind = "carryover" if kind == "carryover" else ("current_year" if kind == "current_year_unplanned" else "new")
                 conn.execute(
                 "INSERT INTO annual_advancement_draft_members (draft_id,project_id,member_status,added_by,planned_new_amount,planned_new_amount_decimal,planned_amount_is_manual,member_kind) VALUES (?,?,?,?,?,?,?,?)",
-                (draft["id"], project_id, "confirmed" if _plan_kind(conn, projects[project_id], None, year) == "carryover" else "draft", operator, legacy_number(amount), amount, int(bool(requested_manual)), "carryover" if _plan_kind(conn, projects[project_id], None, year) == "carryover" else "new"),
+                (draft["id"], project_id, status, operator, legacy_number(amount), amount, int(bool(requested_manual)), member_kind),
                 )
             _event(conn, draft["id"], "ANNUAL_BUDGET_PLAN_MEMBER_SAVED", operator, project_id, payload={"year": year, "planned_new_amount": amount})
+            if kind == "current_year_unplanned":
+                _event(conn, draft["id"], "ANNUAL_BUDGET_PLAN_CURRENT_YEAR_RECONCILED", operator, project_id, payload={"year": year, "planned_new_amount": amount})
         for project_id, current in existing.items():
             if project_id not in normalized and current["member_status"] == "draft":
                 conn.execute(

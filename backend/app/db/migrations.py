@@ -623,7 +623,7 @@ def init_database(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS work_item_batch_operations (
+        CREATE TABLE IF NOT EXISTS work_item_bulk_operations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             action TEXT NOT NULL,
             operator TEXT NOT NULL,
@@ -634,62 +634,79 @@ def init_database(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS work_item_batches (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            work_item_name TEXT NOT NULL,
-            scheduled_on TEXT DEFAULT '',
-            note TEXT DEFAULT '',
-            status TEXT NOT NULL DEFAULT 'open',
-            created_by TEXT NOT NULL,
-            created_at TEXT DEFAULT (datetime('now','localtime')),
-            updated_by TEXT DEFAULT '',
-            updated_at TEXT DEFAULT (datetime('now','localtime')),
-            voided_at TEXT,
-            voided_by TEXT DEFAULT '',
-            voided_reason TEXT DEFAULT ''
+        CREATE TABLE IF NOT EXISTS work_item_activities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, work_item_name TEXT NOT NULL,
+            scheduled_on TEXT DEFAULT '', note TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'not_started',
+            created_by TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now','localtime')),
+            updated_by TEXT DEFAULT '', updated_at TEXT DEFAULT (datetime('now','localtime')),
+            ended_at TEXT, ended_by TEXT DEFAULT '', voided_at TEXT, voided_by TEXT DEFAULT '', voided_reason TEXT DEFAULT ''
         )
         """
     )
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS work_item_batch_members (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            batch_id INTEGER NOT NULL REFERENCES work_item_batches(id) ON DELETE CASCADE,
+        CREATE TABLE IF NOT EXISTS work_item_activity_members (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, activity_id INTEGER NOT NULL REFERENCES work_item_activities(id) ON DELETE CASCADE,
             project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
             work_item_id INTEGER NOT NULL REFERENCES project_work_items(id) ON DELETE CASCADE,
-            member_status TEXT NOT NULL DEFAULT 'scheduled',
-            completion_record_json TEXT DEFAULT '{}',
-            follow_up_action TEXT DEFAULT '',
-            follow_up_at TEXT,
-            added_by TEXT NOT NULL,
-            added_at TEXT DEFAULT (datetime('now','localtime')),
-            removed_at TEXT,
-            removed_by TEXT DEFAULT '',
-            UNIQUE(batch_id, work_item_id)
+            member_status TEXT NOT NULL DEFAULT 'active', outcome_status TEXT NOT NULL DEFAULT 'unrecorded',
+            outcome_json TEXT DEFAULT '{}', outcome_recorded_at TEXT, outcome_recorded_by TEXT DEFAULT '',
+            follow_up_action TEXT DEFAULT '', follow_up_note TEXT DEFAULT '', processed_at TEXT, processed_by TEXT DEFAULT '',
+            added_by TEXT NOT NULL, added_at TEXT DEFAULT (datetime('now','localtime')),
+            removed_at TEXT, removed_by TEXT DEFAULT '', removed_reason TEXT DEFAULT '', UNIQUE(activity_id, work_item_id)
         )
         """
     )
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS work_item_batch_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            batch_id INTEGER NOT NULL REFERENCES work_item_batches(id) ON DELETE CASCADE,
-            event_type TEXT NOT NULL,
-            operator TEXT NOT NULL,
-            payload_json TEXT DEFAULT '{}',
+        CREATE TABLE IF NOT EXISTS work_item_activity_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, activity_id INTEGER NOT NULL REFERENCES work_item_activities(id) ON DELETE CASCADE,
+            event_type TEXT NOT NULL, operator TEXT NOT NULL, payload_json TEXT DEFAULT '{}',
             created_at TEXT DEFAULT (datetime('now','localtime'))
         )
         """
     )
-    for column, definition in [
-        ("processed_at", "TEXT"),
-        ("processed_by", "TEXT DEFAULT ''"),
-        ("follow_up_note", "TEXT DEFAULT ''"),
-        ("removed_reason", "TEXT DEFAULT ''"),
-    ]:
-        if not column_exists(conn, "work_item_batch_members", column):
-            conn.execute(f"ALTER TABLE work_item_batch_members ADD COLUMN {column} {definition}")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS work_item_activity_progress_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, activity_id INTEGER NOT NULL REFERENCES work_item_activities(id) ON DELETE CASCADE,
+            content TEXT NOT NULL, operator TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now','localtime')),
+            updated_at TEXT DEFAULT (datetime('now','localtime')), updated_by TEXT DEFAULT '',
+            deleted_at TEXT, deleted_by TEXT DEFAULT '', deleted_reason TEXT DEFAULT ''
+        )
+        """
+    )
+    # Direct migration: legacy Batch records are retained as activities, then
+    # the old tables are removed so no compatibility surface remains.
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_item_batches'").fetchone():
+        conn.execute(
+            """INSERT OR IGNORE INTO work_item_activities
+               (id,name,work_item_name,scheduled_on,note,status,created_by,created_at,updated_by,updated_at,voided_at,voided_by,voided_reason)
+               SELECT b.id,b.name,b.work_item_name,b.scheduled_on,b.note,
+                 CASE b.status WHEN 'closed' THEN 'ended' WHEN 'voided' THEN 'voided'
+                   WHEN 'open' THEN CASE WHEN EXISTS (SELECT 1 FROM work_item_batch_members m WHERE m.batch_id=b.id AND (m.member_status<>'scheduled' OR COALESCE(m.processed_at,'')<>'')) THEN 'in_progress' ELSE 'not_started' END
+                   ELSE 'not_started' END,
+                 b.created_by,b.created_at,b.updated_by,b.updated_at,b.voided_at,b.voided_by,b.voided_reason
+               FROM work_item_batches b"""
+        )
+        conn.execute(
+            """INSERT OR IGNORE INTO work_item_activity_members
+               (id,activity_id,project_id,work_item_id,member_status,outcome_status,outcome_json,outcome_recorded_at,outcome_recorded_by,follow_up_action,follow_up_note,processed_at,processed_by,added_by,added_at,removed_at,removed_by,removed_reason)
+               SELECT m.id,m.batch_id,m.project_id,m.work_item_id,
+                 CASE WHEN m.member_status='removed' THEN 'removed' WHEN m.member_status='released' THEN 'released' ELSE 'active' END,
+                 CASE WHEN m.member_status IN ('completed','external_completed') OR COALESCE(m.completion_record_json,'{}')<>'{}' THEN 'recorded' ELSE 'unrecorded' END,
+                 m.completion_record_json,m.processed_at,m.processed_by,m.follow_up_action,m.follow_up_note,m.processed_at,m.processed_by,m.added_by,m.added_at,m.removed_at,m.removed_by,m.removed_reason
+               FROM work_item_batch_members m"""
+        )
+        conn.execute(
+            """INSERT OR IGNORE INTO work_item_activity_events (id,activity_id,event_type,operator,payload_json,created_at)
+               SELECT id,batch_id,REPLACE(event_type,'BATCH','ACTIVITY'),operator,payload_json,created_at FROM work_item_batch_events"""
+        )
+        conn.execute("DROP TABLE work_item_batch_events")
+        conn.execute("DROP TABLE work_item_batch_members")
+        conn.execute("DROP TABLE work_item_batches")
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_item_batch_operations'").fetchone() and not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_item_bulk_operations'").fetchone():
+        conn.execute("ALTER TABLE work_item_batch_operations RENAME TO work_item_bulk_operations")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS project_external_constraint_scope_confirmations (
@@ -817,9 +834,9 @@ def create_indexes(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_project_funding_allocations_source ON project_funding_allocations(funding_source_id)",
         "CREATE INDEX IF NOT EXISTS idx_advancement_draft_members_draft ON annual_advancement_draft_members(draft_id, member_status)",
         "CREATE INDEX IF NOT EXISTS idx_advancement_draft_events_draft ON annual_advancement_draft_events(draft_id)",
-        "CREATE INDEX IF NOT EXISTS idx_work_item_batches_name ON work_item_batches(work_item_name, status, scheduled_on)",
-        "CREATE INDEX IF NOT EXISTS idx_work_item_batch_members_batch ON work_item_batch_members(batch_id, member_status)",
-        "CREATE INDEX IF NOT EXISTS idx_work_item_batch_members_item ON work_item_batch_members(work_item_id, member_status)",
+        "CREATE INDEX IF NOT EXISTS idx_work_item_activities_name ON work_item_activities(work_item_name, status, scheduled_on)",
+        "CREATE INDEX IF NOT EXISTS idx_work_item_activity_members_activity ON work_item_activity_members(activity_id, member_status)",
+        "CREATE INDEX IF NOT EXISTS idx_work_item_activity_members_item ON work_item_activity_members(work_item_id, member_status)",
     ]
     for sql in statements:
         conn.execute(sql)

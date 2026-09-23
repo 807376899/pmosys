@@ -233,7 +233,12 @@ export interface AnnualBudgetPlanMember {
   project_type: string;
   stage: string;
   effective_budget: string | null;
-  plan_kind: "carryover" | "new_confirmed" | "candidate" | "untracked_current_year";
+  plan_kind:
+    | "carryover"
+    | "new_confirmed"
+    | "current_year_unplanned"
+    | "current_year_planned"
+    | "candidate";
   selected: boolean;
   member_status?: "draft" | "confirmed" | "removed" | null;
   planned_new_amount: string | null;
@@ -353,16 +358,16 @@ export interface WorkItemSummary {
   track_as_key_node: boolean;
   last_progress_at?: string | null;
   last_activity_at?: string | null;
-  batch_summaries?: WorkItemBatchSummary[];
+  activity_summaries?: WorkItemActivitySummary[];
 }
 
-export interface WorkItemBatchSummary {
+export interface WorkItemActivitySummary {
   id: number;
   name: string;
   scheduled_on?: string;
 }
 
-export interface WorkItemBatchMember {
+export interface WorkItemActivityMember {
   id: number;
   project_id: number;
   work_item_id: number;
@@ -370,20 +375,22 @@ export interface WorkItemBatchMember {
   project_code: string;
   member_status: string;
   work_item_status: string;
-  completion_record?: { result?: string; completed_on?: string; note?: string };
+  outcome_status: "unrecorded" | "recorded";
+  outcome?: { result?: string; result_on?: string; note?: string };
   follow_up_action?: string;
 }
 
-export interface WorkItemBatch {
+export interface WorkItemActivity {
   id: number;
   name: string;
   work_item_name: string;
   scheduled_on?: string;
   note?: string;
-  status: "open" | "closed" | "voided";
-  members: WorkItemBatchMember[];
+  status: "not_started" | "in_progress" | "ended" | "voided";
+  members: WorkItemActivityMember[];
   member_count: number;
-  open_member_count: number;
+  recorded_outcome_count: number;
+  progress_logs: Array<{ id: number; content: string; operator: string; created_at: string }>;
 }
 
 export interface WorkItemColumnState {
@@ -400,7 +407,7 @@ export interface WorkItemColumnState {
   completion_result?: string;
     completion_note?: string;
     track_as_key_node?: boolean;
-    batch_summaries?: WorkItemBatchSummary[];
+    activity_summaries?: WorkItemActivitySummary[];
 }
 
 export interface WorkItemTemplate {

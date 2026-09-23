@@ -69,8 +69,10 @@ function amount(value: string | number | null | undefined) {
 function planLabel(member: AnnualBudgetPlanMember) {
   if (member.plan_kind === "carryover") return "续建";
   if (member.plan_kind === "new_confirmed") return "本年新增 · 已确认";
-  if (member.plan_kind === "untracked_current_year")
-    return "本年已推进 · 待补录计划";
+  if (member.plan_kind === "current_year_unplanned")
+    return "本年已推进 · 待纳入计划";
+  if (member.plan_kind === "current_year_planned")
+    return "本年已推进 · 已纳入计划";
   return "新增候选";
 }
 
@@ -174,7 +176,7 @@ export default function AnnualBudgetView({
       (plan?.members ?? []).filter(
         (member) =>
           draft[member.project_id]?.selected ||
-          ["carryover", "new_confirmed"].includes(member.plan_kind),
+          ["carryover", "new_confirmed", "current_year_planned"].includes(member.plan_kind),
       ),
     [plan, draft],
   );
@@ -257,7 +259,7 @@ export default function AnnualBudgetView({
       .filter(
         (member) =>
           draft[member.project_id]?.selected ||
-          ["carryover", "new_confirmed"].includes(member.plan_kind),
+          ["carryover", "new_confirmed", "current_year_planned"].includes(member.plan_kind),
       )
       .map((member) => ({
         project_id: member.project_id,
@@ -546,7 +548,12 @@ export default function AnnualBudgetView({
 
   const memberGroups = useMemo(() => {
     const members = plan?.members ?? [];
-    const fixedKinds = ["carryover", "new_confirmed", "untracked_current_year"];
+    const fixedKinds = [
+      "carryover",
+      "new_confirmed",
+      "current_year_planned",
+      "current_year_unplanned",
+    ];
     return [
       [
         "续建项目",
@@ -557,9 +564,11 @@ export default function AnnualBudgetView({
         members.filter((member) => member.plan_kind === "new_confirmed"),
       ],
       [
-        "本年已推进（待补录计划）",
+        "本年已推进",
         members.filter(
-          (member) => member.plan_kind === "untracked_current_year",
+          (member) =>
+            member.plan_kind === "current_year_planned" ||
+            member.plan_kind === "current_year_unplanned",
         ),
       ],
       [
@@ -672,7 +681,11 @@ export default function AnnualBudgetView({
                           const selected = Boolean(state?.selected);
                           const disabledAmount =
                             !selected &&
-                            !["carryover", "new_confirmed"].includes(
+                            ![
+                              "carryover",
+                              "new_confirmed",
+                              "current_year_planned",
+                            ].includes(
                               member.plan_kind,
                             );
                           return (
@@ -703,6 +716,8 @@ export default function AnnualBudgetView({
                                       取消推进
                                     </button>
                                   </>
+                                ) : member.plan_kind === "current_year_planned" ? (
+                                  <span className="plan-tag">已纳入计划</span>
                                 ) : member.can_select ? (
                                   <label className="check-pill">
                                     <input
