@@ -4,6 +4,7 @@ import json
 from datetime import datetime
 
 from backend.app.core.errors import NotFoundError, ValidationError
+from backend.app.core.money import decimal_of, difference, legacy_number, parse_money, preferred, total
 from backend.app.db.connection import get_connection
 from backend.app.repositories import projects as project_repo
 from backend.app.services.projects import _audit, _hydrate_project_projection, _project_stage
@@ -69,14 +70,17 @@ def _member_projection(conn, row: dict) -> dict:
         "name": projected["name"], "stage": projected["stage"], "advancement": projected["advancement"],
         "effective_budget": projected["effective_budget"], "member_status": row["member_status"],
         "next_action": next_action, "added_at": row["added_at"], "confirmed_at": row["confirmed_at"],
-        "planned_new_amount": float(row.get("planned_new_amount") or 0),
+        "planned_new_amount": preferred(row, "planned_new_amount") or "0",
     }
 
 
 def _arrangements(conn, year: int) -> list[dict]:
-    return [dict(row) for row in conn.execute(
+    rows = [dict(row) for row in conn.execute(
         "SELECT * FROM annual_funding_arrangements WHERE planning_year=? ORDER BY id DESC", (year,)
     ).fetchall()]
+    for row in rows:
+        row["estimated_amount"] = preferred(row, "estimated_amount")
+    return rows
 
 
 def _latest_cycle(conn, project_id: int, statuses: tuple[str, ...] = ("active", "deferred")) -> dict | None:
@@ -110,11 +114,11 @@ def _annual_plan_member(conn, project: dict, row: dict | None, year: int) -> dic
     assert kind is not None
     selected = kind in {"carryover", "new_confirmed"} or bool(row and row["member_status"] != "removed")
     manual_amount = bool(row and row.get("planned_amount_is_manual"))
-    amount = float(row["planned_new_amount"] or 0) if row else (0.0 if kind == "carryover" else None)
+    amount = preferred(row, "planned_new_amount") if row else ("0" if kind == "carryover" else None)
     # Legacy draft rows stored 0 even when that was only the former default.
     # Once a user edits an amount, including an explicit 0, the new flag wins.
-    if row and not manual_amount and kind in {"candidate", "new_confirmed"} and amount == 0:
-        amount = float(projected["effective_budget"] or 0)
+    if row and not manual_amount and kind in {"candidate", "new_confirmed"} and decimal_of(amount) == 0:
+        amount = projected["effective_budget"] or "0"
     return {
         "id": row["id"] if row else None,
         "project_id": projected["id"],
@@ -130,10 +134,10 @@ def _annual_plan_member(conn, project: dict, row: dict | None, year: int) -> dic
         "member_status": row["member_status"] if row else None,
         "can_select": kind == "candidate",
         "can_cancel": kind == "new_confirmed",
-        "counts_toward_stats": selected and amount > 0,
+        "counts_toward_stats": selected and decimal_of(amount) > 0,
         "planned_new_amount": amount,
         "planned_amount_is_manual": manual_amount,
-        "default_planned_new_amount": float(projected["effective_budget"] or 0),
+        "default_planned_new_amount": projected["effective_budget"] or "0",
         "next_action": _member_action(project),
         "confirmed_at": row["confirmed_at"] if row else None,
     }
@@ -165,21 +169,21 @@ def get_annual_budget_plan(year_value: object) -> dict:
         # persist only rows that have never been explicitly adjusted.
         for member in members:
             row = persisted.get(member["project_id"])
-            if row and not row.get("planned_amount_is_manual") and member["plan_kind"] in {"candidate", "new_confirmed"} and float(row.get("planned_new_amount") or 0) == 0:
-                conn.execute("UPDATE annual_advancement_draft_members SET planned_new_amount=? WHERE id=?", (member["planned_new_amount"], row["id"]))
+            if row and not row.get("planned_amount_is_manual") and member["plan_kind"] in {"candidate", "new_confirmed"} and decimal_of(preferred(row, "planned_new_amount")) == 0:
+                conn.execute("UPDATE annual_advancement_draft_members SET planned_new_amount=?,planned_new_amount_decimal=? WHERE id=?", (legacy_number(member["planned_new_amount"]), member["planned_new_amount"], row["id"]))
         members.sort(key=lambda item: (0 if item["plan_kind"] == "carryover" else (1 if item["stage"] == "项目库—未实施" else 2), item["department"], item["project_code"]))
         selected = [item for item in members if item["selected"]]
         arrangements = _arrangements(conn, year)
-        estimated_total = sum(float(item["estimated_amount"] or 0) for item in arrangements)
-        planned_total = sum(float(item["planned_new_amount"] or 0) for item in selected)
+        estimated_total = total(item["estimated_amount"] for item in arrangements)
+        planned_total = total(item["planned_new_amount"] for item in selected)
         categories: dict[str, dict] = {}
         for item in selected:
             if not item["counts_toward_stats"]:
                 continue
             code = item["project_type"]
-            bucket = categories.setdefault(code, {"count": 0, "planned_new_amount": 0.0})
+            bucket = categories.setdefault(code, {"count": 0, "planned_new_amount": "0"})
             bucket["count"] += 1
-            bucket["planned_new_amount"] += float(item["planned_new_amount"] or 0)
+            bucket["planned_new_amount"] = total((bucket["planned_new_amount"], item["planned_new_amount"]))
         return {
             "id": draft["id"] if draft else None,
             "year": year,
@@ -190,8 +194,8 @@ def get_annual_budget_plan(year_value: object) -> dict:
             "confirmed_count": sum(item["member_status"] == "confirmed" for item in selected),
             "planned_new_amount_total": planned_total,
             "estimated_total": estimated_total,
-            "difference": estimated_total - planned_total,
-            "over_expected": planned_total > estimated_total if arrangements else False,
+            "difference": difference(estimated_total, planned_total),
+            "over_expected": decimal_of(planned_total) > decimal_of(estimated_total) if arrangements else False,
             "category_stats": categories,
             "arrangements": arrangements,
         }
@@ -203,14 +207,14 @@ def save_annual_budget_plan(year_value: object, payload: dict) -> dict:
     raw_members = payload.get("members") or []
     if not isinstance(raw_members, list):
         raise ValidationError("年度计划成员格式无效")
-    normalized: dict[int, tuple[float, bool | None]] = {}
+    normalized: dict[int, tuple[str, bool | None]] = {}
     for item in raw_members:
         try:
             project_id = int(item.get("project_id") or 0)
-            amount = float(item.get("planned_new_amount"))
+            amount = parse_money(item.get("planned_new_amount"), "本年新增安排")
         except (TypeError, ValueError) as exc:
             raise ValidationError("本年新增安排必须为非负数字") from exc
-        if project_id <= 0 or amount < 0:
+        if project_id <= 0:
             raise ValidationError("本年新增安排必须为非负数字")
         if project_id in normalized:
             raise ValidationError("年度计划中存在重复项目")
@@ -243,13 +247,13 @@ def save_annual_budget_plan(year_value: object, payload: dict) -> dict:
                 status = current["member_status"] if current["member_status"] == "confirmed" else ("confirmed" if _plan_kind(conn, projects[project_id], current, year) == "carryover" else "draft")
                 manual_amount = bool(current.get("planned_amount_is_manual")) if requested_manual is None else requested_manual
                 conn.execute(
-                    "UPDATE annual_advancement_draft_members SET member_status=?,planned_new_amount=?,planned_amount_is_manual=?,added_by=?,added_at=?,removed_by='',removed_at=NULL,removal_reason='' WHERE id=?",
-                    (status, amount, int(manual_amount), operator, now, current["id"]),
+                    "UPDATE annual_advancement_draft_members SET member_status=?,planned_new_amount=?,planned_new_amount_decimal=?,planned_amount_is_manual=?,added_by=?,added_at=?,removed_by='',removed_at=NULL,removal_reason='' WHERE id=?",
+                    (status, legacy_number(amount), amount, int(manual_amount), operator, now, current["id"]),
                 )
             else:
                 conn.execute(
-                "INSERT INTO annual_advancement_draft_members (draft_id,project_id,member_status,added_by,planned_new_amount,planned_amount_is_manual,member_kind) VALUES (?,?,?,?,?,?,?)",
-                (draft["id"], project_id, "confirmed" if _plan_kind(conn, projects[project_id], None, year) == "carryover" else "draft", operator, amount, int(bool(requested_manual)), "carryover" if _plan_kind(conn, projects[project_id], None, year) == "carryover" else "new"),
+                "INSERT INTO annual_advancement_draft_members (draft_id,project_id,member_status,added_by,planned_new_amount,planned_new_amount_decimal,planned_amount_is_manual,member_kind) VALUES (?,?,?,?,?,?,?,?)",
+                (draft["id"], project_id, "confirmed" if _plan_kind(conn, projects[project_id], None, year) == "carryover" else "draft", operator, legacy_number(amount), amount, int(bool(requested_manual)), "carryover" if _plan_kind(conn, projects[project_id], None, year) == "carryover" else "new"),
                 )
             _event(conn, draft["id"], "ANNUAL_BUDGET_PLAN_MEMBER_SAVED", operator, project_id, payload={"year": year, "planned_new_amount": amount})
         for project_id, current in existing.items():
@@ -283,7 +287,7 @@ def supplement_annual_budget_plan(year_value: object, payload: dict) -> dict:
         now = _now()
         for project in projects:
             member = conn.execute("SELECT * FROM annual_advancement_draft_members WHERE draft_id=? AND project_id=?", (draft["id"], project["id"])).fetchone()
-            planned_amount = float(member["planned_new_amount"] or 0) if member else float(_hydrate_project_projection(conn, project)["effective_budget"] or 0)
+            planned_amount = preferred(dict(member), "planned_new_amount") if member else (_hydrate_project_projection(conn, project)["effective_budget"] or "0")
             conn.execute(
                 "INSERT INTO project_advancement_records (project_id,advancement_year,status,included_at,included_reason,included_by) VALUES (?,?, 'active',?,?,?)",
                 (project["id"], year, now, reason, operator),
@@ -291,9 +295,9 @@ def supplement_annual_budget_plan(year_value: object, payload: dict) -> dict:
             project_repo.update_project_status(conn, project["id"], {"library_implementation_view": "advancing", "advancement_year": year, "advancement_date": now, "updated_at": now})
             _audit(conn, project["id"], "PROJECT_INCLUDED_IN_ADVANCEMENT", operator, reason, {"year": year, "source": "annual_plan_supplement"})
             if member:
-                conn.execute("UPDATE annual_advancement_draft_members SET member_status='confirmed',planned_new_amount=?,confirmed_by=?,confirmed_at=? WHERE id=?", (planned_amount, operator, now, member["id"]))
+                conn.execute("UPDATE annual_advancement_draft_members SET member_status='confirmed',planned_new_amount=?,planned_new_amount_decimal=?,confirmed_by=?,confirmed_at=? WHERE id=?", (legacy_number(planned_amount), planned_amount, operator, now, member["id"]))
             else:
-                conn.execute("INSERT INTO annual_advancement_draft_members (draft_id,project_id,member_status,added_by,planned_new_amount,member_kind,confirmed_by,confirmed_at) VALUES (?,?, 'confirmed',?,?,?,?,?)", (draft["id"], project["id"], operator, planned_amount, "new", operator, now))
+                conn.execute("INSERT INTO annual_advancement_draft_members (draft_id,project_id,member_status,added_by,planned_new_amount,planned_new_amount_decimal,member_kind,confirmed_by,confirmed_at) VALUES (?,?, 'confirmed',?,?,?,?,?,?)", (draft["id"], project["id"], operator, legacy_number(planned_amount), planned_amount, "new", operator, now))
             _event(conn, draft["id"], "ANNUAL_BUDGET_PLAN_SUPPLEMENTED", operator, project["id"], reason, {"year": year, "planned_new_amount": planned_amount})
         conn.execute("UPDATE annual_advancement_drafts SET updated_at=? WHERE id=?", (now, draft["id"]))
     return get_annual_budget_plan(year)
@@ -352,10 +356,11 @@ def annual_plan_exception_action(year_value: object, payload: dict) -> dict:
                 event = "PROJECT_SPECIAL_INCLUDED_IN_ADVANCEMENT" if is_special else ("PROJECT_ADVANCEMENT_RESUMED" if action == "resume" else "PROJECT_INCLUDED_IN_ADVANCEMENT")
                 _audit(conn, project_id, event, operator, reason, {"year": year, "source": "annual_plan_exception", "action": action})
                 if member:
-                    conn.execute("UPDATE annual_advancement_draft_members SET member_status='confirmed',member_kind='new',planned_new_amount=?,confirmed_by=?,confirmed_at=?,removed_by='',removed_at=NULL,removal_reason='' WHERE id=?", (float(member["planned_new_amount"] or _hydrate_project_projection(conn, project)["effective_budget"] or 0), operator, now, member["id"]))
+                    planned_amount = preferred(dict(member), "planned_new_amount") or (_hydrate_project_projection(conn, project)["effective_budget"] or "0")
+                    conn.execute("UPDATE annual_advancement_draft_members SET member_status='confirmed',member_kind='new',planned_new_amount=?,planned_new_amount_decimal=?,confirmed_by=?,confirmed_at=?,removed_by='',removed_at=NULL,removal_reason='' WHERE id=?", (legacy_number(planned_amount), planned_amount, operator, now, member["id"]))
                 else:
-                    planned_amount = float(_hydrate_project_projection(conn, project)["effective_budget"] or 0)
-                    conn.execute("INSERT INTO annual_advancement_draft_members (draft_id,project_id,member_status,added_by,planned_new_amount,member_kind,confirmed_by,confirmed_at) VALUES (?,?, 'confirmed',?,?,?,?,?)", (draft["id"], project_id, operator, planned_amount, "new", operator, now))
+                    planned_amount = _hydrate_project_projection(conn, project)["effective_budget"] or "0"
+                    conn.execute("INSERT INTO annual_advancement_draft_members (draft_id,project_id,member_status,added_by,planned_new_amount,planned_new_amount_decimal,member_kind,confirmed_by,confirmed_at) VALUES (?,?, 'confirmed',?,?,?,?,?,?)", (draft["id"], project_id, operator, legacy_number(planned_amount), planned_amount, "new", operator, now))
             elif action == "defer":
                 active = _latest_cycle(conn, project_id, ("active",))
                 assert active is not None
@@ -383,7 +388,7 @@ def get_advancement_draft(year_value: object) -> dict:
         if not draft:
             return {
                 "year": year, "members": [], "member_count": 0, "draft_count": 0, "confirmed_count": 0,
-                "effective_budget_total": 0.0, "estimated_total": 0.0, "difference": 0.0, "over_expected": False,
+                "effective_budget_total": "0", "estimated_total": "0", "difference": "0", "over_expected": False,
                 "arrangements": [],
             }
         rows = [dict(row) for row in conn.execute(
@@ -394,14 +399,14 @@ def get_advancement_draft(year_value: object) -> dict:
         arrangements = [dict(row) for row in conn.execute(
             "SELECT * FROM annual_funding_arrangements WHERE planning_year=? ORDER BY id DESC", (year,)
         ).fetchall()]
-        estimated_total = sum(float(item["estimated_amount"]) for item in arrangements)
-        effective_budget_total = sum(float(item["effective_budget"]) for item in members if item["effective_budget"] is not None)
+        estimated_total = total(preferred(item, "estimated_amount") for item in arrangements)
+        effective_budget_total = total(item["effective_budget"] for item in members)
         return {
             "id": draft["id"], "year": year, "members": members, "member_count": len(members),
             "draft_count": sum(item["member_status"] == "draft" for item in members),
             "confirmed_count": sum(item["member_status"] == "confirmed" for item in members),
             "effective_budget_total": effective_budget_total, "estimated_total": estimated_total,
-            "difference": estimated_total - effective_budget_total, "over_expected": effective_budget_total > estimated_total if arrangements else False,
+            "difference": difference(estimated_total, effective_budget_total), "over_expected": decimal_of(effective_budget_total) > decimal_of(estimated_total) if arrangements else False,
             "arrangements": arrangements,
         }
 

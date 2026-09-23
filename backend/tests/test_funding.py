@@ -29,9 +29,9 @@ def test_annual_funding_overview_uses_current_advancing_effective_budget(client,
     overview = client.get("/api/v1/funding/overview", params={"year": 2027})
     assert overview.status_code == 200
     body = overview.json()
-    assert body["estimated_total"] == 100
-    assert body["advancing_effective_budget_total"] == 120
-    assert body["difference"] == -20
+    assert body["estimated_total"] == "100"
+    assert body["advancing_effective_budget_total"] == "120"
+    assert body["difference"] == "-20"
     assert body["over_expected"] is True
     assert body["advancing_project_count"] == 1
     assert body["advancing_projects"][0]["id"] == project["id"]
@@ -40,9 +40,9 @@ def test_annual_funding_overview_uses_current_advancing_effective_budget(client,
         "name": "调整后的年度安排", "estimated_amount": 140, "fund_code": "", "note": "调整", "operator": "PMO",
     })
     assert updated.status_code == 200
-    assert client.get("/api/v1/funding/overview", params={"year": 2027}).json()["estimated_total"] == 140
+    assert client.get("/api/v1/funding/overview", params={"year": 2027}).json()["estimated_total"] == "140"
     assert client.request("DELETE", f"/api/v1/funding/arrangements/{arrangement_id}", json={"operator": "PMO", "reason": "测试清理"}).status_code == 200
-    assert client.get("/api/v1/funding/overview", params={"year": 2027}).json()["estimated_total"] == 0
+    assert client.get("/api/v1/funding/overview", params={"year": 2027}).json()["estimated_total"] == "0"
 
 
 def test_project_funding_allocations_are_many_to_many_and_warn_without_blocking(client, create_project_payload):
@@ -69,10 +69,10 @@ def test_project_funding_allocations_are_many_to_many_and_warn_without_blocking(
     assert allocated.json()["warnings"]
 
     detail = client.get(f"/api/v1/projects/{first['id']}").json()
-    assert detail["formal_allocation_total"] == 130
+    assert detail["formal_allocation_total"] == "130"
     assert detail["funding_allocations"][0]["fund_code"] == "A001"
     listed = client.get("/api/v1/projects", params={"page_size": 20}).json()["items"]
-    assert next(item for item in listed if item["id"] == second["id"])["formal_allocation_total"] == 30
+    assert next(item for item in listed if item["id"] == second["id"])["formal_allocation_total"] == "30"
 
 
 def test_funding_import_creates_cross_year_source_and_updates_existing_pair(client, create_project_payload):
@@ -98,7 +98,7 @@ def test_funding_import_creates_cross_year_source_and_updates_existing_pair(clie
     assert client.post(f"/api/v1/projects/{first['id']}/funding-allocations", json={
         "funding_source_id": source["id"], "allocated_amount": 75, "operator": "PMO",
     }).status_code == 200
-    assert client.get(f"/api/v1/projects/{first['id']}/funding-allocations").json()[0]["allocated_amount"] == 75
+    assert client.get(f"/api/v1/projects/{first['id']}/funding-allocations").json()[0]["allocated_amount"] == "75"
 
 
 def test_funding_import_keeps_project_source_link_when_allocation_amount_is_blank(client, create_project_payload):

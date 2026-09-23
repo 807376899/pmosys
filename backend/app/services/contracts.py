@@ -5,6 +5,7 @@ import sqlite3
 from datetime import date, datetime
 
 from backend.app.core.errors import ConflictError, NotFoundError, ValidationError
+from backend.app.core.money import decimal_of, difference, legacy_number, parse_money, preferred, total
 from backend.app.db.connection import get_connection
 from backend.app.repositories import projects as project_repo
 
@@ -40,18 +41,8 @@ def _date(value: object, label: str, *, required: bool = False) -> str | None:
         raise ValidationError(f"{label}必须为 YYYY-MM-DD") from exc
 
 
-def _amount(value: object, label: str, *, required: bool = False) -> float | None:
-    if value in (None, ""):
-        if required:
-            raise ValidationError(f"{label}不能为空")
-        return None
-    try:
-        amount = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValidationError(f"{label}必须为数字") from exc
-    if amount < 0:
-        raise ValidationError(f"{label}不能小于 0")
-    return amount
+def _amount(value: object, label: str, *, required: bool = False) -> str | None:
+    return parse_money(value, label, required=required)
 
 
 def _contract_row(conn: sqlite3.Connection, contract_id: int) -> dict:
@@ -109,7 +100,7 @@ def _contract_audit(conn: sqlite3.Connection, contract_id: int, event_type: str,
 
 def _linked_projects(conn: sqlite3.Connection, contract_id: int) -> list[dict]:
     return [dict(row) for row in conn.execute(
-        """SELECT p.id,p.project_code,p.name,p.department,p.current_status,p.library_implementation_view,p.special_advancement_active,cp.allocated_amount
+        """SELECT p.id,p.project_code,p.name,p.department,p.current_status,p.library_implementation_view,p.special_advancement_active,cp.allocated_amount,cp.allocated_amount_decimal
            FROM contract_projects cp JOIN projects p ON p.id=cp.project_id
            WHERE cp.contract_id=? AND p.deleted_at IS NULL ORDER BY p.project_code""",
         (contract_id,),
@@ -135,16 +126,19 @@ def _acceptance_records(conn: sqlite3.Connection, contract_id: int) -> list[dict
 def _serialize_contract(conn: sqlite3.Connection, contract: dict, *, include_history: bool = False) -> dict:
     latest_progress = _latest_progress(conn, contract["id"])
     projects = _linked_projects(conn, contract["id"])
+    contract["total_amount"] = preferred(contract, "total_amount")
+    for project in projects:
+        project["allocated_amount"] = preferred(project, "allocated_amount")
     allocated = [item["allocated_amount"] for item in projects]
     allocation_complete = bool(projects) and all(amount is not None for amount in allocated)
-    allocation_total = sum(float(amount) for amount in allocated if amount is not None)
+    allocation_total = total(amount for amount in allocated if amount is not None)
     result = {
         **contract,
         "projects": projects,
         "latest_progress": latest_progress,
         "allocation_complete": allocation_complete,
         "allocation_total": allocation_total,
-        "allocation_difference": None if contract["total_amount"] is None or not allocation_complete else float(contract["total_amount"]) - allocation_total,
+        "allocation_difference": None if contract["total_amount"] is None or not allocation_complete else difference(contract["total_amount"], allocation_total),
     }
     if include_history:
         result["progress_logs"] = get_contract_progress_logs_for_connection(conn, contract["id"])
@@ -200,7 +194,7 @@ def project_contract_projection(conn: sqlite3.Connection, project_id: int, *, in
     return result
 
 
-def _project_links(payload: dict, *, current: list[dict] | None = None) -> tuple[list[int], dict[int, float | None]]:
+def _project_links(payload: dict, *, current: list[dict] | None = None) -> tuple[list[int], dict[int, str | None]]:
     raw_links = payload.get("project_links")
     if raw_links is None:
         ids = list(dict.fromkeys(int(project_id) for project_id in payload.get("project_ids") or []))
@@ -240,13 +234,14 @@ def create_contract(payload: dict) -> dict:
         projects = _validate_project_links(conn, project_ids, allow_completed=history_correction)
         _assert_contract_number_available(conn, data["contract_no"])
         cursor = conn.execute(
-            """INSERT INTO contracts (name,contract_no,supplier,total_amount,signed_on,planned_completion_on,note,status,created_by,updated_by)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            (name, data["contract_no"], data["supplier"], data["total_amount"], data["signed_on"], data["planned_completion_on"], data["note"], status, operator, operator),
+            """INSERT INTO contracts (name,contract_no,supplier,total_amount,total_amount_decimal,signed_on,planned_completion_on,note,status,created_by,updated_by)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (name, data["contract_no"], data["supplier"], legacy_number(data["total_amount"]), data["total_amount"], data["signed_on"], data["planned_completion_on"], data["note"], status, operator, operator),
         )
         contract_id = cursor.lastrowid
         for project in projects:
-            conn.execute("INSERT INTO contract_projects (contract_id,project_id,linked_by,allocated_amount) VALUES (?,?,?,?)", (contract_id, project["id"], operator, allocations[project["id"]]))
+            amount = allocations[project["id"]]
+            conn.execute("INSERT INTO contract_projects (contract_id,project_id,linked_by,allocated_amount,allocated_amount_decimal) VALUES (?,?,?,?,?)", (contract_id, project["id"], operator, legacy_number(amount), amount))
         if completion_acceptance:
             _record_contract_acceptance(conn, contract_id, completion_acceptance, operator)
         event = "CONTRACT_HISTORICAL_CREATED" if history_correction else "CONTRACT_CREATED"
@@ -338,8 +333,8 @@ def update_contract(contract_id: int, payload: dict) -> dict:
             if before["acceptance_status"] != "accepted" and not accepted_inline:
                 raise ValidationError("合同验收通过后才能标记为已完成")
         conn.execute(
-            """UPDATE contracts SET name=?,contract_no=?,supplier=?,total_amount=?,signed_on=?,planned_completion_on=?,note=?,status=?,updated_by=?,updated_at=? WHERE id=?""",
-            (name, data["contract_no"], data["supplier"], data["total_amount"], data["signed_on"], data["planned_completion_on"], data["note"], status, operator, _now(), contract_id),
+            """UPDATE contracts SET name=?,contract_no=?,supplier=?,total_amount=?,total_amount_decimal=?,signed_on=?,planned_completion_on=?,note=?,status=?,updated_by=?,updated_at=? WHERE id=?""",
+            (name, data["contract_no"], data["supplier"], legacy_number(data["total_amount"]), data["total_amount"], data["signed_on"], data["planned_completion_on"], data["note"], status, operator, _now(), contract_id),
         )
         projects = _linked_projects(conn, contract_id)
         if completion_acceptance:
@@ -373,10 +368,12 @@ def update_contract_projects(contract_id: int, payload: dict) -> dict:
             placeholders = ",".join("?" for _ in removed)
             conn.execute(f"DELETE FROM contract_projects WHERE contract_id=? AND project_id IN ({placeholders})", [contract_id, *removed])
         for project_id in added:
-            conn.execute("INSERT INTO contract_projects (contract_id,project_id,linked_by,allocated_amount) VALUES (?,?,?,?)", (contract_id, project_id, operator, allocations[project_id]))
+            amount = allocations[project_id]
+            conn.execute("INSERT INTO contract_projects (contract_id,project_id,linked_by,allocated_amount,allocated_amount_decimal) VALUES (?,?,?,?,?)", (contract_id, project_id, operator, legacy_number(amount), amount))
         for project_id in target_ids:
             if project_id in current_ids:
-                conn.execute("UPDATE contract_projects SET allocated_amount=? WHERE contract_id=? AND project_id=?", (allocations[project_id], contract_id, project_id))
+                amount = allocations[project_id]
+                conn.execute("UPDATE contract_projects SET allocated_amount=?,allocated_amount_decimal=? WHERE contract_id=? AND project_id=?", (legacy_number(amount), amount, contract_id, project_id))
         affected = [*current_ids, *added]
         _contract_audit(conn, contract_id, "CONTRACT_PROJECTS_UPDATED", operator, reason=reason, payload={"added": added, "removed": removed, "history_correction": history_correction, "allocations": allocations})
         _project_audit(conn, affected, "CONTRACT_PROJECTS_UPDATED", operator, reason=reason, payload={"contract_id": contract_id, "added": added, "removed": removed, "allocations": allocations})

@@ -129,9 +129,9 @@ def test_contract_allocations_acceptance_and_completion_gate(client, create_proj
     })
     assert created.status_code == 200
     contract = created.json()
-    assert {item["allocated_amount"] for item in contract["projects"]} == {60, 30}
+    assert {item["allocated_amount"] for item in contract["projects"]} == {"60", "30"}
     assert contract["allocation_complete"] is True
-    assert contract["allocation_difference"] == 10
+    assert contract["allocation_difference"] == "10"
 
     blocked = client.patch(f"/api/v1/contracts/{contract['id']}", json={"status": "completed", "operator": "PMO"})
     assert blocked.status_code == 422

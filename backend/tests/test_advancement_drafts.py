@@ -20,7 +20,7 @@ def test_annual_draft_adjustment_keeps_project_lifecycle_unchanged(client, creat
     assert added.status_code == 200
     draft = client.get("/api/v1/projects/advancement-drafts/2027").json()
     assert draft["member_count"] == 2
-    assert draft["effective_budget_total"] == 80
+    assert draft["effective_budget_total"] == "80"
     assert {member["next_action"] for member in draft["members"]} == {"special", "include"}
     assert client.get(f"/api/v1/projects/{unestablished['id']}").json()["stage"] == "未立项"
     assert client.get(f"/api/v1/projects/{pool['id']}").json()["stage"] == "项目库—未实施"
@@ -36,9 +36,9 @@ def test_draft_summary_reuses_same_year_funding_arrangements(client, create_proj
         "fund_code": "", "note": "", "operator": "PMO",
     }).status_code == 200
     draft = client.get("/api/v1/projects/advancement-drafts/2027").json()
-    assert draft["estimated_total"] == 100
-    assert draft["effective_budget_total"] == 80
-    assert draft["difference"] == 20
+    assert draft["estimated_total"] == "100"
+    assert draft["effective_budget_total"] == "80"
+    assert draft["difference"] == "20"
     assert draft["arrangements"][0]["name"] == "2027 年筹划资金"
 
 

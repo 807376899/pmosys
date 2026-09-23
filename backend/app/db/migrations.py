@@ -734,6 +734,20 @@ def init_database(conn: sqlite3.Connection) -> None:
 
 
 def ensure_project_schema(conn: sqlite3.Connection) -> None:
+    # Precision columns are intentionally additive: legacy REAL values remain
+    # untouched and are only used as a read fallback for historical test data.
+    for table, columns in {
+        "projects": ("budget_decimal", "approved_budget_decimal", "contract_amount_decimal"),
+        "annual_funding_arrangements": ("estimated_amount_decimal",),
+        "funding_sources": ("reference_amount_decimal",),
+        "project_funding_allocations": ("allocated_amount_decimal",),
+        "annual_advancement_draft_members": ("planned_new_amount_decimal",),
+        "contracts": ("total_amount_decimal",),
+        "contract_projects": ("allocated_amount_decimal",),
+    }.items():
+        for column in columns:
+            if not column_exists(conn, table, column):
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
     for column, definition in [("fund_name", "TEXT DEFAULT ''"), ("fund_manager", "TEXT DEFAULT ''")]:
         if not column_exists(conn, "funding_sources", column):
             conn.execute(f"ALTER TABLE funding_sources ADD COLUMN {column} {definition}")

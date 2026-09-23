@@ -8,6 +8,9 @@ from pydantic import ConfigDict, Field, field_validator
 from backend.app.schemas.common import APIModel, PagedResponse
 
 
+MoneyValue = str | int | float
+
+
 class ProjectType(str, Enum):
     """历史导入兼容枚举；新建项目运行时使用数据库类型目录。"""
 
@@ -53,8 +56,8 @@ class ProjectBase(APIModel):
     location: str = ""
     procurement_nature: str = ""
     establishment_document_no: str = ""
-    budget: float | None = None
-    contract_amount: float | None = None
+    budget: MoneyValue | None = None
+    contract_amount: MoneyValue | None = None
     special_note: str = ""
     actual_start_date: str = ""
     actual_end_date: str = ""
@@ -62,7 +65,7 @@ class ProjectBase(APIModel):
 
 class ProjectCreate(ProjectBase):
     project_code: str = ""
-    approved_budget: float | None = None
+    approved_budget: MoneyValue | None = None
     operator: str = Field(min_length=1)
 
     @field_validator("name", "operator")
@@ -88,8 +91,8 @@ class ProjectUpdate(APIModel):
     location: str | None = None
     procurement_nature: str | None = None
     establishment_document_no: str | None = None
-    budget: float | None = None
-    contract_amount: float | None = None
+    budget: MoneyValue | None = None
+    contract_amount: MoneyValue | None = None
     special_note: str | None = None
     actual_start_date: str | None = None
     actual_end_date: str | None = None
@@ -125,9 +128,9 @@ class ProjectListItem(APIModel):
     project_summary_display: str | None = None
     establishment_document_no: str | None = None
     library_implementation_view: str | None = None
-    budget: float | None = None
-    approved_budget: float | None = None
-    contract_amount: float | None = None
+    budget: str | None = None
+    approved_budget: str | None = None
+    contract_amount: str | None = None
     special_note: str | None = None
     actual_start_date: str | None = None
     actual_end_date: str | None = None
@@ -151,9 +154,9 @@ class ProjectListItem(APIModel):
     external_constraint_open_count: int = 0
     external_constraint_states: list[dict[str, Any]] = []
     external_constraint_scope_confirmation: dict[str, Any] | None = None
-    effective_budget: float | None = None
+    effective_budget: str | None = None
     effective_budget_source: str | None = None
-    formal_allocation_total: float | None = None
+    formal_allocation_total: str | None = None
     funding_allocations: list[dict[str, Any]] = Field(default_factory=list)
     contract_summary: dict[str, Any] = Field(default_factory=dict)
 
@@ -190,7 +193,7 @@ class TransitionRequest(APIModel):
     comment: str = Field(min_length=1)
     deliverable: str = ""
     force: bool = False
-    approved_budget: float | None = None
+    approved_budget: MoneyValue | None = None
     expected_current_status: str | None = None
     expected_status_updated_at: str | None = None
 
@@ -244,7 +247,7 @@ class BatchTransitionExecuteRequest(APIModel):
     comment: str = Field(min_length=1)
     deliverable: str = ""
     force: bool = False
-    approved_budget: float | None = None
+    approved_budget: MoneyValue | None = None
     expected_statuses: dict[int, str] | None = None
     expected_status_updated_at: dict[int, str] | None = None
 

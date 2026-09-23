@@ -65,8 +65,9 @@ def insert_project(conn: sqlite3.Connection, payload: dict) -> int:
         INSERT INTO projects (
             project_code, name, description, department, sponsor, project_manager,
             current_status, category, project_type, budget, approved_budget,
-            contract_amount, special_note, actual_start_date, actual_end_date, major, location, procurement_nature, establishment_document_no
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            contract_amount, budget_decimal, approved_budget_decimal, contract_amount_decimal,
+            special_note, actual_start_date, actual_end_date, major, location, procurement_nature, establishment_document_no
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             payload["project_code"],
@@ -81,6 +82,9 @@ def insert_project(conn: sqlite3.Connection, payload: dict) -> int:
             payload.get("budget"),
             payload.get("approved_budget"),
             payload.get("contract_amount"),
+            payload.get("budget_decimal"),
+            payload.get("approved_budget_decimal"),
+            payload.get("contract_amount_decimal"),
             payload.get("special_note", ""),
             payload.get("actual_start_date", ""),
             payload.get("actual_end_date", ""),

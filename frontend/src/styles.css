@@ -46,7 +46,9 @@ textarea {
 
 .shell {
   position: relative;
-  overflow: hidden;
+  /* A sticky detail header needs the document scroll container, not a clipped
+     shell ancestor.  Horizontal overflow remains owned by table wrappers. */
+  overflow: visible;
   min-height: 100vh;
   padding: 28px;
 }
@@ -1348,7 +1350,7 @@ textarea {
 
 /* Canonical workbench table and quick-handling layout.  Keep dimensions here
    so responsive corrections do not compete with older percentage widths. */
-.project-table-wrap { width: 100%; max-width: 100%; overflow: auto; overscroll-behavior-inline: contain; }
+.project-table-wrap { position: relative; width: 100%; max-width: 100%; overflow: auto; overscroll-behavior-inline: contain; }
 .project-table { width: max-content; min-width: 980px; table-layout: fixed; }
 .project-table th, .project-table td { overflow-wrap: normal; word-break: normal; }
 .project-table th:nth-child(1), .project-table td:nth-child(1) { width: 46px; min-width: 46px; max-width: 46px; }
@@ -1367,6 +1369,8 @@ textarea {
 .table-select-all { border: 0; padding: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
 .table-select-all:hover { color: var(--accent-cyan); }
 .project-table th:nth-child(1), .project-table td:nth-child(1), .project-table th:nth-child(2), .project-table td:nth-child(2) { position: sticky; z-index: 3; background: var(--panel-strong); }
+.project-table thead th { position: sticky; top: 0; z-index: 5; background: var(--panel-strong); box-shadow: 0 1px 0 var(--line); }
+.project-table thead th:nth-child(1), .project-table thead th:nth-child(2) { z-index: 7; }
 .project-table th:nth-child(1), .project-table td:nth-child(1) { left: 0; }
 .project-table th:nth-child(2), .project-table td:nth-child(2) { left: 46px; box-shadow: 4px 0 8px rgba(31,30,26,.05); }
 .project-table tbody tr.selected td:nth-child(1), .project-table tbody tr.selected td:nth-child(2) { background: #e7f3ef; }
@@ -1386,7 +1390,10 @@ textarea {
 .config-sort-list > div { grid-template-columns: auto minmax(0, 1fr) auto; cursor: grab; }
 .config-sort-list > div:active { cursor: grabbing; }
 .config-sort-list .drag-handle { color: var(--muted); }
-.detail-hero { position: sticky; top: 0; z-index: 12; }
+.detail-hero { position: sticky; top: 0; z-index: 20; background: var(--paper-strong); }
+.detail-hero + .dashboard-notices,
+.detail-hero + .detail-loading,
+.detail-hero + .detail-layout { scroll-margin-top: 12rem; }
 
 .selection-summary { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 5px 12px; }
 .selection-summary > strong { grid-row: span 2; grid-column: 2; font-family: Newsreader, serif; font-size: 2rem; }

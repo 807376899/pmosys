@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any
 import pandas as pd
 from backend.app.core.errors import DuplicateProjectCodeError, ValidationError
+from backend.app.core.money import parse_money
 from backend.app.db.connection import get_connection
 from backend.app.repositories import projects as project_repo
 from backend.app.schemas.import_export import ImportCommitErrorItem, ImportPreviewErrorItem, ImportPreviewRecord
@@ -76,7 +77,7 @@ def preview_import(file_name:str,content:bytes)->dict:
                 reserved.add(code); nature=NATURES.get(_pick(row,"procurement_nature"),_pick(row,"procurement_nature"))
                 if nature and nature not in {"goods","service","mixed"}: raise ValidationError("采购属性仅可填货物、服务或混合")
                 initial,effective=_pick(row,"budget"),_pick(row,"approved_budget")
-                records.append(ImportPreviewRecord(row_number=number,project_code=code,name=name,description=_pick(row,"description"),department=_pick(row,"department"),major=_pick(row,"major"),sponsor=_pick(row,"sponsor"),project_manager=_pick(row,"project_manager"),current_status=status,project_type=kind,budget=float(initial) if initial else None,approved_budget=float(effective) if effective else None,procurement_nature=nature,location=_pick(row,"location"),establishment_document_no=document,actual_end_date=completed,advancement_year=int(year) if year else None,import_advancing=label in {"推进中", "已完成"},termination_reason=reason,approver=approver,special_note=_pick(row,"special_note")))
+                records.append(ImportPreviewRecord(row_number=number,project_code=code,name=name,description=_pick(row,"description"),department=_pick(row,"department"),major=_pick(row,"major"),sponsor=_pick(row,"sponsor"),project_manager=_pick(row,"project_manager"),current_status=status,project_type=kind,budget=parse_money(initial,"初始预算",required=False),approved_budget=parse_money(effective,"有效预算",required=False),procurement_nature=nature,location=_pick(row,"location"),establishment_document_no=document,actual_end_date=completed,advancement_year=int(year) if year else None,import_advancing=label in {"推进中", "已完成"},termination_reason=reason,approver=approver,special_note=_pick(row,"special_note")))
             except Exception as exc: errors.append(ImportPreviewErrorItem(row_number=number,code=getattr(exc,"code","IMPORT_PREVIEW_ERROR"),message=str(exc),name=_pick(row,"name") or None))
     return {"total_rows":len(df),"valid_rows":len(records),"invalid_rows":len(errors),"records":records,"errors":errors}
 

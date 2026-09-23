@@ -72,3 +72,4 @@
 | DEC-20260922-04 | 变更 | REQ-GOV-001@v5, REQ-WI-003@v4, REQ-BULK-001@v5, REQ-UI-003@v11, REQ-UI-004@v6 | REQ-GOV-001@v6, REQ-WI-003@v5, REQ-BULK-001@v6, REQ-UI-003@v12, REQ-UI-004@v7 | 用户确认 Work Item Batch 只组织现有同名事项；待办理可直接完成；成员与本次选择分离，作废释放待办成员但保留历史，资料能力后置。 |
 | DEC-20260922-05 | 新增 | — | REQ-BATCH-001@v1 | 用户授权新增 Work Item 批次领域，用于组织既有同名事项并保留批次成员、办理与作废历史；不新增资料能力。 |
 | DEC-20260922-06 | 变更 | REQ-UI-002@v2, REQ-UI-004@v7, REQ-BATCH-001@v1 | REQ-UI-002@v3, REQ-UI-004@v8, REQ-BATCH-001@v2 | 用户确认总览右侧批次记录与推进管理必须为独立一级入口及独立状态；批次从真实来源返回，不进入推进管理。 |
+| DEC-20260923-01 | 变更 | REQ-PRJ-001@v4, REQ-PRJ-003@v7, REQ-WI-003@v5, REQ-EC-001@v4, REQ-EC-003@v3, REQ-UI-003@v12, REQ-UI-006@v10, REQ-UI-007@v4 | REQ-PRJ-001@v5, REQ-PRJ-003@v8, REQ-WI-003@v6, REQ-EC-001@v5, REQ-EC-003@v4, REQ-UI-003@v13, REQ-UI-006@v11, REQ-UI-007@v5 | 用户授权金额改为精度文本权威列、Decimal 汇总与字符串投影，旧 REAL 仅兼容读取且不改写测试数据；同时收敛表头/详情 sticky、Stage 专属显示列、待办理文案与前端角色隐藏。 |

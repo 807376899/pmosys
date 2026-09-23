@@ -13,19 +13,19 @@ class StatusStat(APIModel):
 
 class DashboardSummary(APIModel):
     total_projects: int
-    total_budget: float
-    total_approved_budget: float
-    total_contract_amount: float
+    total_budget: str
+    total_approved_budget: str
+    total_contract_amount: str
     project_library_count: int
-    project_library_total_budget: float
-    project_library_total_effective_budget: float = 0
+    project_library_total_budget: str
+    project_library_total_effective_budget: str = "0"
     review_in_progress_count: int
     reviewed_count: int
-    reviewed_total_approved_budget: float
+    reviewed_total_approved_budget: str
     external_conditions_ready_count: int = 0
-    external_conditions_ready_effective_budget: float = 0
+    external_conditions_ready_effective_budget: str = "0"
     external_conditions_ongoing_count: int = 0
-    external_conditions_ongoing_effective_budget: float = 0
+    external_conditions_ongoing_effective_budget: str = "0"
     status_stats: list[StatusStat]
 
 
@@ -34,6 +34,6 @@ class DashboardGroupItem(APIModel):
     label: str
     statuses: list[str]
     count: int
-    total_budget: float
-    total_approved_budget: float
-    total_contract_amount: float
+    total_budget: str
+    total_approved_budget: str
+    total_contract_amount: str

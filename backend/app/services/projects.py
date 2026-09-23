@@ -14,6 +14,7 @@ from backend.app.core.errors import (
     ValidationError,
 )
 from backend.app.core.config import get_settings
+from backend.app.core.money import legacy_number, parse_money, preferred
 from backend.app.db.connection import get_connection
 from backend.app.repositories import projects as project_repo
 from backend.app.repositories import workflow as workflow_repo
@@ -53,6 +54,9 @@ def create_project_internal(
                 raise DuplicateProjectCodeError(f"项目编号已存在: {project_code}")
         else:
             project_code = generate_project_code(conn, project_type)
+        monetary = {field: parse_money(payload.get(field), label, required=False) for field, label in {
+            "budget": "初始预算", "approved_budget": "有效预算", "contract_amount": "合同金额"
+        }.items()}
         project_id = project_repo.insert_project(
             conn,
             {
@@ -61,6 +65,8 @@ def create_project_internal(
                 "procurement_nature": procurement_nature,
                 "project_code": project_code,
                 "current_status": payload.get("current_status", "draft"),
+                **{field: legacy_number(value) for field, value in monetary.items()},
+                **{f"{field}_decimal": value for field, value in monetary.items()},
             },
         )
         project_repo.insert_status_history(
@@ -74,7 +80,7 @@ def create_project_internal(
         )
         project = project_repo.fetch_project_by_id(conn, project_id)
         assert project is not None
-        return project
+        return _hydrate_project_projection(conn, project)
 
 
 def create_project(payload: dict) -> dict:
@@ -132,16 +138,16 @@ def _external_constraint_projection(conn: sqlite3.Connection, project_id: int, p
         except json.JSONDecodeError:
             outcome = {}
         value = outcome.get("approved_budget")
-        if isinstance(value, (int, float)):
-            effective_budget = float(value)
+        if value not in (None, ""):
+            effective_budget = parse_money(value, "有效预算")
             break
     if effective_budget is not None:
         source = "budget_constraint"
-    elif project.get("approved_budget") is not None:
-        effective_budget = float(project["approved_budget"])
+    elif preferred(project, "approved_budget") is not None:
+        effective_budget = preferred(project, "approved_budget")
         source = "historical_review"
-    elif project.get("budget") is not None:
-        effective_budget = float(project["budget"])
+    elif preferred(project, "budget") is not None:
+        effective_budget = preferred(project, "budget")
         source = "initial_budget"
     else:
         effective_budget = None
@@ -180,6 +186,8 @@ def _constraint_cell_projection(conn: sqlite3.Connection, constraint: dict) -> d
 
 
 def _hydrate_project_projection(conn: sqlite3.Connection, project: dict, *, omit_legacy_status: bool = False) -> dict:
+    for field in ("budget", "approved_budget", "contract_amount"):
+        project[field] = preferred(project, field)
     project["stage"] = _project_stage(project)
     advancement_status = "special_active" if project.get("special_advancement_active") else (
         "active" if project.get("library_implementation_view") == "advancing" else (
@@ -369,6 +377,11 @@ def update_project(project_id: int, payload: ProjectUpdate) -> dict:
             raise ValidationError("采购属性必须为 goods、service 或 mixed")
         if "project_type" in updates and project["project_code"]:
             updates["project_code"] = validate_manual_project_code(conn, project["project_code"], updates["project_type"])
+        for field, label in {"budget": "初始预算", "contract_amount": "合同金额"}.items():
+            if field in updates:
+                amount = parse_money(updates[field], label, required=False)
+                updates[field] = legacy_number(amount)
+                updates[f"{field}_decimal"] = amount
         before = {field: project.get(field) for field in updates}
         project_repo.update_project_fields(conn, project_id, updates)
         _audit(conn, project_id, "PROJECT_UPDATED", payload.operator, payload.reason, {"before": before, "after": updates})
@@ -541,8 +554,7 @@ def transition_project(conn: sqlite3.Connection, project_id: int, payload: dict)
     if from_status == to_status:
         raise InvalidTransitionError("目标状态不能与当前状态相同")
     approved_budget = payload.get("approved_budget")
-    if approved_budget is not None and approved_budget < 0:
-        raise ValidationError("审核后预算不能小于 0", code="NEGATIVE_APPROVED_BUDGET")
+    approved_budget = parse_money(approved_budget, "审核后预算", required=False)
     if approved_budget is not None and not transition_allows_budget_adjustment(from_status, to_status):
         raise ValidationError(
             "仅在进入送审中或从送审中流转时允许调整审核后预算",
@@ -584,7 +596,8 @@ def transition_project(conn: sqlite3.Connection, project_id: int, payload: dict)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     updates = {"current_status": to_status, "updated_at": now, "status_updated_at": now}
     if approved_budget is not None:
-        updates["approved_budget"] = approved_budget
+        updates["approved_budget"] = legacy_number(approved_budget)
+        updates["approved_budget_decimal"] = approved_budget
     if to_status == "implementing" and not project.get("actual_start_date"):
         updates["actual_start_date"] = now[:10]
     if to_status in {"closed", "terminated"} and not project.get("actual_end_date"):
@@ -627,12 +640,12 @@ def pmo_override_project(project_id: int, payload: dict) -> dict:
             project_repo.update_project_fields(conn, project_id, {"library_implementation_view": "unimplemented"})
             project = project_repo.fetch_project_by_id(conn, project_id)
             assert project is not None
-    return project
+    return get_project(project_id)
 
 
 def complete_submission_review(project_id: int, payload: dict) -> dict:
     operator = str(payload.get("operator") or "").strip()
-    budget = payload.get("approved_budget")
+    budget = parse_money(payload.get("approved_budget"), "审核预算", required=True)
     if not operator or budget is None:
         raise ValidationError("送审结束必须填写操作人和审核预算")
     with get_connection() as conn:
@@ -642,11 +655,11 @@ def complete_submission_review(project_id: int, payload: dict) -> dict:
         if project["current_status"] != "submission_review":
             raise InvalidTransitionError("仅送审中项目可登记审核预算")
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        project_repo.update_project_status(conn, project_id, {"current_status": "established", "approved_budget": float(budget), "updated_at": now, "status_updated_at": now})
+        project_repo.update_project_status(conn, project_id, {"current_status": "established", "approved_budget": legacy_number(budget), "approved_budget_decimal": budget, "updated_at": now, "status_updated_at": now})
         project_repo.insert_status_history(conn, project_id=project_id, from_status="submission_review", to_status="established", action="送审结束，返回项目库", operator=operator, comment="已录入审核预算", deliverable="")
         updated = project_repo.fetch_project_by_id(conn, project_id)
     assert updated is not None
-    return updated
+    return _hydrate_project_projection(conn, updated)
 
 
 _PROJECT_ACTIVITY_EVENTS = {
@@ -1102,7 +1115,7 @@ def _act_on_constraint(conn: sqlite3.Connection, project_id: int, constraint_id:
         if not isinstance(outcome, dict):
             raise ValidationError("结论内容格式不正确")
         make_source = bool(payload.get("set_effective_budget_source"))
-        if make_source and (not bool(payload.get("cleared")) or not isinstance(outcome.get("approved_budget"), (int, float))):
+        if make_source and (not bool(payload.get("cleared")) or parse_money(outcome.get("approved_budget"), "核定金额", required=False) is None):
             raise ValidationError("设为当前有效预算来源需要已解除阻断的核定金额")
         if make_source:
             conn.execute("UPDATE project_external_constraints SET is_effective_budget_source=0 WHERE project_id=?", (project_id,))
@@ -1129,7 +1142,7 @@ def _act_on_constraint(conn: sqlite3.Connection, project_id: int, constraint_id:
             value = payload.get("effective_budget")
             if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0:
                 raise ValidationError("影响有效预算的约束解除时必须填写有效预算")
-            outcome["approved_budget"] = float(value)
+            outcome["approved_budget"] = parse_money(value, "有效预算")
             conn.execute("UPDATE project_external_constraints SET is_effective_budget_source=0 WHERE project_id=?", (project_id,))
         updates.update({
             "handling_status": "concluded", "clearance_status": "cleared", "cleared_at": now, "cleared_by": operator,
@@ -1152,7 +1165,7 @@ def _act_on_constraint(conn: sqlite3.Connection, project_id: int, constraint_id:
             outcome = json.loads(current.get("outcome_json") or "{}")
         except json.JSONDecodeError:
             outcome = {}
-        if current.get("handling_status") != "concluded" or current.get("clearance_status") != "cleared" or not isinstance(outcome.get("approved_budget"), (int, float)):
+        if current.get("handling_status") != "concluded" or current.get("clearance_status") != "cleared" or parse_money(outcome.get("approved_budget"), "核定金额", required=False) is None:
             raise ValidationError("仅已解除的预算核定结论可设为当前有效预算来源")
         if not reason:
             raise ValidationError("切换当前有效预算来源必须填写原因")
@@ -1717,7 +1730,7 @@ def include_in_advancement(project_id: int, payload: dict) -> dict:
         if _project_stage(project) != "项目库—未实施": raise ValidationError("仅项目库—未实施项目可纳入推进")
         now=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("INSERT INTO project_advancement_records (project_id,advancement_year,status,included_at,included_reason,included_by) VALUES (?,?, 'active',?,?,?)", (project_id, int(payload.get("advancement_year") or date.today().year), now, reason, operator))
-        project_repo.update_project_status(conn,project_id,{"library_implementation_view":"advancing","advancement_year":payload.get("advancement_year"),"advancement_date":now,"updated_at":now}); _audit(conn,project_id,"PROJECT_INCLUDED_IN_ADVANCEMENT",operator,reason,{"year":payload.get("advancement_year")}); return project_repo.fetch_project_by_id(conn,project_id)
+        project_repo.update_project_status(conn,project_id,{"library_implementation_view":"advancing","advancement_year":payload.get("advancement_year"),"advancement_date":now,"updated_at":now}); _audit(conn,project_id,"PROJECT_INCLUDED_IN_ADVANCEMENT",operator,reason,{"year":payload.get("advancement_year")}); updated = project_repo.fetch_project_by_id(conn,project_id); assert updated is not None; return _hydrate_project_projection(conn, updated)
 
 
 def defer_advancement(project_id: int, payload: dict) -> dict:
@@ -1738,7 +1751,7 @@ def defer_advancement(project_id: int, payload: dict) -> dict:
             "updated_at": now,
         })
         _audit(conn, project_id, "PROJECT_ADVANCEMENT_DEFERRED", operator, reason)
-        return project_repo.fetch_project_by_id(conn, project_id)
+        updated = project_repo.fetch_project_by_id(conn, project_id); assert updated is not None; return _hydrate_project_projection(conn, updated)
 
 
 def complete_advancement_cycle(project_id: int, payload: dict) -> dict:
@@ -1752,7 +1765,7 @@ def complete_advancement_cycle(project_id: int, payload: dict) -> dict:
         _audit(conn, project_id, "PROJECT_ADVANCEMENT_COMPLETED", operator, reason)
         project = project_repo.fetch_project_by_id(conn, project_id)
         assert project is not None
-        return project
+        return _hydrate_project_projection(conn, project)
 
 
 def _stage_advance_blockers(conn: sqlite3.Connection, project_id: int) -> list[dict]:

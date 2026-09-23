@@ -3,12 +3,12 @@ from __future__ import annotations
 from backend.app.db.connection import get_connection
 from backend.app.repositories.dashboard import (
     fetch_budget_summary,
-    fetch_group_budget_summaries,
     fetch_project_library_summary,
 )
 from backend.app.repositories.projects import GROUP_STATUS_MAP
 from backend.app.services.workflow import get_status_stats
 from backend.app.services.projects import _hydrate_project_projection
+from backend.app.core.money import parse_money, total
 
 
 GROUP_LABELS = {
@@ -50,11 +50,23 @@ def get_dashboard_summary() -> dict:
     ready = [item for item in library if item["external_constraints_cleared"] == "true"]
     ongoing = [item for item in library if item["external_constraints_cleared"] == "false"]
     summary.update({
-        "project_library_total_effective_budget": sum(item["effective_budget"] for item in library),
+        "project_library_total_effective_budget": total(item["effective_budget"] for item in library),
         "external_conditions_ready_count": len(ready),
-        "external_conditions_ready_effective_budget": sum(item["effective_budget"] for item in ready),
+        "external_conditions_ready_effective_budget": total(item["effective_budget"] for item in ready),
         "external_conditions_ongoing_count": len(ongoing),
-        "external_conditions_ongoing_effective_budget": sum(item["effective_budget"] for item in ongoing),
+        "external_conditions_ongoing_effective_budget": total(item["effective_budget"] for item in ongoing),
+    })
+    # SQLite REAL aggregates are only a legacy compatibility path.  Every
+    # current aggregate is rebuilt from the Decimal-backed project projection.
+    summary.update({
+        "total_budget": total(item["budget"] for item in projections),
+        "total_approved_budget": total(item["approved_budget"] for item in projections),
+        "total_contract_amount": total(item["contract_amount"] for item in projections),
+        "project_library_total_budget": total(item["budget"] for item in library),
+        "reviewed_total_approved_budget": total(
+            item["approved_budget"] for item in projections
+            if item.get("current_status") in REVIEWED_STATUSES
+        ),
     })
     summary["status_stats"] = get_status_stats()
     return summary
@@ -62,24 +74,34 @@ def get_dashboard_summary() -> dict:
 
 def get_dashboard_groups() -> list[dict]:
     with get_connection() as conn:
-        budget_summaries = fetch_group_budget_summaries(conn)
+        projections = [
+            _hydrate_project_projection(conn, dict(row))
+            for row in conn.execute("SELECT * FROM projects WHERE deleted_at IS NULL").fetchall()
+        ]
 
-    status_counts = {item["status_code"]: item["project_count"] for item in get_status_stats()}
+    def belongs_to_group(key: str, item: dict) -> bool:
+        if key == "pool_active":
+            return item.get("advancement", {}).get("status") in {"active", "special_active"}
+        if key == "pool_pending":
+            return item.get("stage") == "项目库—未实施"
+        if key == "pre_establish":
+            return item.get("stage") == "未立项"
+        if key == "completed":
+            return item.get("stage") == "已完成"
+        return item.get("stage") == "已废弃"
+
     items = []
     for key, statuses in GROUP_STATUS_MAP.items():
-        summary = budget_summaries.get(
-            key,
-            {"count": 0, "total_budget": 0.0, "total_approved_budget": 0.0, "total_contract_amount": 0.0},
-        )
+        group = [item for item in projections if belongs_to_group(key, item)]
         items.append(
             {
                 "key": key,
                 "label": GROUP_LABELS[key],
                 "statuses": statuses,
-                "count": int(summary["count"] if summary["count"] is not None else sum(status_counts.get(status, 0) for status in statuses)),
-                "total_budget": float(summary["total_budget"] or 0),
-                "total_approved_budget": float(summary["total_approved_budget"] or 0),
-                "total_contract_amount": float(summary["total_contract_amount"] or 0),
+                "count": len(group),
+                "total_budget": total(item["budget"] for item in group),
+                "total_approved_budget": total(item["approved_budget"] for item in group),
+                "total_contract_amount": total(item["contract_amount"] for item in group),
             }
         )
     return items

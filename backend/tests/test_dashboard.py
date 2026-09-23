@@ -16,9 +16,9 @@ def test_dashboard_groups(client, create_project_payload):
     ]
     assert items[0]["label"] == "未立项"
     assert items[0]["count"] == 1
-    assert items[0]["total_budget"] == 100.0
-    assert items[0]["total_approved_budget"] == 0.0
-    assert items[0]["total_contract_amount"] == 0.0
+    assert items[0]["total_budget"] == "100"
+    assert items[0]["total_approved_budget"] == "0"
+    assert items[0]["total_contract_amount"] == "0"
 
 
 def test_completed_group_includes_contract_amount(client, create_project_payload):
@@ -42,7 +42,7 @@ def test_completed_group_includes_contract_amount(client, create_project_payload
     assert response.status_code == 200
     completed = next(item for item in response.json() if item["key"] == "completed")
     assert completed["count"] == 1
-    assert completed["total_contract_amount"] == 66.0
+    assert completed["total_contract_amount"] == "66"
 
 
 def test_included_project_uses_advancing_stage_for_groups_and_list(client, create_project_payload):
@@ -208,10 +208,10 @@ def test_dashboard_summary_project_library_metrics(client, create_project_payloa
     body = response.json()
     assert body["total_projects"] == 5
     assert body["project_library_count"] == 3
-    assert body["project_library_total_budget"] == 120.0
+    assert body["project_library_total_budget"] == "120"
     assert body["review_in_progress_count"] == 1
     assert body["reviewed_count"] == 1
-    assert body["reviewed_total_approved_budget"] == 36.0
+    assert body["reviewed_total_approved_budget"] == "36"
 
 
 def test_not_found_error_uses_uniform_shape(client):

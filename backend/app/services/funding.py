@@ -6,8 +6,10 @@ import sqlite3
 from datetime import datetime
 
 import pandas as pd
+from openpyxl import load_workbook
 
 from backend.app.core.errors import NotFoundError, ValidationError
+from backend.app.core.money import decimal_of, difference, legacy_number, parse_money, preferred, total
 from backend.app.db.connection import get_connection
 from backend.app.repositories import projects as project_repo
 
@@ -23,18 +25,8 @@ def _operator(payload: dict) -> str:
     return operator
 
 
-def _amount(value: object, label: str, *, required: bool = True) -> float | None:
-    if value in (None, ""):
-        if required:
-            raise ValidationError(f"{label}不能为空")
-        return None
-    try:
-        result = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValidationError(f"{label}必须为数字") from exc
-    if result < 0:
-        raise ValidationError(f"{label}不能小于 0")
-    return result
+def _amount(value: object, label: str, *, required: bool = True) -> str | None:
+    return parse_money(value, label, required=required)
 
 
 def _year(value: object, label: str) -> int:
@@ -63,13 +55,14 @@ def _project_audit(conn: sqlite3.Connection, project_id: int, event_type: str, o
 
 def _source_stats(conn: sqlite3.Connection, source: dict) -> dict:
     totals = conn.execute(
-        "SELECT COALESCE(SUM(CASE WHEN allocation_amount_recorded=1 THEN allocated_amount ELSE 0 END),0) AS total, COUNT(DISTINCT project_id) AS projects FROM project_funding_allocations WHERE funding_source_id=?",
+        "SELECT allocated_amount,allocated_amount_decimal,allocation_amount_recorded,project_id FROM project_funding_allocations WHERE funding_source_id=?",
         (source["id"],),
-    ).fetchone()
+    ).fetchall()
+    source["reference_amount"] = preferred(source, "reference_amount")
     return {
         **source,
-        "allocated_total": float(totals["total"]),
-        "project_count": int(totals["projects"]),
+        "allocated_total": total(preferred(dict(row), "allocated_amount") for row in totals if row["allocation_amount_recorded"]),
+        "project_count": len({row["project_id"] for row in totals}),
     }
 
 
@@ -82,7 +75,10 @@ def _source_by_id(conn: sqlite3.Connection, source_id: int) -> dict:
 
 def list_arrangements(year: int) -> list[dict]:
     with get_connection() as conn:
-        return [dict(row) for row in conn.execute("SELECT * FROM annual_funding_arrangements WHERE planning_year=? ORDER BY id DESC", (year,)).fetchall()]
+        rows = [dict(row) for row in conn.execute("SELECT * FROM annual_funding_arrangements WHERE planning_year=? ORDER BY id DESC", (year,)).fetchall()]
+        for row in rows:
+            row["estimated_amount"] = preferred(row, "estimated_amount")
+        return rows
 
 
 def create_arrangement(payload: dict) -> dict:
@@ -94,10 +90,10 @@ def create_arrangement(payload: dict) -> dict:
     amount = _amount(payload.get("estimated_amount"), "预计总额")
     with get_connection() as conn:
         cursor = conn.execute(
-            "INSERT INTO annual_funding_arrangements (planning_year,name,estimated_amount,fund_code,note,created_by,updated_by) VALUES (?,?,?,?,?,?,?)",
-            (year, name, amount, str(payload.get("fund_code") or "").strip(), str(payload.get("note") or "").strip(), operator, operator),
+            "INSERT INTO annual_funding_arrangements (planning_year,name,estimated_amount,estimated_amount_decimal,fund_code,note,created_by,updated_by) VALUES (?,?,?,?,?,?,?,?)",
+            (year, name, legacy_number(amount), amount, str(payload.get("fund_code") or "").strip(), str(payload.get("note") or "").strip(), operator, operator),
         )
-        result = dict(conn.execute("SELECT * FROM annual_funding_arrangements WHERE id=?", (cursor.lastrowid,)).fetchone())
+        result = dict(conn.execute("SELECT * FROM annual_funding_arrangements WHERE id=?", (cursor.lastrowid,)).fetchone()); result["estimated_amount"] = preferred(result, "estimated_amount")
         _funding_audit(conn, "annual_arrangement", result["id"], "ANNUAL_FUNDING_ARRANGEMENT_CREATED", operator, result)
         return result
 
@@ -116,7 +112,9 @@ def update_arrangement(arrangement_id: int, payload: dict) -> dict:
             if not fields["name"]:
                 raise ValidationError("名称不能为空")
         if "estimated_amount" in payload:
-            fields["estimated_amount"] = _amount(payload["estimated_amount"], "预计总额")
+            amount = _amount(payload["estimated_amount"], "预计总额")
+            fields["estimated_amount"] = legacy_number(amount)
+            fields["estimated_amount_decimal"] = amount
         for key in ("fund_code", "note"):
             if key in payload:
                 fields[key] = str(payload[key] or "").strip()
@@ -124,7 +122,7 @@ def update_arrangement(arrangement_id: int, payload: dict) -> dict:
             raise ValidationError("没有可更新的字段")
         fields.update({"updated_by": operator, "updated_at": _now()})
         conn.execute(f"UPDATE annual_funding_arrangements SET {', '.join(f'{key}=?' for key in fields)} WHERE id=?", [*fields.values(), arrangement_id])
-        result = dict(conn.execute("SELECT * FROM annual_funding_arrangements WHERE id=?", (arrangement_id,)).fetchone())
+        result = dict(conn.execute("SELECT * FROM annual_funding_arrangements WHERE id=?", (arrangement_id,)).fetchone()); result["estimated_amount"] = preferred(result, "estimated_amount")
         _funding_audit(conn, "annual_arrangement", arrangement_id, "ANNUAL_FUNDING_ARRANGEMENT_UPDATED", operator, {"before": dict(before), "after": result})
         return result
 
@@ -154,8 +152,8 @@ def create_source(payload: dict) -> dict:
     with get_connection() as conn:
         try:
             cursor = conn.execute(
-                "INSERT INTO funding_sources (fund_code,fund_name,fund_manager,reference_amount,valid_from_year,valid_until_year,scope_note,note,created_by,updated_by) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (code, str(payload.get("fund_name") or "").strip(), str(payload.get("fund_manager") or "").strip(), reference, start, end, str(payload.get("scope_note") or "").strip(), str(payload.get("note") or "").strip(), operator, operator),
+                "INSERT INTO funding_sources (fund_code,fund_name,fund_manager,reference_amount,reference_amount_decimal,valid_from_year,valid_until_year,scope_note,note,created_by,updated_by) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (code, str(payload.get("fund_name") or "").strip(), str(payload.get("fund_manager") or "").strip(), legacy_number(reference), reference, start, end, str(payload.get("scope_note") or "").strip(), str(payload.get("note") or "").strip(), operator, operator),
             )
         except sqlite3.IntegrityError as exc:
             raise ValidationError(f"资金号已存在: {code}") from exc
@@ -184,7 +182,9 @@ def update_source(source_id: int, payload: dict) -> dict:
                 raise ValidationError("资金号不能为空")
             fields["fund_code"] = code
         if "reference_amount" in payload:
-            fields["reference_amount"] = _amount(payload["reference_amount"], "资金参考金额", required=False)
+            amount = _amount(payload["reference_amount"], "资金参考金额", required=False)
+            fields["reference_amount"] = legacy_number(amount)
+            fields["reference_amount_decimal"] = amount
         for key in ("valid_from_year", "valid_until_year"):
             if key in payload:
                 fields[key] = _year(payload[key], "有效起始年份" if key.endswith("from_year") else "有效结束年份")
@@ -222,13 +222,15 @@ def delete_source(source_id: int, payload: dict) -> None:
 
 def _allocation_rows(conn: sqlite3.Connection, project_id: int) -> list[dict]:
     rows = [dict(row) for row in conn.execute(
-        """SELECT a.*,s.fund_code,s.fund_name,s.fund_manager,s.reference_amount,s.valid_from_year,s.valid_until_year,s.scope_note
+        """SELECT a.*,s.fund_code,s.fund_name,s.fund_manager,s.reference_amount,s.reference_amount_decimal,s.valid_from_year,s.valid_until_year,s.scope_note
            FROM project_funding_allocations a JOIN funding_sources s ON s.id=a.funding_source_id
            WHERE a.project_id=? ORDER BY s.fund_code""",
         (project_id,),
     ).fetchall()]
     for row in rows:
         row["allocation_amount_recorded"] = bool(row["allocation_amount_recorded"])
+        row["allocated_amount"] = preferred(row, "allocated_amount")
+        row["reference_amount"] = preferred(row, "reference_amount")
         if not row["allocation_amount_recorded"]:
             row["allocated_amount"] = None
     return rows
@@ -236,8 +238,8 @@ def _allocation_rows(conn: sqlite3.Connection, project_id: int) -> list[dict]:
 
 def project_funding_projection(conn: sqlite3.Connection, project_id: int) -> dict:
     rows = _allocation_rows(conn, project_id)
-    recorded = [float(row["allocated_amount"]) for row in rows if row["allocated_amount"] is not None]
-    return {"funding_allocations": rows, "formal_allocation_total": float(sum(recorded)) if recorded else None}
+    recorded = [row["allocated_amount"] for row in rows if row["allocated_amount"] is not None]
+    return {"funding_allocations": rows, "formal_allocation_total": total(recorded) if recorded else None}
 
 
 def get_project_allocations(project_id: int) -> list[dict]:
@@ -254,13 +256,14 @@ def _allocation_warnings(conn: sqlite3.Connection, project_id: int, source_id: i
     project = project_repo.fetch_project_by_id(conn, project_id)
     assert project is not None
     _hydrate_project_projection(conn, project)
-    total = conn.execute("SELECT COALESCE(SUM(CASE WHEN allocation_amount_recorded=1 THEN allocated_amount ELSE 0 END),0) FROM project_funding_allocations WHERE project_id=?", (project_id,)).fetchone()[0]
+    amounts = conn.execute("SELECT allocated_amount,allocated_amount_decimal FROM project_funding_allocations WHERE project_id=? AND allocation_amount_recorded=1", (project_id,)).fetchall()
+    allocated_total = total(preferred(dict(row), "allocated_amount") for row in amounts)
     budget = project.get("effective_budget")
-    if budget is not None and float(total) > float(budget):
-        warnings.append(f"项目正式分配 {float(total):g} 万，已超过当前有效预算 {float(budget):g} 万")
+    if budget is not None and decimal_of(allocated_total) > decimal_of(budget):
+        warnings.append(f"项目正式分配 {allocated_total} 万，已超过当前有效预算 {budget} 万")
     source = _source_stats(conn, _source_by_id(conn, source_id))
-    if source.get("reference_amount") is not None and float(source["allocated_total"]) > float(source["reference_amount"]):
-        warnings.append(f"资金号 {source['fund_code']} 已分配 {float(source['allocated_total']):g} 万，超过参考金额 {float(source['reference_amount']):g} 万")
+    if source.get("reference_amount") is not None and decimal_of(source["allocated_total"]) > decimal_of(source["reference_amount"]):
+        warnings.append(f"资金号 {source['fund_code']} 已分配 {source['allocated_total']} 万，超过参考金额 {source['reference_amount']} 万")
     return warnings
 
 
@@ -275,10 +278,10 @@ def upsert_project_allocation(project_id: int, payload: dict) -> dict:
         before = conn.execute("SELECT * FROM project_funding_allocations WHERE project_id=? AND funding_source_id=?", (project_id, source_id)).fetchone()
         now = _now()
         if before:
-            conn.execute("UPDATE project_funding_allocations SET allocated_amount=?,allocation_amount_recorded=1,updated_by=?,updated_at=? WHERE id=?", (amount, operator, now, before["id"]))
+            conn.execute("UPDATE project_funding_allocations SET allocated_amount=?,allocated_amount_decimal=?,allocation_amount_recorded=1,updated_by=?,updated_at=? WHERE id=?", (legacy_number(amount), amount, operator, now, before["id"]))
             event = "PROJECT_FUNDING_ALLOCATION_UPDATED"
         else:
-            cursor = conn.execute("INSERT INTO project_funding_allocations (project_id,funding_source_id,allocated_amount,allocation_amount_recorded,created_by,updated_by) VALUES (?,?,?,?,?,?)", (project_id, source_id, amount, 1, operator, operator))
+            cursor = conn.execute("INSERT INTO project_funding_allocations (project_id,funding_source_id,allocated_amount,allocated_amount_decimal,allocation_amount_recorded,created_by,updated_by) VALUES (?,?,?,?,?,?,?)", (project_id, source_id, legacy_number(amount), amount, 1, operator, operator))
             before = {"id": cursor.lastrowid}
             event = "PROJECT_FUNDING_ALLOCATION_CREATED"
         result = dict(conn.execute("SELECT * FROM project_funding_allocations WHERE id=?", (before["id"],)).fetchone())
@@ -294,22 +297,22 @@ def bulk_upsert_source_allocations(source_id: int, payload: dict) -> dict:
         raise ValidationError("请至少选择一个项目")
     with get_connection() as conn:
         _source_by_id(conn, source_id)
-        normalized: list[tuple[int, float]] = []
+        normalized: list[tuple[int, str]] = []
         for item in allocations:
             project_id = int(item.get("project_id") or 0)
             if not project_repo.fetch_project_by_id(conn, project_id):
                 raise ValidationError(f"项目不存在: {project_id}")
-            normalized.append((project_id, _amount(item.get("allocated_amount"), "分配金额") or 0))
+            normalized.append((project_id, _amount(item.get("allocated_amount"), "分配金额") or "0"))
         if len({item[0] for item in normalized}) != len(normalized):
             raise ValidationError("同一项目只能填写一次")
         for project_id, amount in normalized:
             existing = conn.execute("SELECT id,allocated_amount FROM project_funding_allocations WHERE project_id=? AND funding_source_id=?", (project_id, source_id)).fetchone()
             if existing:
-                conn.execute("UPDATE project_funding_allocations SET allocated_amount=?,allocation_amount_recorded=1,updated_by=?,updated_at=? WHERE id=?", (amount, operator, _now(), existing["id"]))
+                conn.execute("UPDATE project_funding_allocations SET allocated_amount=?,allocated_amount_decimal=?,allocation_amount_recorded=1,updated_by=?,updated_at=? WHERE id=?", (legacy_number(amount), amount, operator, _now(), existing["id"]))
                 event = "PROJECT_FUNDING_ALLOCATION_UPDATED"
                 allocation_id = existing["id"]
             else:
-                allocation_id = conn.execute("INSERT INTO project_funding_allocations (project_id,funding_source_id,allocated_amount,allocation_amount_recorded,created_by,updated_by) VALUES (?,?,?,?,?,?)", (project_id, source_id, amount, 1, operator, operator)).lastrowid
+                allocation_id = conn.execute("INSERT INTO project_funding_allocations (project_id,funding_source_id,allocated_amount,allocated_amount_decimal,allocation_amount_recorded,created_by,updated_by) VALUES (?,?,?,?,?,?,?)", (project_id, source_id, legacy_number(amount), amount, 1, operator, operator)).lastrowid
                 event = "PROJECT_FUNDING_ALLOCATION_CREATED"
             _project_audit(conn, project_id, event, operator, {"funding_source_id": source_id, "allocated_amount": amount})
             _funding_audit(conn, "project_allocation", allocation_id, event, operator, {"project_id": project_id, "funding_source_id": source_id, "allocated_amount": amount})
@@ -336,6 +339,8 @@ def delete_project_allocation(project_id: int, allocation_id: int, payload: dict
 def funding_overview(year: int) -> dict:
     with get_connection() as conn:
         arrangements = [dict(row) for row in conn.execute("SELECT * FROM annual_funding_arrangements WHERE planning_year=? ORDER BY id DESC", (year,)).fetchall()]
+        for row in arrangements:
+            row["estimated_amount"] = preferred(row, "estimated_amount")
         from backend.app.services.projects import _hydrate_project_projection
 
         projects = [dict(row) for row in conn.execute(
@@ -344,12 +349,12 @@ def funding_overview(year: int) -> dict:
         ).fetchall()]
         for project in projects:
             _hydrate_project_projection(conn, project, omit_legacy_status=True)
-        estimated = float(sum(float(row["estimated_amount"]) for row in arrangements))
-        advancing = float(sum(float(project["effective_budget"] or 0) for project in projects))
+        estimated = total(row["estimated_amount"] for row in arrangements)
+        advancing = total(project["effective_budget"] for project in projects)
         return {
             "year": year, "arrangements": arrangements, "estimated_total": estimated,
-            "advancing_effective_budget_total": advancing, "difference": estimated - advancing,
-            "over_expected": advancing > estimated if arrangements else False,
+            "advancing_effective_budget_total": advancing, "difference": difference(estimated, advancing),
+            "over_expected": decimal_of(advancing) > decimal_of(estimated) if arrangements else False,
             "advancing_project_count": len(projects), "advancing_projects": projects,
             "sources": [_source_stats(conn, dict(row)) for row in conn.execute("SELECT * FROM funding_sources WHERE valid_from_year<=? AND valid_until_year>=? ORDER BY fund_code", (year, year)).fetchall()],
         }
@@ -359,21 +364,29 @@ _IMPORT_REQUIRED_COLUMNS = ("项目编号", "资金代码", "资金金额")
 _IMPORT_COMPATIBILITY_ALIASES = {"资金号": "资金代码", "资金参考金额": "资金金额", "本年新增安排": "预算（本年资金安排）"}
 
 
-def _read_import(content: bytes) -> pd.DataFrame:
+def _read_import(content: bytes) -> list[dict]:
     try:
-        frame = pd.read_excel(io.BytesIO(content), dtype=object)
+        workbook = load_workbook(io.BytesIO(content), data_only=True, read_only=True)
+        sheet = workbook.active
+        values = list(sheet.iter_rows(values_only=True))
     except Exception as exc:
         raise ValidationError("无法读取正式资金分配文件") from exc
+    if not values:
+        raise ValidationError("正式资金分配文件为空")
+    headers = [str(value or "").strip() for value in values[0]]
+    records = [dict(zip(headers, row)) for row in values[1:] if any(value not in (None, "") for value in row)]
     for legacy, current in _IMPORT_COMPATIBILITY_ALIASES.items():
-        if current not in frame.columns and legacy in frame.columns:
-            frame = frame.rename(columns={legacy: current})
-    missing = [column for column in _IMPORT_REQUIRED_COLUMNS if column not in frame.columns]
+        if current not in headers and legacy in headers:
+            for row in records:
+                row[current] = row.pop(legacy, "")
+            headers[headers.index(legacy)] = current
+    missing = [column for column in _IMPORT_REQUIRED_COLUMNS if column not in headers]
     if missing:
         raise ValidationError(f"缺少列: {', '.join(missing)}")
     for column in ("项目名称", "项目分类", "学院", "预算（本年资金安排）", "资金名称", "资金负责人", "分配金额"):
-        if column not in frame.columns:
-            frame[column] = ""
-    return frame.where(pd.notna(frame), "")
+        for row in records:
+            row.setdefault(column, "")
+    return records
 
 
 def _saved_plan_project_ids(conn: sqlite3.Connection, planning_year: int) -> set[int]:
@@ -405,7 +418,7 @@ def _import_record(conn: sqlite3.Connection, row_number: int, values: dict, allo
         return None, {"row_number": row_number, "code": "INVALID_AMOUNT", "message": str(exc), "name": project["name"]}
     source = conn.execute("SELECT * FROM funding_sources WHERE fund_code=?", (fund_code,)).fetchone()
     warnings: list[str] = []
-    if source and source["reference_amount"] != reference:
+    if source and preferred(dict(source), "reference_amount") != reference:
         warnings.append("资金参考金额与系统现值不同，确认导入后将更新并写入审计")
     implementation_year = project["advancement_year"] or planning_year
     if not source and implementation_year is None:
@@ -422,8 +435,8 @@ def preview_funding_import(content: bytes, planning_year: int | None = None) -> 
     with get_connection() as conn:
         allowed = _saved_plan_project_ids(conn, planning_year) if planning_year is not None else None
         records, errors, pairs = [], [], set()
-        for index, row in frame.iterrows():
-            record, error = _import_record(conn, index + 2, row.to_dict(), allowed, planning_year)
+        for index, row in enumerate(frame, start=2):
+            record, error = _import_record(conn, index, row, allowed, planning_year)
             if error:
                 errors.append(error)
                 continue
@@ -433,7 +446,7 @@ def preview_funding_import(content: bytes, planning_year: int | None = None) -> 
                 errors.append({"row_number": record["row_number"], "code": "DUPLICATE_PAIR", "message": "同一文件内项目与资金号不能重复", "name": record["project_name"]})
                 continue
             pairs.add(pair); records.append(record)
-    return {"total_rows": len(frame.index), "valid_rows": len(records), "invalid_rows": len(errors), "records": records, "errors": errors}
+    return {"total_rows": len(frame), "valid_rows": len(records), "invalid_rows": len(errors), "records": records, "errors": errors}
 
 
 def commit_funding_import(records: list[dict], operator: str, confirm_source_amount_updates: bool, planning_year: int | None = None) -> dict:
@@ -467,23 +480,23 @@ def commit_funding_import(records: list[dict], operator: str, confirm_source_amo
             reference = items[0]["reference_amount"]
             if source:
                 source_id = source["id"]
-                if source["reference_amount"] != reference:
-                    conn.execute("UPDATE funding_sources SET reference_amount=?,updated_by=?,updated_at=? WHERE id=?", (reference, operator, _now(), source_id))
-                    _funding_audit(conn, "funding_source", source_id, "FUNDING_SOURCE_REFERENCE_AMOUNT_IMPORTED", operator, {"before": source["reference_amount"], "after": reference, "import_audit_id": import_id})
+                if preferred(dict(source), "reference_amount") != reference:
+                    conn.execute("UPDATE funding_sources SET reference_amount=?,reference_amount_decimal=?,updated_by=?,updated_at=? WHERE id=?", (legacy_number(reference), reference, operator, _now(), source_id))
+                    _funding_audit(conn, "funding_source", source_id, "FUNDING_SOURCE_REFERENCE_AMOUNT_IMPORTED", operator, {"before": preferred(dict(source), "reference_amount"), "after": reference, "import_audit_id": import_id})
                 fields = {key: items[0][key] for key in ("fund_name", "fund_manager") if items[0][key]}
                 if fields:
                     conn.execute(f"UPDATE funding_sources SET {', '.join(f'{key}=?' for key in fields)},updated_by=?,updated_at=? WHERE id=?", [*fields.values(), operator, _now(), source_id])
             else:
                 years = [int(item["implementation_year"]) for item in items if item["implementation_year"] is not None]
-                source_id = conn.execute("INSERT INTO funding_sources (fund_code,fund_name,fund_manager,reference_amount,valid_from_year,valid_until_year,created_by,updated_by) VALUES (?,?,?,?,?,?,?,?)", (code, items[0]["fund_name"], items[0]["fund_manager"], reference, min(years), max(years), operator, operator)).lastrowid
+                source_id = conn.execute("INSERT INTO funding_sources (fund_code,fund_name,fund_manager,reference_amount,reference_amount_decimal,valid_from_year,valid_until_year,created_by,updated_by) VALUES (?,?,?,?,?,?,?,?,?)", (code, items[0]["fund_name"], items[0]["fund_manager"], legacy_number(reference), reference, min(years), max(years), operator, operator)).lastrowid
                 _funding_audit(conn, "funding_source", source_id, "FUNDING_SOURCE_IMPORTED", operator, {"fund_code": code, "valid_from_year": min(years), "valid_until_year": max(years), "import_audit_id": import_id})
             for item in items:
                 existing = conn.execute("SELECT id,allocated_amount FROM project_funding_allocations WHERE project_id=? AND funding_source_id=?", (item["project_id"], source_id)).fetchone()
                 if existing:
-                    conn.execute("UPDATE project_funding_allocations SET allocated_amount=?,allocation_amount_recorded=?,updated_by=?,updated_at=? WHERE id=?", (item["allocated_amount"] or 0, int(item["allocated_amount"] is not None), operator, _now(), existing["id"]))
+                    conn.execute("UPDATE project_funding_allocations SET allocated_amount=?,allocated_amount_decimal=?,allocation_amount_recorded=?,updated_by=?,updated_at=? WHERE id=?", (legacy_number(item["allocated_amount"]) or 0, item["allocated_amount"], int(item["allocated_amount"] is not None), operator, _now(), existing["id"]))
                     event, allocation_id = "PROJECT_FUNDING_ALLOCATION_IMPORTED_UPDATED", existing["id"]
                 else:
-                    allocation_id = conn.execute("INSERT INTO project_funding_allocations (project_id,funding_source_id,allocated_amount,allocation_amount_recorded,created_by,updated_by) VALUES (?,?,?,?,?,?)", (item["project_id"], source_id, item["allocated_amount"] or 0, int(item["allocated_amount"] is not None), operator, operator)).lastrowid
+                    allocation_id = conn.execute("INSERT INTO project_funding_allocations (project_id,funding_source_id,allocated_amount,allocated_amount_decimal,allocation_amount_recorded,created_by,updated_by) VALUES (?,?,?,?,?,?,?)", (item["project_id"], source_id, legacy_number(item["allocated_amount"]) or 0, item["allocated_amount"], int(item["allocated_amount"] is not None), operator, operator)).lastrowid
                     event = "PROJECT_FUNDING_ALLOCATION_IMPORTED_CREATED"
                 _project_audit(conn, item["project_id"], event, operator, {"funding_source_id": source_id, "allocated_amount": item["allocated_amount"], "import_audit_id": import_id})
         return {"total": len(records), "success": len(normalized), "failed": 0, "errors": []}
@@ -492,8 +505,8 @@ def commit_funding_import(records: list[dict], operator: str, confirm_source_amo
 def funding_import_template(year: int) -> bytes:
     with get_connection() as conn:
         rows = conn.execute(
-            """SELECT p.project_code,p.name,p.project_type,p.department,p.budget,p.approved_budget,
-                      p.current_status,p.library_implementation_view,p.special_advancement_active,m.planned_new_amount,t.name AS project_type_name
+            """SELECT p.project_code,p.name,p.project_type,p.department,p.budget,p.budget_decimal,p.approved_budget,p.approved_budget_decimal,
+                      p.current_status,p.library_implementation_view,p.special_advancement_active,m.planned_new_amount,m.planned_new_amount_decimal,t.name AS project_type_name
                FROM annual_advancement_drafts d
                JOIN annual_advancement_draft_members m ON m.draft_id=d.id AND m.member_status!='removed'
                JOIN projects p ON p.id=m.project_id AND p.deleted_at IS NULL
@@ -503,7 +516,7 @@ def funding_import_template(year: int) -> bytes:
     template_columns = ["项目编号", "项目名称", "项目分类", "学院", "预算（本年资金安排）", "资金代码", "资金名称", "资金负责人", "资金金额", "分配金额"]
     frame = pd.DataFrame([{
         "项目编号": row["project_code"], "项目名称": row["name"], "项目分类": row["project_type_name"] or "未分类", "学院": row["department"],
-        "预算（本年资金安排）": row["planned_new_amount"], "资金代码": "", "资金名称": "", "资金负责人": "", "资金金额": "", "分配金额": "",
+        "预算（本年资金安排）": preferred(dict(row), "planned_new_amount"), "资金代码": "", "资金名称": "", "资金负责人": "", "资金金额": "", "分配金额": "",
     } for row in rows], columns=template_columns)
     info = pd.DataFrame([
         ["填写说明", "仅可导入当前年度已保存计划中的项目；一行对应一个项目 × 资金代码关系；同一项目可占多行。"],

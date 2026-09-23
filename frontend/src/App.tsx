@@ -30,7 +30,7 @@ import AnnualBudgetView from "./AnnualBudgetView";
 import ContractPanel from "./ContractPanel";
 import ProjectFundingPanel from "./ProjectFundingPanel";
 import { ApiError, apiDelete, apiGet, apiPatch, apiPost, apiPostForm, buildExportUrl } from "./lib/api";
-import { formatCurrency, formatDate, formatDateTime, projectTypeLabel, statusLabel } from "./lib/format";
+import { formatCurrency, formatDate, formatDateTime, projectTypeLabel, statusLabel, sumMoney } from "./lib/format";
 import type {
   BatchExecuteResponse,
   AuditEvent,
@@ -82,12 +82,12 @@ const procurementNatureLabel = (value?: string | null) => ({ goods: "货物", se
 
 const sortProjectWorkItems = (items: WorkItem[]) => [...items];
 
-const constraintStatusLabel = (status: string) => ({ not_started: "未开始", in_progress: "办理中", concluded: "已形成结论", invalidated: "结论失效" } as Record<string, string>)[status] ?? status;
+const constraintStatusLabel = (status: string) => ({ not_started: "待办理", in_progress: "办理中", concluded: "已形成结论", invalidated: "结论失效" } as Record<string, string>)[status] ?? status;
 const clearanceLabel = (status: string) => ({ unresolved: "待解除", cleared: "已解除", not_applicable: "不适用" } as Record<string, string>)[status] ?? status;
 const constraintImpactLabel = (scope?: string) => ({ effective_budget: "影响有效预算", other: "其他影响", none: "不影响项目字段" } as Record<string, string>)[scope || "none"];
 const parseEffectiveBudget = (value: string) => {
-  const parsed = Number(value);
-  return value.trim() !== "" && Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+  const normalized = value.trim();
+  return /^\d+(?:\.\d+)?$/.test(normalized) ? normalized : null;
 };
 const stageTone = (status: string, clearance?: string) => {
   if (status === "completed" || clearance === "cleared") return "complete";
@@ -149,6 +149,14 @@ const OVERVIEW_COLUMN_LABELS: Record<OverviewColumn, string> = {
 const DEFAULT_OVERVIEW_COLUMNS: OverviewColumn[] = [
   "stage", "document", "implementation_year", "department", "budget", "summary", "allocation", "contract", "progress", "latest_activity", "completion_year",
 ];
+
+const overviewColumnsForStage = (stage: string): OverviewColumn[] => {
+  if (stage === "pre_establish") return ["stage", "department", "budget", "summary", "progress", "latest_activity"];
+  if (stage === "pool_pending") return ["stage", "document", "department", "budget", "progress", "latest_activity"];
+  if (stage === "pool_active") return ["stage", "document", "implementation_year", "department", "budget", "allocation", "contract", "progress", "latest_activity"];
+  if (stage === "completed") return ["stage", "document", "department", "budget", "allocation", "contract", "implementation_year", "completion_year"];
+  return ["stage", "document", "department", "budget", "latest_activity"];
+};
 
 function ProgressSituation({ project, onSelect, onConstraintSelect }: { project: Project; onSelect?: (itemId: number) => void; onConstraintSelect?: () => void }) {
   const items = project.work_item_summary ?? [];
@@ -257,12 +265,15 @@ function DashboardPage() {
   const [selectedProjectSnapshots, setSelectedProjectSnapshots] = useState<Record<number, Project>>({});
   const [selectedListOpen, setSelectedListOpen] = useState(false);
   const [selectedTarget, setSelectedTarget] = useState<string>("");
-  const [operator, setOperator] = useState("PMO办公室");
-  const [approver, setApprover] = useState("");
+  // These remain internal audit values.  PMO's project contact is represented
+  // by project_manager; workflow role fields are deliberately not a daily UI
+  // input.
+  const operator = "PMO办公室";
+  const approver = "PMO办公室";
   const [comment, setComment] = useState("");
   const [advancementYear, setAdvancementYear] = useState(String(new Date().getFullYear()));
   const [backfillClearZeroBudget, setBackfillClearZeroBudget] = useState(false);
-  const [earlyApprovalBasis, setEarlyApprovalBasis] = useState("");
+  const earlyApprovalBasis = "PMO办公室（前端隐藏审批依据）";
   const [annualExceptionAction, setAnnualExceptionAction] = useState<"supplement" | "cancel" | "defer" | "resume" | "special">("supplement");
   const [establishmentDocumentNo, setEstablishmentDocumentNo] = useState("");
   const [importPreview, setImportPreview] = useState<ImportPreviewResponse | null>(null);
@@ -348,13 +359,19 @@ function DashboardPage() {
       return Object.fromEntries(Object.entries(raw).map(([stage, columns]) => [stage, columns.map((column) => typeof column === "string" ? { kind: "work_item", key: column, label: column } : column)]));
     } catch { return {}; }
   });
-  const [overviewColumns, setOverviewColumns] = useState<OverviewColumn[]>(() => {
+  const [overviewColumnsByStage, setOverviewColumnsByStage] = useState<Record<string, OverviewColumn[]>>(() => {
     try {
-      const raw = JSON.parse(localStorage.getItem("pmo-overview-columns-v2") || "[]");
-      return Array.isArray(raw) && raw.every((column) => typeof column === "string" && column in OVERVIEW_COLUMN_LABELS)
-        ? raw as OverviewColumn[]
-        : DEFAULT_OVERVIEW_COLUMNS;
-    } catch { return DEFAULT_OVERVIEW_COLUMNS; }
+      const raw = JSON.parse(localStorage.getItem("pmo-overview-columns-v3") || "{}");
+      if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+        return Object.fromEntries(Object.entries(raw as Record<string, unknown>).flatMap(([stage, columns]) =>
+          Array.isArray(columns) && columns.every((column) => typeof column === "string" && column in OVERVIEW_COLUMN_LABELS)
+            ? [[stage, columns as OverviewColumn[]]] : [],
+        ));
+      }
+      const legacy = JSON.parse(localStorage.getItem("pmo-overview-columns-v2") || "[]");
+      return Array.isArray(legacy) && legacy.every((column) => typeof column === "string" && column in OVERVIEW_COLUMN_LABELS)
+        ? { legacy: legacy as OverviewColumn[] } : {};
+    } catch { return {}; }
   });
   const columnHeaderClickTimer = useRef<number | null>(null);
 
@@ -434,7 +451,7 @@ function DashboardPage() {
     [selectedIds, selectedProjectSnapshots],
   );
   const selectedEffectiveBudget = useMemo(
-    () => selectedProjects.reduce((totalBudget, project) => totalBudget + (project.effective_budget ?? project.budget ?? 0), 0),
+    () => sumMoney(selectedProjects.map((project) => project.effective_budget ?? project.budget)),
     [selectedProjects],
   );
   const directStageAction = useMemo<"establish" | "complete" | null>(() => {
@@ -462,22 +479,25 @@ function DashboardPage() {
   const showImplementationYearColumn = !showRemoved && (activeGroup === "pool_active" || activeGroup === "completed");
   const showCompletionYearColumn = !showRemoved && activeGroup === "completed";
   const showProgressColumn = tableView === "overview" && !showCompletionYearColumn;
-  const overviewContextColumns = useMemo<OverviewColumn[]>(() => {
+  const overviewPreferenceStage = showRemoved ? "removed" : activeGroup;
+  const overviewAllowedColumns = useMemo<OverviewColumn[]>(() => {
     const allowed = new Set<OverviewColumn>(["stage", "department", "budget", "latest_activity"]);
     if (!showRemoved && activeGroup !== "pre_establish") allowed.add("document");
     if (!showRemoved && activeGroup === "pre_establish") allowed.add("summary");
     if (showImplementationYearColumn) allowed.add("implementation_year");
     if (showCompletionYearColumn) allowed.add("completion_year");
-    if (!showRemoved && activeGroup !== "pre_establish" && activeGroup !== "pool_pending") {
-      allowed.add("allocation");
-    }
+    if (!showRemoved && activeGroup !== "pre_establish" && activeGroup !== "pool_pending") allowed.add("allocation");
     if (!showRemoved && (activeGroup === "pool_active" || activeGroup === "completed")) allowed.add("contract");
     if (showProgressColumn) allowed.add("progress");
     if (showCompletionYearColumn) allowed.delete("latest_activity");
-    // `overviewColumns` is the user's explicit preference. Do not append
-    // context-allowed columns here: doing so would make a just-hidden column
-    // reappear on the next render.
-    const ordered = overviewColumns.filter((column) => allowed.has(column));
+    return DEFAULT_OVERVIEW_COLUMNS.filter((column) => allowed.has(column));
+  }, [activeGroup, showCompletionYearColumn, showImplementationYearColumn, showProgressColumn, showRemoved]);
+  const overviewColumns = useMemo<OverviewColumn[]>(() => {
+    const saved = overviewColumnsByStage[overviewPreferenceStage] ?? overviewColumnsByStage.legacy ?? overviewColumnsForStage(overviewPreferenceStage);
+    return saved.filter((column) => overviewAllowedColumns.includes(column));
+  }, [overviewAllowedColumns, overviewColumnsByStage, overviewPreferenceStage]);
+  const overviewContextColumns = useMemo<OverviewColumn[]>(() => {
+    const ordered = overviewColumns;
     if (showCompletionYearColumn) {
       return [...ordered.filter((column) => column !== "implementation_year" && column !== "completion_year"), "implementation_year", "completion_year"];
     }
@@ -485,7 +505,7 @@ function DashboardPage() {
       return [...ordered.filter((column) => column !== "progress" && column !== "latest_activity"), "progress", "latest_activity"];
     }
     return ordered;
-  }, [activeGroup, overviewColumns, showCompletionYearColumn, showImplementationYearColumn, showProgressColumn, showRemoved]);
+  }, [overviewColumns, showCompletionYearColumn, showProgressColumn]);
 
   useEffect(() => {
     if (!showImplementationFilter && selectedImplementationYear) {
@@ -645,13 +665,16 @@ function DashboardPage() {
   }
 
   function saveOverviewColumns(columns: OverviewColumn[]) {
-    const unique = [...new Set(columns)];
-    setOverviewColumns(unique);
-    localStorage.setItem("pmo-overview-columns-v2", JSON.stringify(unique));
+    const unique = [...new Set(columns)].filter((column) => overviewAllowedColumns.includes(column));
+    setOverviewColumnsByStage((current) => {
+      const result = { ...current, [overviewPreferenceStage]: unique };
+      localStorage.setItem("pmo-overview-columns-v3", JSON.stringify(result));
+      return result;
+    });
   }
 
   function resetOverviewColumns() {
-    saveOverviewColumns(DEFAULT_OVERVIEW_COLUMNS);
+    saveOverviewColumns(overviewColumnsForStage(overviewPreferenceStage));
   }
 
   function moveOverviewColumn(from: number, to: number) {
@@ -748,7 +771,7 @@ function DashboardPage() {
     if (column === "completion_year") return <td key={column} className="year-column">{project.actual_end_date?.slice(0, 4) || "未记录"}</td>;
     if (column === "department") return <td key={column} className="department-column"><div className="stacked"><span>{project.department || "未录入部门"}</span><small>{project.project_manager || "未录入负责人"}</small></div></td>;
     if (column === "budget") return <td key={column} className="budget-column"><div className="stacked"><span>有效 {project.effective_budget == null ? "未记录" : `${formatCurrency(project.effective_budget)} 万`}</span><small>初始 {project.budget == null ? "未记录" : `${formatCurrency(project.budget)} 万`}</small><small>{project.effective_budget_source === "budget_constraint" ? "来源：预算核定" : project.effective_budget_source === "historical_review" ? "来源：历史审核" : project.effective_budget_source === "initial_budget" ? "来源：初始预算" : "来源：未记录"}</small></div></td>;
-    if (column === "summary") return <td key={column} className="summary-column">{project.project_summary_display || "未分类"}</td>;
+    if (column === "summary") return <td key={column} className="summary-column">{activeGroup === "pre_establish" ? project.description || "未填写项目描述" : project.project_summary_display || "未分类"}</td>;
     if (column === "allocation") return <td key={column} className="budget-column">{project.formal_allocation_total == null ? "暂未确定" : `${formatCurrency(project.formal_allocation_total)} 万`}</td>;
     if (column === "contract") return <td key={column} className="contract-column"><ContractCell project={project} onOpen={() => openContractPanel(project)} /></td>;
     if (column === "progress") return <td key={column} className="progress-column"><ProgressSituation project={project} onSelect={(itemId) => void openQuickItem(project.id, itemId)} onConstraintSelect={() => void openQuickConstraintList(project.id)} /></td>;
@@ -1102,7 +1125,7 @@ function DashboardPage() {
     setExecuting(true); setError("");
     try {
       await Promise.all(selectedIds.map((id) => apiPost(`/projects/${id}/special-include-in-advancement`, { operator, reason: comment, approval_basis: earlyApprovalBasis, advancement_year: Number(advancementYear) })));
-      await refreshSelectedProjects(); setFeedback(`已特批纳入 ${selectedIds.length} 个未立项项目的前期推进管理。当前视图保持不变。`); setComment(""); setEarlyApprovalBasis("");
+      await refreshSelectedProjects(); setFeedback(`已特批纳入 ${selectedIds.length} 个未立项项目的前期推进管理。当前视图保持不变。`); setComment("");
     } catch (err) { setError(err instanceof ApiError ? err.message : "特批纳入推进失败"); }
     finally { setExecuting(false); }
   }
@@ -1121,7 +1144,7 @@ function DashboardPage() {
       });
       await refreshSelectedProjects();
       setFeedback({ supplement: "已补充纳入本年度。", cancel: "已取消本次推进。", defer: "已暂缓推进。", resume: "已恢复推进。", special: "已特批推进。" }[annualExceptionAction]);
-      setComment(""); setEarlyApprovalBasis("");
+      setComment("");
     } catch (err) { setError(err instanceof ApiError ? err.message : "推进例外操作失败，项目保持原状态。"); }
     finally { setExecuting(false); }
   }
@@ -1285,7 +1308,6 @@ function DashboardPage() {
       );
       setSelectedIds([]);
       setComment("");
-      setApprover("");
       await loadDashboard();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "批量执行失败");
@@ -1348,7 +1370,7 @@ function DashboardPage() {
     try {
       const created = await apiPost<Project>("/projects", {
         name: newProject.name.trim(), department: newProject.department.trim(), project_manager: newProject.project_manager.trim(),
-        project_type: newProject.project_type, procurement_nature: newProject.procurement_nature, location: newProject.location.trim(), budget: Number(newProject.budget || 0), description: newProject.description.trim(), operator,
+        project_type: newProject.project_type, procurement_nature: newProject.procurement_nature, location: newProject.location.trim(), budget: newProject.budget.trim() || null, description: newProject.description.trim(), operator,
       });
       setNewProjectOpen(false);
       setNewProject({ name: "", department: "", project_manager: "", project_type: projectTypes.find((item) => item.is_active)?.code || "", procurement_nature: "", location: "", budget: "", description: "" });
@@ -1428,7 +1450,7 @@ function DashboardPage() {
               <div className="filter-row">
                 <input
                   className="input"
-                  placeholder="搜索项目名称 / 编号 / 发起人"
+                  placeholder="搜索项目名称 / 编号 / 项目描述"
                   value={keyword}
                   onChange={(event) => setKeyword(event.target.value)}
                 />
@@ -1480,9 +1502,9 @@ function DashboardPage() {
                 <button className="mini-button" onClick={() => { clearColumnBatchTarget(); setTableView("annual"); setColumnPickerOpen(false); }}>年度预算安排</button>
                 {tableView === "overview" ? <div className="column-picker"><button type="button" className="mini-button" aria-expanded={overviewColumnPickerOpen} onClick={() => setOverviewColumnPickerOpen((open) => !open)}>显示列</button>{overviewColumnPickerOpen ? <div className="column-picker-menu" role="dialog" aria-label="配置总览显示列">
                   <div className="column-picker-heading"><strong>显示列</strong><button type="button" className="text-button" onClick={() => setOverviewColumnPickerOpen(false)}>关闭</button></div>
-                  <p>“选中”和“项目”固定；当前 Stage 不适用的列会暂时隐藏。</p>
+                  <p>“选中”和“项目”固定；这里只显示当前 Stage 可用的列。</p>
                   <section><span>已显示（拖动调整顺序）</span><div className="column-chip-list">{overviewColumns.map((column, index) => <button type="button" draggable key={column} onDragStart={(event) => event.dataTransfer.setData("text/plain", String(index))} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { const from = Number(event.dataTransfer.getData("text/plain")); if (Number.isInteger(from)) moveOverviewColumn(from, index); }} onClick={() => saveOverviewColumns(overviewColumns.filter((item) => item !== column))}><span className="drag-handle">⋮⋮</span>{OVERVIEW_COLUMN_LABELS[column]} <b>×</b></button>)}</div></section>
-                  <section><span>可添加</span><div className="column-action-list">{DEFAULT_OVERVIEW_COLUMNS.filter((column) => !overviewColumns.includes(column)).map((column) => <button type="button" key={column} onClick={() => saveOverviewColumns([...overviewColumns, column])}>＋ {OVERVIEW_COLUMN_LABELS[column]}</button>)}</div></section>
+                  <section><span>可添加</span><div className="column-action-list">{overviewAllowedColumns.filter((column) => !overviewColumns.includes(column)).map((column) => <button type="button" key={column} onClick={() => saveOverviewColumns([...overviewColumns, column])}>＋ {OVERVIEW_COLUMN_LABELS[column]}</button>)}{!overviewAllowedColumns.filter((column) => !overviewColumns.includes(column)).length ? <small>当前 Stage 的可用列已全部显示</small> : null}</div></section>
                   <button type="button" className="text-button column-reset" onClick={resetOverviewColumns}>恢复默认显示列</button>
                 </div> : null}</div> : null}
                 {tableView === "stage" ? <div className="column-picker"><button type="button" className="mini-button" aria-expanded={columnPickerOpen} onClick={() => setColumnPickerOpen((open) => !open)}>显示列</button>{columnPickerOpen ? <div className="column-picker-menu" role="dialog" aria-label="配置阶段跟踪显示列">
@@ -1620,13 +1642,11 @@ function DashboardPage() {
                 <div className="quick-panel-heading"><strong>{workItemBatch.name}</strong><button type="button" className="text-button" onClick={() => { setWorkItemBatch(null); setOperationMode(batchReturnMode === "batch" ? "batch" : "advance"); if (batchReturnMode === "stage") setTableView("stage"); }}>返回{batchReturnMode === "batch" ? "批次记录" : "阶段跟踪"}</button></div>
                 <p className="operation-lead">事项 · <strong>{workItemBatch.work_item_name}</strong>{workItemBatch.scheduled_on ? ` · ${workItemBatch.scheduled_on}` : ""}</p>
                 <p className="muted-copy">批次成员 {workItemBatch.member_count} 个；当前选择只决定本次办理，不会移出批次。</p>
-                <label className="field"><span>操作人</span><input className="input" value={operator} onChange={(event) => setOperator(event.target.value)} /></label>
                 {workItemBatch.status === "open" ? <><div className="field-grid"><label className="field"><span>完成日期</span><input className="input" type="date" value={batchCompletion.completed_on} onChange={(event) => setBatchCompletion((current) => ({ ...current, completed_on: event.target.value }))} /></label><label className="field"><span>结论</span><input className="input" value={batchCompletion.result} onChange={(event) => setBatchCompletion((current) => ({ ...current, result: event.target.value }))} /></label></div><label className="field"><span>说明</span><textarea className="textarea" rows={2} value={batchCompletion.note} onChange={(event) => setBatchCompletion((current) => ({ ...current, note: event.target.value }))} /></label><button className="action-button primary full" disabled={!selectedIds.length || executing} onClick={() => void completeCurrentBatch()}>批量完成所选事项</button></> : <p className="success-copy">该批次已{workItemBatch.status === "voided" ? "作废" : "办结"}，可查看保留的成员与结果。</p>}
                 <details className="batch-member-details"><summary>管理成员</summary>{workItemBatch.members.map((member) => <div key={member.id} className="batch-member-row"><span>{member.project_code} · {member.project_name}</span><small>{member.member_status === "scheduled" ? "待办理" : member.member_status === "completed" ? "已完成" : member.member_status}</small></div>)}</details>
               </section> : columnBatchTarget ? <section className="column-batch-panel">
                 <div className="quick-panel-heading"><strong>阶段跟踪批量办理</strong><button type="button" className="text-button" onClick={clearColumnBatchTarget}>取消列选择</button></div>
                 <p className="operation-lead">{columnBatchTarget.kind === "work_item" ? "事项" : "约束"} · <strong>{columnBatchTarget.label}</strong>，已选 {selectedIds.length} 个实际存在的实例。</p>
-                <label className="field"><span>操作人</span><input className="input" value={operator} onChange={(event) => setOperator(event.target.value)} /></label>
                 {columnBatchTarget.kind === "work_item" ? <>
                   <button type="button" className="mini-button" disabled={!selectedIds.length} onClick={() => setBatchArrangeOpen((value) => !value)}>安排批次</button>
                   {batchArrangeOpen ? <section className="batch-arrange-form"><label className="field"><span>批次名称</span><input className="input" value={batchDraft.name} onChange={(event) => setBatchDraft((current) => ({ ...current, name: event.target.value }))} /></label><label className="field"><span>日期（可选）</span><input className="input" type="date" value={batchDraft.scheduled_on} onChange={(event) => setBatchDraft((current) => ({ ...current, scheduled_on: event.target.value }))} /></label><label className="field"><span>说明（可选）</span><textarea className="textarea" rows={2} value={batchDraft.note} onChange={(event) => setBatchDraft((current) => ({ ...current, note: event.target.value }))} /></label><button className="action-button primary full" disabled={!batchDraft.name.trim() || executing} onClick={() => void createWorkItemBatch()}>保存批次安排</button></section> : null}
@@ -1677,10 +1697,8 @@ function DashboardPage() {
                 <p className="operation-lead">常规年度项目请通过年度计划确认。此处只处理已确认方案后的例外。</p>
                 <label className="field"><span>操作</span><select className="select" value={annualExceptionAction} onChange={(event) => setAnnualExceptionAction(event.target.value as typeof annualExceptionAction)}><option value="supplement">补充纳入本年度</option><option value="cancel">取消推进</option><option value="defer">暂缓推进</option><option value="resume">恢复推进</option><option value="special">特批推进</option></select></label>
                 <label className="field"><span>实施年份</span><input className="input" type="number" value={advancementYear} onChange={(event) => setAdvancementYear(event.target.value)} /></label>
-                <label className="field"><span>操作人</span><input className="input" value={operator} onChange={(event) => setOperator(event.target.value)} /></label>
                 <label className="field"><span>{annualExceptionAction === "special" ? "特批理由" : annualExceptionAction === "cancel" ? "取消原因" : annualExceptionAction === "defer" ? "暂缓原因" : annualExceptionAction === "resume" ? "恢复原因" : "补充纳入理由"}</span><textarea className="textarea" value={comment} onChange={(event) => setComment(event.target.value)} rows={3} /></label>
-                {annualExceptionAction === "special" ? <label className="field"><span>审批人或审批依据</span><input className="input" value={earlyApprovalBasis} onChange={(event) => setEarlyApprovalBasis(event.target.value)} placeholder="必填：审批人或审批依据" /></label> : null}
-                <button className="action-button primary full" disabled={!selectedIds.length || !comment.trim() || executing || (annualExceptionAction === "special" && !earlyApprovalBasis.trim())} onClick={() => void submitAnnualException()}><CheckCircle2 size={16} />确认{({ supplement: "补充纳入", cancel: "取消推进", defer: "暂缓推进", resume: "恢复推进", special: "特批推进" }[annualExceptionAction])}</button>
+                <button className="action-button primary full" disabled={!selectedIds.length || !comment.trim() || executing} onClick={() => void submitAnnualException()}><CheckCircle2 size={16} />确认{({ supplement: "补充纳入", cancel: "取消推进", defer: "暂缓推进", resume: "恢复推进", special: "特批推进" }[annualExceptionAction])}</button>
                 {!selectedIds.length ? <p className="notice error">请先勾选项目；混入不符合本操作的项目时，系统会整批拒绝并说明原因。</p> : null}
                 {advancementAction === "backfill" ? <details><summary>历史实施补录</summary><label className="toggle"><input type="checkbox" checked={backfillClearZeroBudget} onChange={(event) => setBackfillClearZeroBudget(event.target.checked)} /><span>将当前 0 预算标为未记录</span></label><button className="mini-button" disabled={!comment || executing} onClick={() => void submitCompletedAdvancementBackfill()}>确认补录历史实施</button></details> : null}
                 </details>
@@ -1697,7 +1715,7 @@ function DashboardPage() {
                   <div className="draft-item-title"><strong>{index + 1}. 新建跟踪事项</strong>{draftItems.length > 1 ? <button className="text-button" onClick={() => setDraftItems((items) => items.filter((_, itemIndex) => itemIndex !== index))}>移除</button> : null}</div>
                   <input className="input" value={item.name} onChange={(event) => updateDraft(index, { name: event.target.value })} placeholder="事项名称*，例如：等学院补交采购需求书" />
                   <textarea className="textarea" rows={3} value={item.content} onChange={(event) => updateDraft(index, { content: event.target.value })} placeholder="事项内容 / 当前需要做什么" />
-                  <select className="select" value={item.status} onChange={(event) => updateDraft(index, { status: event.target.value })}><option value="not_started">未开始</option><option value="in_progress">进行中</option></select>
+                  <select className="select" value={item.status} onChange={(event) => updateDraft(index, { status: event.target.value })}><option value="not_started">待办理</option><option value="in_progress">进行中</option></select>
                   <label className="toggle"><input type="checkbox" checked={Boolean(item.track_as_key_node)} onChange={(event) => updateDraft(index, { track_as_key_node: event.target.checked })} /><span>☆ 重点关注</span></label>
                   <textarea className="textarea" rows={2} value={item.note || ""} onChange={(event) => updateDraft(index, { note: event.target.value })} placeholder="附加备注" />
                   <label className="field"><span>添加位置</span><select className="select" value={item.insert_mode || "after_current"} onChange={(event) => updateDraft(index, { insert_mode: event.target.value as "after_current" | "last" })}><option value="after_current">添加到当前事项后</option><option value="last">添加到最后</option></select></label>
@@ -1719,11 +1737,10 @@ function DashboardPage() {
                 <p className="operation-lead">向已勾选项目建立外部治理条件；它不会改变项目 Stage 或事项状态。</p>
                 <button className="text-button" onClick={() => setTemplateManager(templateManager === "constraints" ? null : "constraints")}>管理常用外部约束</button>
                 {templateManager === "constraints" ? <TemplateManager items={constraintTemplates} kind="external-constraint" onArchive={archiveTemplate} onRefresh={loadDashboard} operator={operator} onError={setError} projectTypes={projectTypes} /> : null}
-                <label className="field"><span>操作人</span><input className="input" value={operator} onChange={(event) => setOperator(event.target.value)} /></label>
                 <label className="field"><span>常用外部约束</span><select className="select" value={constraintTemplateId ?? ""} onChange={(event) => { const next = Number(event.target.value) || null; setConstraintTemplateId(next); const template = activeConstraintTemplates.find((item) => item.id === next); if (template) { setConstraintName(template.name); setConstraintImpactScope(template.impact_scope || "none"); setConstraintImpactNote(template.impact_note || ""); } }}><option value="">选择常用约束（可选）</option>{activeConstraintTemplates.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
                 <label className="field"><span>约束名称</span><input className="input" value={constraintName} onChange={(event) => setConstraintName(event.target.value)} placeholder="例如：上级预算核定" /></label>
                 {!constraintTemplateId ? <><label className="field"><span>影响范围</span><select className="select" value={constraintImpactScope} onChange={(event) => setConstraintImpactScope(event.target.value as typeof constraintImpactScope)}><option value="none">不影响项目字段</option><option value="effective_budget">影响有效预算</option><option value="other">其他影响</option></select></label>{constraintImpactScope === "other" ? <label className="field"><span>影响说明</span><input className="input" value={constraintImpactNote} onChange={(event) => setConstraintImpactNote(event.target.value)} /></label> : null}</> : null}
-                <label className="field"><span>初始办理状态</span><select className="select" value={constraintStatus} onChange={(event) => setConstraintStatus(event.target.value)}><option value="not_started">未开始</option><option value="in_progress">办理中</option></select></label>
+                <label className="field"><span>初始办理状态</span><select className="select" value={constraintStatus} onChange={(event) => setConstraintStatus(event.target.value)}><option value="not_started">待办理</option><option value="in_progress">办理中</option></select></label>
                 <label className="toggle"><input type="checkbox" checked={saveConstraintAsCommon} onChange={(event) => setSaveConstraintAsCommon(event.target.checked)} /><span>保存为常用外部约束</span></label>
                 <button className="action-button primary full" disabled={!selectedIds.length || executing} onClick={() => void submitBatchConstraints()}>确认添加外部约束</button>
                 <hr />
@@ -1735,11 +1752,10 @@ function DashboardPage() {
                 {batchConstraintPreview ? <div className="operation-preview"><strong>可办理 {batchConstraintPreview.eligible.length} 个</strong>{batchConstraintPreview.ineligible.length ? <small>不可办理 {batchConstraintPreview.ineligible.length} 个：{batchConstraintPreview.ineligible.map((item) => item.name || item.project_id).join("、")}</small> : <small>全部项目符合条件</small>}{isBatchBudgetDetermination ? <div className="batch-budget-outcomes">{batchConstraintPreview.eligible.map((item) => { const value = batchBudgetOutcomes[item.project_id] ?? { approved_budget: "", concluded_on: today(), note: "", cleared: true, set_effective_budget_source: true }; const update = (patch: Partial<typeof value>) => setBatchBudgetOutcomes((current) => ({ ...current, [item.project_id]: { ...value, ...patch } })); return <fieldset key={item.project_id}><legend>{item.name} · {item.project_code}</legend><label className="field"><span>有效预算（万元）</span><input className="input" type="number" min="0" value={value.approved_budget} onChange={(event) => update({ approved_budget: event.target.value })} /></label><label className="field"><span>结论或说明（可选）</span><input className="input" value={value.note} onChange={(event) => update({ note: event.target.value })} /></label></fieldset>; })}</div> : null}<button className="action-button primary full" disabled={Boolean(batchConstraintPreview.ineligible.length)} onClick={() => void submitBatchConstraintAction()}>确认批量办理</button></div> : null}
               </> : null}
               {operationMode === "stage" ? <>
-                <label className="field"><span>操作人</span><input className="input" value={operator} onChange={(event) => setOperator(event.target.value)} /></label>
                 {directStageAction === "establish" ? <><label className="field"><span>立项文件号</span><input className="input" value={establishmentDocumentNo} onChange={(event) => setEstablishmentDocumentNo(event.target.value)} placeholder="例如：杭校立〔2026〕12号" /></label><button className="action-button primary full" disabled={!establishmentDocumentNo.trim() || executing} onClick={() => void executeDirectStage("establish")}><CheckCircle2 size={16} />登记立项并进入项目库</button></> : null}
                 {directStageAction === "complete" ? <button className="action-button primary full" disabled={executing} onClick={() => void executeDirectStage("complete")}><CheckCircle2 size={16} />完成项目</button> : null}
                 {!directStageAction ? <p className="muted-copy">当前选择不能执行普通 Stage 推进；请按同一 Stage 分别选择，或使用特批处理例外。</p> : null}
-                <details className="force-stage-action"><summary>PMO 特批强制变更（例外）</summary><label className="field"><span>目标 Stage</span><select className="select" value={selectedTarget} onChange={(event) => setSelectedTarget(event.target.value)}><option value="">选择固定 Stage</option><option value="draft">未立项</option><option value="established">项目库—未实施</option><option value="closed">已完成</option><option value="terminated">已废弃</option></select></label><label className="field"><span>审批人</span><input className="input" value={approver} onChange={(event) => setApprover(event.target.value)} /></label><label className="field"><span>变更理由</span><textarea className="textarea" value={comment} onChange={(event) => setComment(event.target.value)} rows={3} /></label><button className="action-button primary full" disabled={!selectedIds.length || !selectedTarget || !comment || executing} onClick={() => void executeForceBatch()}><CheckCircle2 size={16} />确认特批变更</button></details>
+                <details className="force-stage-action"><summary>PMO 特批强制变更（例外）</summary><label className="field"><span>目标 Stage</span><select className="select" value={selectedTarget} onChange={(event) => setSelectedTarget(event.target.value)}><option value="">选择固定 Stage</option><option value="draft">未立项</option><option value="established">项目库—未实施</option><option value="closed">已完成</option><option value="terminated">已废弃</option></select></label><label className="field"><span>变更理由</span><textarea className="textarea" value={comment} onChange={(event) => setComment(event.target.value)} rows={3} /></label><button className="action-button primary full" disabled={!selectedIds.length || !selectedTarget || !comment || executing} onClick={() => void executeForceBatch()}><CheckCircle2 size={16} />确认特批变更</button></details>
               </> : null}
               {operationMode === "config" ? <section className="config-panel"><p className="operation-lead">项目分类是唯一的 PMO 分类字段；拖动条目调整显示与默认排序顺序。</p><div className="field-grid"><input className="input" value={newClassificationName} onChange={(event) => setNewClassificationName(event.target.value)} placeholder="新增项目分类" /><input className="input" value={newClassificationPrefix} onChange={(event) => setNewClassificationPrefix(event.target.value)} placeholder="编号前缀，例如 EQ" /></div><button className="mini-button" onClick={() => void addProjectClassification()}>新增项目分类</button><div className="template-manager config-sort-list">{projectTypes.map((item) => <div key={item.id} draggable onDragStart={() => setDraggedProjectTypeId(item.id)} onDragOver={(event) => event.preventDefault()} onDrop={() => { if (draggedProjectTypeId != null) void reorderProjectClassifications(draggedProjectTypeId, item.id); setDraggedProjectTypeId(null); }}><span className="drag-handle" aria-label="拖动调整项目分类顺序">⋮⋮</span><span>{item.name} · {item.code_prefix}</span><button className="text-button" onClick={() => void saveProjectClassification(item, { is_active: !item.is_active })}>{item.is_active ? "停用" : "恢复"}</button></div>) || <span>暂无项目分类</span>}</div><p className="mini-section-heading"><strong>部门排序</strong></p><div className="template-manager config-sort-list">{departments.map((department) => <div key={department} draggable onDragStart={() => setDraggedDepartment(department)} onDragOver={(event) => event.preventDefault()} onDrop={() => { if (draggedDepartment) void reorderDepartments(draggedDepartment, department); setDraggedDepartment(null); }}><span className="drag-handle" aria-label="拖动调整部门顺序">⋮⋮</span><span>{department}</span></div>)}</div></section> : null}
               {operationMode === "batch" ? <section className="batch-history-panel"><div className="quick-panel-heading"><strong>批次记录</strong><button type="button" className="text-button" onClick={() => void loadBatchHistory()}>刷新</button></div><div className="field-grid"><label className="field"><span>年度</span><input className="input" inputMode="numeric" value={batchHistoryFilters.year} onChange={(event) => setBatchHistoryFilters((value) => ({ ...value, year: event.target.value }))} placeholder="例如 2026" /></label><label className="field"><span>办理情况</span><select className="select" value={batchHistoryFilters.status} onChange={(event) => setBatchHistoryFilters((value) => ({ ...value, status: event.target.value }))}><option value="">全部</option><option value="open">办理中</option><option value="closed">已办结</option><option value="voided">已作废</option></select></label></div><label className="field"><span>事项、项目或批次名称</span><input className="input" value={batchHistoryFilters.keyword} onChange={(event) => setBatchHistoryFilters((value) => ({ ...value, keyword: event.target.value }))} /></label><button className="mini-button" onClick={() => void loadBatchHistory()}>查询批次记录</button><div className="batch-history">{batchHistory.map((batch) => <button type="button" key={batch.id} className="batch-history-row" onClick={() => void openWorkItemBatch(batch.id, "batch")}><strong>{batch.name}</strong><small>{batch.work_item_name} · {batch.scheduled_on || "未设日期"} · {batch.member_count} 项 · {batch.status === "open" ? "办理中" : batch.status === "closed" ? "已办结" : "已作废"}</small></button>)}{batchHistoryOpen && !batchHistory.length ? <small>暂无符合条件的批次记录。</small> : null}</div></section> : null}</>}
@@ -2128,7 +2144,7 @@ function ProjectDetailPage() {
                 <select className="select" value="" onChange={(event) => { const template = templates.find((item) => item.id === Number(event.target.value)); if (template) setNewDraft((current) => ({ ...current, name: template.name, content: template.default_content || "" })); }}><option value="">从常用事项选择（或直接自定义）</option>{templates.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select>
                 <input className="input" value={newDraft.name} onChange={(event) => setNewDraft((current) => ({ ...current, name: event.target.value }))} placeholder="事项名称*，例如：等学院补交采购需求书" />
                 <textarea className="textarea" rows={3} value={newDraft.content} onChange={(event) => setNewDraft((current) => ({ ...current, content: event.target.value }))} placeholder="事项内容 / 当前需要做什么" />
-                <select className="select" value={newDraft.status} onChange={(event) => setNewDraft((current) => ({ ...current, status: event.target.value }))}><option value="not_started">未开始</option><option value="in_progress">进行中</option></select>
+                  <select className="select" value={newDraft.status} onChange={(event) => setNewDraft((current) => ({ ...current, status: event.target.value }))}><option value="not_started">待办理</option><option value="in_progress">进行中</option></select>
                 <label className="field"><span>计划完成日期</span><input className="input" type="date" value={newDraft.planned_date || ""} onChange={(event) => setNewDraft((current) => ({ ...current, planned_date: event.target.value }))} /></label>
                 <label className="toggle"><input type="checkbox" checked={Boolean(newDraft.track_as_key_node)} onChange={(event) => setNewDraft((current) => ({ ...current, track_as_key_node: event.target.checked }))} /><span>☆ 重点关注</span></label>
                 <label className="field"><span>添加位置</span><select className="select" value={newDraft.insert_after_id ? String(newDraft.insert_after_id) : "last"} onChange={(event) => setNewDraft((current) => ({ ...current, insert_after_id: event.target.value === "last" ? null : Number(event.target.value) }))}><option value="last">添加到最后</option>{orderedWorkItems.map((item) => <option key={item.id} value={item.id}>添加到“{item.name}”之后</option>)}</select></label>
@@ -2168,7 +2184,7 @@ function ProjectDetailPage() {
               {editingProject ? <div className="detail-add-item project-edit-form">
                 <label className="field"><span>项目名称 <b aria-hidden="true">*</b></span><input ref={projectNameRef} className={`input ${projectEditErrors.name ? "input-error" : ""}`} value={project.name} onChange={(event) => { setProject({ ...project, name: event.target.value }); setProjectEditErrors((errors) => ({ ...errors, name: undefined })); }} aria-invalid={Boolean(projectEditErrors.name)} aria-describedby={projectEditErrors.name ? "project-name-error" : undefined} /></label>
                 {projectEditErrors.name ? <small id="project-name-error" className="field-error">{projectEditErrors.name}</small> : null}
-                <div className="field-grid"><input className="input" value={project.department ?? ""} onChange={(event) => setProject({ ...project, department: event.target.value })} placeholder="部门/学院" /><input className="input" value={project.major ?? ""} onChange={(event) => setProject({ ...project, major: event.target.value })} placeholder="所属专业" /></div><div className="field-grid"><input className="input" value={project.project_manager ?? ""} onChange={(event) => setProject({ ...project, project_manager: event.target.value })} placeholder="项目负责人" />{project.project_type === "laboratory" ? <input className="input" value={project.location ?? ""} onChange={(event) => setProject({ ...project, location: event.target.value })} placeholder="地点" /> : null}</div><label className="field"><span>项目分类</span><select className="select" value={project.project_type ?? ""} onChange={(event) => setProject({ ...project, project_type: event.target.value, procurement_nature: "", location: event.target.value === "laboratory" ? project.location : "" })}>{projectTypes.some((item) => item.code === project.project_type) ? null : <option value={project.project_type ?? ""}>{detailProjectTypeLabel(project.project_type)}</option>}{projectTypes.map((item) => <option key={item.id} value={item.code}>{item.name}</option>)}</select></label>{project.project_type === "software" ? <label className="field"><span>采购属性</span><select className="select" value={project.procurement_nature ?? ""} onChange={(event) => setProject({ ...project, procurement_nature: event.target.value as Project["procurement_nature"] })}><option value="">未设置</option><option value="goods">货物</option><option value="service">服务</option><option value="mixed">混合</option></select></label> : null}<label className="field"><span>初始预算（仅导入/录入纠错）</span><input className="input" type="number" value={project.budget ?? ""} onChange={(event) => setProject({ ...project, budget: event.target.value === "" ? null : Number(event.target.value) })} /></label>{project.stage === "已完成" ? <label className="field"><span>项目完成时间</span><input className="input" value={project.actual_end_date ?? ""} onChange={(event) => setProject({ ...project, actual_end_date: event.target.value })} placeholder="YYYY、YYYY-MM 或 YYYY-MM-DD" /></label> : null}<textarea className="textarea" rows={2} value={project.description ?? ""} onChange={(event) => setProject({ ...project, description: event.target.value })} placeholder="项目说明" />
+                <div className="field-grid"><input className="input" value={project.department ?? ""} onChange={(event) => setProject({ ...project, department: event.target.value })} placeholder="部门/学院" /><input className="input" value={project.major ?? ""} onChange={(event) => setProject({ ...project, major: event.target.value })} placeholder="所属专业" /></div><div className="field-grid"><input className="input" value={project.project_manager ?? ""} onChange={(event) => setProject({ ...project, project_manager: event.target.value })} placeholder="项目负责人" />{project.project_type === "laboratory" ? <input className="input" value={project.location ?? ""} onChange={(event) => setProject({ ...project, location: event.target.value })} placeholder="地点" /> : null}</div><label className="field"><span>项目分类</span><select className="select" value={project.project_type ?? ""} onChange={(event) => setProject({ ...project, project_type: event.target.value, procurement_nature: "", location: event.target.value === "laboratory" ? project.location : "" })}>{projectTypes.some((item) => item.code === project.project_type) ? null : <option value={project.project_type ?? ""}>{detailProjectTypeLabel(project.project_type)}</option>}{projectTypes.map((item) => <option key={item.id} value={item.code}>{item.name}</option>)}</select></label>{project.project_type === "software" ? <label className="field"><span>采购属性</span><select className="select" value={project.procurement_nature ?? ""} onChange={(event) => setProject({ ...project, procurement_nature: event.target.value as Project["procurement_nature"] })}><option value="">未设置</option><option value="goods">货物</option><option value="service">服务</option><option value="mixed">混合</option></select></label> : null}<label className="field"><span>初始预算（仅导入/录入纠错）</span><input className="input" inputMode="decimal" pattern="[0-9]*[.]?[0-9]*" value={project.budget ?? ""} onChange={(event) => setProject({ ...project, budget: event.target.value === "" ? null : event.target.value })} /></label>{project.stage === "已完成" ? <label className="field"><span>项目完成时间</span><input className="input" value={project.actual_end_date ?? ""} onChange={(event) => setProject({ ...project, actual_end_date: event.target.value })} placeholder="YYYY、YYYY-MM 或 YYYY-MM-DD" /></label> : null}<textarea className="textarea" rows={2} value={project.description ?? ""} onChange={(event) => setProject({ ...project, description: event.target.value })} placeholder="项目说明" />
                 <label className="field"><span>修改理由 <b aria-hidden="true">*</b></span><textarea ref={projectReasonRef} className={`textarea ${projectEditErrors.reason ? "input-error" : ""}`} rows={2} value={projectReason} onChange={(event) => { setProjectReason(event.target.value); setProjectEditErrors((errors) => ({ ...errors, reason: undefined })); }} aria-invalid={Boolean(projectEditErrors.reason)} aria-describedby={projectEditErrors.reason ? "project-reason-error" : undefined} /></label>
                 {projectEditErrors.reason ? <small id="project-reason-error" className="field-error">{projectEditErrors.reason}</small> : null}
                 <button className="action-button primary" onClick={() => void saveProjectEdits()}>保存</button>

@@ -10,9 +10,9 @@ export interface DashboardGroup {
   label: string;
   statuses: string[];
   count: number;
-  total_budget: number;
-  total_approved_budget: number;
-  total_contract_amount: number;
+  total_budget: string;
+  total_approved_budget: string;
+  total_contract_amount: string;
 }
 
 export interface StatusStat {
@@ -25,19 +25,19 @@ export interface StatusStat {
 
 export interface DashboardSummary {
   total_projects: number;
-  total_budget: number;
-  total_approved_budget: number;
-  total_contract_amount: number;
+  total_budget: string;
+  total_approved_budget: string;
+  total_contract_amount: string;
   project_library_count: number;
-  project_library_total_budget: number;
-  project_library_total_effective_budget: number;
+  project_library_total_budget: string;
+  project_library_total_effective_budget: string;
   review_in_progress_count: number;
   reviewed_count: number;
-  reviewed_total_approved_budget: number;
+  reviewed_total_approved_budget: string;
   external_conditions_ready_count: number;
-  external_conditions_ready_effective_budget: number;
+  external_conditions_ready_effective_budget: string;
   external_conditions_ongoing_count: number;
-  external_conditions_ongoing_effective_budget: number;
+  external_conditions_ongoing_effective_budget: string;
   status_stats: StatusStat[];
 }
 
@@ -57,9 +57,9 @@ export interface Project {
   procurement_nature?: "goods" | "service" | "mixed" | "" | null;
   project_summary_display?: string | null;
   establishment_document_no?: string | null;
-  budget: number | null;
-  approved_budget: number | null;
-  contract_amount: number | null;
+  budget: string | null;
+  approved_budget: string | null;
+  contract_amount: string | null;
   special_note: string | null;
   actual_start_date: string | null;
   actual_end_date: string | null;
@@ -84,9 +84,9 @@ export interface Project {
   external_constraint_count?: number;
   external_constraint_open_count?: number;
   external_constraint_states?: ExternalConstraintState[];
-  effective_budget?: number | null;
+  effective_budget?: string | null;
   effective_budget_source?: "budget_constraint" | "historical_review" | "initial_budget" | "unrecorded" | null;
-  formal_allocation_total?: number | null;
+  formal_allocation_total?: string | null;
   funding_allocations?: FundingAllocation[];
   contract_summary?: ContractSummary;
   contracts?: Contract[];
@@ -98,7 +98,7 @@ export interface ContractProjectRef {
   project_code: string;
   name: string;
   department?: string;
-  allocated_amount?: number | null;
+  allocated_amount?: string | null;
 }
 
 export interface ContractProgressLog {
@@ -134,15 +134,15 @@ export interface Contract {
   name: string;
   contract_no: string | null;
   supplier: string;
-  total_amount: number | null;
+  total_amount: string | null;
   signed_on: string | null;
   planned_completion_on: string | null;
   note: string;
   status: "not_started" | "performing" | "completed" | "terminated" | "paused";
   acceptance_status: "not_accepted" | "accepting" | "needs_rectification" | "accepted";
   allocation_complete?: boolean;
-  allocation_total?: number;
-  allocation_difference?: number | null;
+  allocation_total?: string;
+  allocation_difference?: string | null;
   projects: ContractProjectRef[];
   latest_progress?: ContractProgressLog | null;
   progress_logs?: ContractProgressLog[];
@@ -153,7 +153,7 @@ export interface FundingArrangement {
   id: number;
   planning_year: number;
   name: string;
-  estimated_amount: number;
+  estimated_amount: string;
   fund_code: string;
   note: string;
 }
@@ -163,12 +163,12 @@ export interface FundingSource {
   fund_code: string;
   fund_name?: string;
   fund_manager?: string;
-  reference_amount: number | null;
+  reference_amount: string | null;
   valid_from_year: number;
   valid_until_year: number;
   scope_note: string;
   note: string;
-  allocated_total: number;
+  allocated_total: string;
   project_count: number;
 }
 
@@ -176,10 +176,10 @@ export interface FundingAllocation {
   id: number;
   project_id: number;
   funding_source_id: number;
-  allocated_amount: number | null;
+  allocated_amount: string | null;
   allocation_amount_recorded?: boolean;
   fund_code: string;
-  reference_amount?: number | null;
+  reference_amount?: string | null;
   valid_from_year?: number;
   valid_until_year?: number;
 }
@@ -187,9 +187,9 @@ export interface FundingAllocation {
 export interface FundingOverview {
   year: number;
   arrangements: FundingArrangement[];
-  estimated_total: number;
-  advancing_effective_budget_total: number;
-  difference: number;
+  estimated_total: string;
+  advancing_effective_budget_total: string;
+  difference: string;
   over_expected: boolean;
   advancing_project_count: number;
   advancing_projects: Project[];
@@ -203,7 +203,7 @@ export interface AdvancementDraftMember {
   name: string;
   stage: string;
   advancement: Project["advancement"];
-  effective_budget: number | null;
+  effective_budget: string | null;
   member_status: "draft" | "confirmed";
   next_action: "include" | "special" | "already_active" | "already_special" | "terminal";
   added_at: string;
@@ -217,9 +217,9 @@ export interface AdvancementDraft {
   member_count: number;
   draft_count: number;
   confirmed_count: number;
-  effective_budget_total: number;
-  estimated_total: number;
-  difference: number;
+  effective_budget_total: string;
+  estimated_total: string;
+  difference: string;
   over_expected: boolean;
   arrangements: FundingArrangement[];
 }
@@ -232,12 +232,12 @@ export interface AnnualBudgetPlanMember {
   department: string;
   project_type: string;
   stage: string;
-  effective_budget: number | null;
+  effective_budget: string | null;
   plan_kind: "carryover" | "new_confirmed" | "candidate" | "untracked_current_year";
   selected: boolean;
   member_status?: "draft" | "confirmed" | "removed" | null;
-  planned_new_amount: number | null;
-  default_planned_new_amount: number;
+  planned_new_amount: string | null;
+  default_planned_new_amount: string;
   next_action: string;
   confirmed_at?: string | null;
   can_select: boolean;
@@ -254,11 +254,11 @@ export interface AnnualBudgetPlan {
   carryover_count: number;
   draft_count: number;
   confirmed_count: number;
-  planned_new_amount_total: number;
-  estimated_total: number;
-  difference: number;
+  planned_new_amount_total: string;
+  estimated_total: string;
+  difference: string;
   over_expected: boolean;
-  category_stats: Record<string, { count: number; planned_new_amount: number }>;
+  category_stats: Record<string, { count: number; planned_new_amount: string }>;
   arrangements: FundingArrangement[];
 }
 
@@ -604,9 +604,9 @@ export interface ImportPreviewRecord {
   current_status: string;
   category: string;
   project_type: "teaching_software" | "practical_teaching_site";
-  budget: number;
-  approved_budget: number | null;
-  contract_amount: number | null;
+  budget: string | null;
+  approved_budget: string | null;
+  contract_amount: string | null;
   special_note: string;
   actual_start_date: string;
   actual_end_date: string;
