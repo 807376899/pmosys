@@ -14,7 +14,7 @@ def test_external_constraints_need_scope_confirmation_and_expose_effective_budge
 
     initial = _listed_project(client, project["id"])
     assert initial["external_constraints_cleared"] == "true"
-    assert initial["effective_budget"] == 100
+    assert initial["effective_budget"] == "100"
     assert initial["effective_budget_source"] == "initial_budget"
 
     template = client.post(
@@ -56,7 +56,7 @@ def test_external_constraints_need_scope_confirmation_and_expose_effective_budge
     assert concluded.status_code == 200
     resolved = _listed_project(client, project["id"])
     assert resolved["external_constraints_cleared"] == "true"
-    assert resolved["effective_budget"] == 88.5
+    assert resolved["effective_budget"] == "88.5"
     assert resolved["effective_budget_source"] == "budget_constraint"
 
 
@@ -130,8 +130,24 @@ def test_clear_constraint_records_optional_result_and_sets_effective_budget(clie
     assert cleared.json()["clearance_status"] == "cleared"
     assert cleared.json()["outcome_json"]["result"] == "核定完成"
     listed = _listed_project(client, project["id"])
-    assert listed["effective_budget"] == 88.5
+    assert listed["effective_budget"] == "88.5"
     assert listed["effective_budget_source"] == "budget_constraint"
+
+
+def test_effective_budget_constraint_clear_accepts_precise_decimal_text(client, create_project_payload):
+    project = client.post("/api/v1/projects", json=create_project_payload()).json()
+    constraint = client.post(
+        f"/api/v1/projects/{project['id']}/external-constraints",
+        json={"name": "文本预算核定", "impact_scope": "effective_budget", "operator": "PMO"},
+    ).json()
+
+    cleared = client.post(
+        f"/api/v1/projects/{project['id']}/external-constraints/{constraint['id']}/actions",
+        json={"action": "clear", "operator": "PMO", "effective_budget": "12.5896"},
+    )
+
+    assert cleared.status_code == 200
+    assert _listed_project(client, project["id"])["effective_budget"] == "12.5896"
 
 
 def test_template_budget_impact_cannot_be_overridden_when_creating_constraint(client, create_project_payload):
@@ -163,7 +179,7 @@ def test_effective_budget_constraint_can_clear_with_zero_budget(client, create_p
     )
 
     assert cleared.status_code == 200
-    assert _listed_project(client, project["id"])["effective_budget"] == 0
+    assert _listed_project(client, project["id"])["effective_budget"] == "0"
 
 
 def test_effective_budget_constraint_cannot_clear_without_budget(client, create_project_payload):
@@ -345,13 +361,13 @@ def test_budget_source_is_explicit_and_switches_atomically(client, create_projec
         )
         assert response.status_code == 200
 
-    assert _listed_project(client, project["id"])["effective_budget"] == 88.5
+    assert _listed_project(client, project["id"])["effective_budget"] == "88.5"
     switched = client.post(
         f"/api/v1/projects/{project['id']}/external-constraints/{second['id']}/actions",
         json={"action": "set_effective_budget_source", "operator": "PMO", "reason": "采用最新核定"},
     )
     assert switched.status_code == 200
-    assert _listed_project(client, project["id"])["effective_budget"] == 90
+    assert _listed_project(client, project["id"])["effective_budget"] == "90"
     constraints = client.get(f"/api/v1/projects/{project['id']}/external-constraints").json()
     assert sum(item["is_effective_budget_source"] for item in constraints) == 1
 

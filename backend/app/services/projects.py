@@ -1139,10 +1139,11 @@ def _act_on_constraint(conn: sqlite3.Connection, project_id: int, constraint_id:
             outcome["note"] = note
         make_source = impact_scope == "effective_budget"
         if make_source:
-            value = payload.get("effective_budget")
-            if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0:
+            try:
+                value = parse_money(payload.get("effective_budget"), "有效预算")
+            except ValidationError as exc:
                 raise ValidationError("影响有效预算的约束解除时必须填写有效预算")
-            outcome["approved_budget"] = parse_money(value, "有效预算")
+            outcome["approved_budget"] = value
             conn.execute("UPDATE project_external_constraints SET is_effective_budget_source=0 WHERE project_id=?", (project_id,))
         updates.update({
             "handling_status": "concluded", "clearance_status": "cleared", "cleared_at": now, "cleared_by": operator,
