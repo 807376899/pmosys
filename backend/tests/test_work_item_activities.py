@@ -108,7 +108,6 @@ def test_activity_can_add_and_remove_members_without_creating_or_changing_work_i
     assert joined.status_code == 200
     second_member = next(member for member in joined.json()["members"] if member["project_id"] == second["id"])
     assert client.get(f"/api/v1/projects/{second['id']}/work-items").json()[0]["status"] == "not_started"
-
     removed = client.post(f"/api/v1/work-item-activities/{activity['id']}/members/remove", json={
         "operator": "PMO", "member_ids": [second_member["id"]], "reason": "本次不参加",
     })
@@ -116,6 +115,29 @@ def test_activity_can_add_and_remove_members_without_creating_or_changing_work_i
     assert next(member for member in removed.json()["members"] if member["id"] == second_member["id"])["member_status"] == "removed"
     assert client.get(f"/api/v1/projects/{second['id']}/work-items").json()[0]["status"] == "not_started"
 
+
+def test_activity_follow_up_groups_next_items_without_auto_advancing(client, create_project_payload):
+    project, review = _project_item(client, create_project_payload, "活动后续项目")
+    next_item = client.post(f"/api/v1/projects/{project['id']}/work-items", json={
+        "name": "委员会会议", "operator": "PMO", "status": "not_started", "insert_mode": "append",
+    }).json()
+    activity = client.post("/api/v1/work-item-activities", json={
+        "name": "评审活动", "work_item_name": review["name"], "operator": "PMO",
+        "targets": [{"project_id": project["id"], "work_item_id": review["id"]}],
+    }).json()
+    client.post(f"/api/v1/projects/{project['id']}/work-items/{review['id']}/complete", json={"operator": "PMO", "completed_on": "2026-09-24"})
+
+    groups = client.post(f"/api/v1/work-item-activities/{activity['id']}/next-groups", json={
+        "operator": "PMO", "member_ids": [activity["members"][0]["id"]],
+    })
+    assert groups.status_code == 200
+    assert groups.json()["groups"] == [{"name": next_item["name"], "count": 1, "project_ids": [project["id"]]}]
+    hold = client.post(f"/api/v1/work-item-activities/{activity['id']}/follow-up", json={
+        "operator": "PMO", "member_ids": [activity["members"][0]["id"]], "action": "hold",
+    })
+    assert hold.status_code == 200
+    assert hold.json()["members"][0]["follow_up_action"] == "hold"
+    assert next(item for item in client.get(f"/api/v1/projects/{project['id']}/work-items").json() if item["id"] == next_item["id"])["status"] == "not_started"
 
 def test_legacy_batch_route_is_not_exposed(client):
     assert client.get("/api/v1/work-item-batches").status_code == 404

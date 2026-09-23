@@ -290,3 +290,51 @@ def end_work_item_activity(activity_id: int, payload: dict) -> dict:
         conn.execute("UPDATE work_item_activities SET status='ended',ended_at=?,ended_by=?,updated_by=?,updated_at=? WHERE id=?", (now, operator, operator, now, activity_id))
         _event(conn, activity_id, "WORK_ITEM_ACTIVITY_ENDED", operator)
         return _serialize(conn, activity_id)
+
+
+def next_work_item_activity_groups(activity_id: int, payload: dict) -> dict:
+    operator, member_ids = str(payload.get("operator") or "").strip(), payload.get("member_ids") or []
+    if not operator or not member_ids:
+        raise ValidationError("请选择成员并填写操作人")
+    with get_connection() as conn:
+        _activity(conn, activity_id)
+        marks = ",".join("?" for _ in member_ids)
+        members = [dict(row) for row in conn.execute(
+            f"""SELECT m.*,wi.sequence_rank,wi.status AS work_item_status FROM work_item_activity_members m
+                JOIN project_work_items wi ON wi.id=m.work_item_id
+                WHERE m.activity_id=? AND m.id IN ({marks})""",
+            [activity_id, *member_ids],
+        ).fetchall()]
+        if len(members) != len(set(member_ids)) or any(member["member_status"] != "active" for member in members):
+            raise ValidationError("选择中包含不可用活动成员")
+        groups: dict[str, list[int]] = {}
+        for member in members:
+            if member["work_item_status"] != "completed":
+                continue
+            next_item = conn.execute(
+                """SELECT id,name FROM project_work_items
+                   WHERE project_id=? AND sequence_rank>? AND status NOT IN ('completed','not_applicable')
+                     AND cancelled_at IS NULL AND skipped_at IS NULL
+                   ORDER BY sequence_rank,id LIMIT 1""",
+                (member["project_id"], member["sequence_rank"]),
+            ).fetchone()
+            if next_item:
+                groups.setdefault(next_item["name"], []).append(member["project_id"])
+        return {"groups": [{"name": name, "count": len(project_ids), "project_ids": project_ids} for name, project_ids in groups.items()]}
+
+
+def record_work_item_activity_follow_up(activity_id: int, payload: dict) -> dict:
+    operator, member_ids, action = str(payload.get("operator") or "").strip(), payload.get("member_ids") or [], str(payload.get("action") or "").strip()
+    if not operator or not member_ids or action not in {"next", "rehandle", "hold"}:
+        raise ValidationError("请选择成员、后续处理并填写操作人")
+    with get_connection() as conn:
+        _activity(conn, activity_id)
+        marks = ",".join("?" for _ in member_ids)
+        members = [dict(row) for row in conn.execute(f"SELECT * FROM work_item_activity_members WHERE activity_id=? AND id IN ({marks})", [activity_id, *member_ids]).fetchall()]
+        if len(members) != len(set(member_ids)) or any(member["member_status"] != "active" for member in members):
+            raise ValidationError("选择中包含不可用活动成员")
+        for member in members:
+            conn.execute("UPDATE work_item_activity_members SET follow_up_action=? WHERE id=?", (action, member["id"]))
+            _audit(conn, member["project_id"], "WORK_ITEM_ACTIVITY_FOLLOW_UP_RECORDED", operator, {"activity_id": activity_id, "work_item_id": member["work_item_id"], "action": action})
+        _event(conn, activity_id, "WORK_ITEM_ACTIVITY_FOLLOW_UP_RECORDED", operator, {"member_ids": member_ids, "action": action})
+        return _serialize(conn, activity_id)

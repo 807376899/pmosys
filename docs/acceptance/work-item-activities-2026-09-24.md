@@ -9,7 +9,7 @@
 
 ## 已执行证据
 
-- API：` .\.venv\Scripts\python.exe -m pytest backend\tests\test_work_item_activities.py backend\tests\test_pmo_operations.py -q`，16 passed。覆盖创建活动不新增/不改变事项、共享活动进展的新增/编辑/软删除不写入项目事项进展、成员可加入/移出且不改变事项、成员可登记不同结果、结果不完成事项、全员登记后自动结束。
+- API：` .\.venv\Scripts\python.exe -m pytest backend\tests\test_work_item_activities.py backend\tests\test_pmo_operations.py -q`，17 passed。覆盖创建活动不新增/不改变事项、共享活动进展的新增/编辑/软删除不写入项目事项进展、成员可加入/移出且不改变事项、成员可登记不同结果、结果不完成事项、全员登记后自动结束，以及事项完成后的下一事项分组和不自动推进。
 - Build：`npm.cmd --prefix frontend run build`，通过。
 - Document：` .\.venv\Scripts\python.exe scripts\check_docs_governance.py`，通过；仅验证结构和引用，不代表语义或浏览器验收。
 
