@@ -9,6 +9,7 @@ from backend.app.docs.openapi_examples import PROJECT_CREATE_EXAMPLE, TRANSITION
 from backend.app.schemas.project import (
     BatchTransitionExecuteRequest,
     BatchTransitionExecuteResponse,
+    BatchStageAdvanceRequest,
     BatchTransitionPreviewRequest,
     BatchTransitionPreviewResponse,
     ProjectCreate,
@@ -25,6 +26,7 @@ from backend.app.services.projects import (
     delete_project,
     restore_project,
     execute_batch_transition,
+    advance_projects_by_stage,
     get_project,
     get_project_history,
     list_projects,
@@ -33,8 +35,8 @@ from backend.app.services.projects import (
     update_project,
     pmo_override_project,
     complete_submission_review,
-    create_work_item, complete_work_item, reopen_work_item, include_in_advancement, get_audit_events, get_work_items,
-    batch_create_work_items, batch_include_in_advancement, batch_defer_advancement, apply_work_package, update_work_item, quick_update_work_item, reorder_main_work_items, preview_batch_work_item_action, execute_batch_work_item_action,
+    create_work_item, complete_work_item, correct_work_item_completion, reopen_work_item, include_in_advancement, get_audit_events, get_work_items,
+    batch_create_work_items, batch_include_in_advancement, batch_defer_advancement, batch_backfill_completed_advancement, apply_work_package, update_work_item, quick_update_work_item, reorder_work_items as reorder_project_work_items, preview_batch_work_item_action, execute_batch_work_item_action,
     create_progress_log, get_progress_logs, update_progress_log, delete_progress_log, get_management_timeline, cancel_work_item, skip_work_item,
     defer_advancement, complete_advancement_cycle, get_advancement_cycles, create_early_preparation, special_include_in_advancement,
     create_project_external_constraint, get_project_external_constraints, confirm_external_constraint_scope,
@@ -44,6 +46,17 @@ from backend.app.services.projects import (
     create_external_constraint_progress_log, get_external_constraint_progress_logs,
     update_external_constraint_progress_log, delete_external_constraint_progress_log,
     get_milestones,
+)
+from backend.app.services.advancement_drafts import (
+    add_draft_members,
+    confirm_advancement_draft,
+    defer_confirmed_draft_member,
+    get_advancement_draft,
+    remove_draft_member,
+    get_annual_budget_plan,
+    save_annual_budget_plan,
+    supplement_annual_budget_plan,
+    annual_plan_exception_action,
 )
 
 
@@ -99,9 +112,69 @@ def batch_defer(payload: dict = Body(...)):
     return batch_defer_advancement(payload)
 
 
+@router.post("/batch-backfill-completed-advancement")
+def batch_backfill_completed(payload: dict = Body(...)):
+    return batch_backfill_completed_advancement(payload)
+
+
+@router.get("/advancement-drafts/{year}")
+def advancement_draft(year: int):
+    return get_advancement_draft(year)
+
+
+@router.get("/annual-budget-plans/{year}")
+def annual_budget_plan(year: int):
+    return get_annual_budget_plan(year)
+
+
+@router.put("/annual-budget-plans/{year}")
+def save_annual_plan(year: int, payload: dict = Body(...)):
+    return save_annual_budget_plan(year, payload)
+
+
+@router.post("/annual-budget-plans/{year}/confirm")
+def confirm_annual_plan(year: int, payload: dict = Body(...)):
+    return confirm_advancement_draft(year, payload)
+
+
+@router.post("/annual-budget-plans/{year}/supplement")
+def supplement_annual_plan(year: int, payload: dict = Body(...)):
+    return supplement_annual_budget_plan(year, payload)
+
+
+@router.post("/annual-budget-plans/{year}/exception-actions")
+def annual_plan_exception(year: int, payload: dict = Body(...)):
+    return annual_plan_exception_action(year, payload)
+
+
+@router.post("/advancement-drafts/{year}/members")
+def add_advancement_draft_members(year: int, payload: dict = Body(...)):
+    return add_draft_members(year, payload)
+
+
+@router.delete("/advancement-drafts/{year}/members/{project_id}")
+def remove_advancement_draft_member(year: int, project_id: int, payload: dict = Body(...)):
+    return remove_draft_member(year, project_id, payload)
+
+
+@router.post("/advancement-drafts/{year}/confirm")
+def confirm_draft(year: int, payload: dict = Body(...)):
+    return confirm_advancement_draft(year, payload)
+
+
+@router.post("/advancement-drafts/{year}/members/{project_id}/defer")
+def defer_draft_member(year: int, project_id: int, payload: dict = Body(...)):
+    return defer_confirmed_draft_member(year, project_id, payload)
+
+
 @router.post("/apply-work-package")
 def apply_package(payload: dict = Body(...)):
     return apply_work_package(payload)
+
+
+@router.post("/batch-stage-advance")
+def batch_stage_advance(payload: BatchStageAdvanceRequest):
+    return advance_projects_by_stage(payload.model_dump())
 
 
 @router.get("/{project_id}", response_model=ProjectDetail)
@@ -167,7 +240,7 @@ def add_work_item(project_id: int, payload: dict = Body(...)):
 
 @router.post("/{project_id}/work-items/reorder")
 def reorder_work_items(project_id: int, payload: dict = Body(...)):
-    return reorder_main_work_items(project_id, payload)
+    return reorder_project_work_items(project_id, payload)
 
 @router.get("/{project_id}/external-constraints")
 def list_external_constraints(project_id: int):
@@ -229,6 +302,11 @@ def milestones(project_id: int):
 @router.post("/{project_id}/work-items/{item_id}/complete")
 def complete_item(project_id: int, item_id: int, payload: dict = Body(...)):
     return complete_work_item(project_id, item_id, payload)
+
+
+@router.patch("/{project_id}/work-items/{item_id}/completion-record")
+def patch_completion_record(project_id: int, item_id: int, payload: dict = Body(...)):
+    return correct_work_item_completion(project_id, item_id, payload)
 
 @router.post("/{project_id}/work-items/{item_id}/reopen")
 def reopen_item(project_id: int, item_id: int, payload: dict = Body(...)):

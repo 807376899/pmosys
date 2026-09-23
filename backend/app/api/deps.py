@@ -21,7 +21,7 @@ def project_filters(
     status_updated_from: str | None = None,
     status_updated_to: str | None = None,
     sort_by: str | None = None,
-    sort_dir: str = Query(default="desc", pattern="^(asc|desc)$"),
+    sort_dir: str = Query(default="asc", pattern="^(asc|desc)$"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=200),
 ) -> dict:

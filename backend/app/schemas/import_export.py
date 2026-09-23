@@ -7,19 +7,26 @@ class ImportPreviewRecord(APIModel):
     name: str
     description: str = ""
     department: str = ""
+    major: str = ""
     sponsor: str = ""
     project_manager: str = ""
     current_status: str = "draft"
-    category: str = ""
     # Project types are administered from SQLite.  The old enum is retained
     # only for historic import aliases, not as a runtime restriction.
     project_type: str
-    budget: float = 0
+    budget: float | None = None
     approved_budget: float | None = None
     contract_amount: float | None = None
     special_note: str = ""
     actual_start_date: str = ""
     actual_end_date: str = ""
+    procurement_nature: str = ""
+    location: str = ""
+    establishment_document_no: str = ""
+    advancement_year: int | None = None
+    import_advancing: bool = False
+    termination_reason: str = ""
+    approver: str = ""
 
 
 class ImportPreviewErrorItem(APIModel):

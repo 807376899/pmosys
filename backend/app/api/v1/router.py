@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from backend.app.api.v1.contracts import router as contracts_router, project_router as contracts_project_router
+from backend.app.api.v1.batches import router as batches_router
 from backend.app.api.v1.dashboard import router as dashboard_router
+from backend.app.api.v1.funding import router as funding_router, project_router as funding_project_router
 from backend.app.api.v1.health import router as health_router
 from backend.app.api.v1.imports_exports import router as import_export_router
 from backend.app.api.v1.metadata import router as metadata_router
@@ -15,9 +18,14 @@ from backend.app.api.v1.work_items import router as work_items_router
 api_router = APIRouter()
 api_router.include_router(health_router)
 api_router.include_router(projects_router)
+api_router.include_router(batches_router)
+api_router.include_router(contracts_router)
+api_router.include_router(contracts_project_router)
 api_router.include_router(project_types_router)
 api_router.include_router(work_items_router)
 api_router.include_router(workflow_router)
 api_router.include_router(dashboard_router)
+api_router.include_router(funding_router)
+api_router.include_router(funding_project_router)
 api_router.include_router(metadata_router)
 api_router.include_router(import_export_router)

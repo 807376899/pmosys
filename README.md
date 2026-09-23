@@ -4,39 +4,9 @@
 
 当前产品主入口是 React 工作台；FastAPI 提供本地 API 和 SQLite 数据持久化。根目录的 Streamlit 文件仅作为旧版本保留，不是当前推荐运行方式。
 
-## 当前可用能力
+## 需求与能力入口
 
-- 五个固定 Stage：未立项、项目库—未实施、项目库—推进中、已完成、已废弃。
-- 高密度 PMO 工作台：Stage 卡片、项目筛选、总览/阶段跟踪视图、当前进展摘要与下一关键节点。
-- 工作项（Work Item）：批量下发、单项目例外新增、常用事项、工作包、状态/计划日期/重点关注维护，以及连续进展记录。
-- 外部约束（External Constraint）：以轻量治理对象记录预算核定、备案、准入等外部阻断条件；办理过程仍由 Work Item 管理。
-- 主流程排序：主流程事项按 `flow_group + sequence_rank` 排列；独立事项不抢占下一关键节点。
-- 推进治理：纳入推进、暂缓推进、结束推进周期、未立项项目的提前推进准备，以及已废弃项目的特批恢复。
-- PMO 批量操作：纳入推进、调整 Stage、添加事项、应用工作包；批次入口明确留待后续实现。
-- 项目导入、导出、类型目录、项目编号生成和统一审计事件。
-
-## 领域口径
-
-| 对象 | 回答的问题 |
-| --- | --- |
-| Stage | 项目整体处于哪个 PMO 治理口径？ |
-| ProjectWorkItem | 项目现在具体在推进什么？ |
-| WorkItemProgressLog | 事项尚未完成时，中间发生了什么？ |
-| Milestone | 已发生了哪些关键事实？ |
-| ProjectAdvancementRecord | 某年度推进计划是否纳入、暂缓或结束？ |
-| ExternalConstraint | 是否存在仍阻断项目推进的外部治理条件？ |
-| AuditEvent | 谁在何时做了什么操作？ |
-
-### 关键规则
-
-- Stage 只有五个固定值，不能用“送审中”“采购中”等旧小状态作为 Stage 附属显示。
-- “项目库—未实施”进入“项目库—推进中”只能通过 PMO 的**纳入推进**动作；预算审核等事项不会自动改变这一管理口径。
-- 已完成、不适用、已取消或已跳过的主流程事项不参与下一关键节点；暂停事项默认仍是阻塞节点。
-- 事项取消是独立留痕动作，不增加新的事项状态；已完成事项应通过重开处理，不能覆盖历史完成记录。
-- 未立项项目不能直接纳入推进，只能登记“提前推进准备”，Stage 保持未立项。
-- 常用事项是单项复用，工作包是一组事项复用；二者均须由 PMO 显式保存。
-- 外部约束三态为 `true / false / unknown`：只有已确认适用范围且所有**阻断性**约束均已解除或不适用时为 `true`；没有约束但未确认范围仍为 `unknown`。非阻断约束不影响该判断。
-- 当前有效预算由统一投影计算，并同时返回来源：外部预算核定、历史审核预算或初始预算。
+当前业务与交互只由[需求基线](docs/requirements/pmo-lifecycle-requirements.md)定义。Stage与推进见REQ-GOV-001/002/003，事项见REQ-WI-001至004，外部条件见REQ-EC-001至003，工作台见REQ-UI-001至008。需求已确认不表示实现或验收通过；实际证据见[验收记录](docs/acceptance/README.md)。
 
 ## 技术结构
 
@@ -120,13 +90,13 @@ cd frontend
 npm.cmd run build
 ```
 
-涉及工作台或项目详情的改动，除测试与构建外，还必须在浏览器中核对实际交互和布局；构建通过不能替代浏览器验收。
+验证范围、结果状态与证据要求只在[AGENTS.md](AGENTS.md)定义。文档检查：` .\.venv\Scripts\python.exe scripts\check_docs_governance.py`；隔离测试：` .\.venv\Scripts\python.exe -m pytest tests\test_docs_governance.py -q`。
 
 ## 常用 API 入口
 
 完整接口以 FastAPI 的 `/docs` 为准。常用资源包括：
 
-- `GET /api/v1/projects`：工作台项目列表投影（Stage、事项摘要、下一关键节点、推进信息、外部约束三态与当前有效预算）。
+- `GET /api/v1/projects`：工作台项目列表投影（Stage、事项摘要、下一关键节点、推进信息、外部条件投影与当前有效预算）。
 - `POST /api/v1/projects/batch-work-items`：向多个项目下发事项。
 - `POST /api/v1/projects/batch-include-in-advancement`：批量纳入推进。
 - `POST /api/v1/projects/batch-defer-advancement`：批量暂缓推进并回到未实施。
@@ -134,7 +104,7 @@ npm.cmd run build
 - `GET /api/v1/work-item-templates` 与 `GET /api/v1/work-packages`：常用事项和工作包。
 - `POST /api/v1/projects/{id}/work-items/{itemId}/progress-logs`：追加事项过程记录。
 - `GET/POST /api/v1/external-constraint-templates`：管理可复用的外部约束模板。
-- `POST /api/v1/projects/{id}/external-constraints`：为项目建立外部约束；`.../actions` 以开始办理、补充、登记结论、不再适用或结论失效等动作更新。
+- `POST /api/v1/projects/{id}/external-constraints`：为项目建立外部约束；办理规则按REQ-EC-001@v1，运行接口以OpenAPI为准。
 
 ## 需求与治理文档
 
@@ -146,10 +116,10 @@ npm.cmd run build
 - [API 文档说明](docs/api/README.md)
 - [协作约束](AGENTS.md)
 
-业务或实现改动前，先判断它属于 Stage、ProjectWorkItem、Milestone、Batch、BusinessRecord、AuditEvent 或未来采购实体；并同步更新上述治理文档。
+变更协议与按影响更新文档的要求见[AGENTS.md](AGENTS.md)。
 
 ## 数据与迁移说明
 
-- 旧数据中显示为 `???` 的项目名称无法从数据库自动还原，须由 PMO 人工补正并保留审计记录。
-- Batch、供应商、合同、采购包、BusinessRecord 关联与共享附件是后续领域模块；当前 UI 不将其伪装为已可用功能。
+- 项目纠错与软删除规则见REQ-PRJ-001@v1。
+- 当前领域边界与后置模块见REQ-GOV-001@v1。
 - 根目录 `app.py`、`components/`、`lib/` 属于旧版 Streamlit 兼容实现；`run.ps1` 是当前 FastAPI 的本地启动脚本。

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import re
 
 from backend.app.core.errors import DuplicateProjectCodeError, ValidationError
 from backend.app.repositories import projects as project_repo
@@ -16,12 +17,23 @@ def project_type_prefix(conn, project_type: str) -> str:
     raise ValidationError(f"项目类型不存在或已停用: {project_type}")
 
 
-def validate_manual_project_code(conn, project_code: str, project_type: str) -> str:
+def validate_manual_project_code(conn, project_code: str, project_type: str, *, allow_historical_year: bool = False) -> str:
     project_code = project_code.strip().upper()
     prefix = project_type_prefix(conn, project_type)
-    if not project_code.startswith(prefix):
+    match = re.fullmatch(rf"{re.escape(prefix)}(\d{{4}})\d{{4}}", project_code)
+    if not match:
         raise ValidationError(
-            f"项目编号 {project_code} 与项目类型不匹配",
+            f"项目编号须为 {prefix} 加四位年份和四位流水号，例如 {prefix}{datetime.now().year}0001",
+            code="VALIDATION_ERROR",
+        )
+    year = int(match.group(1))
+    current_year = datetime.now().year
+    if allow_historical_year:
+        if not 1900 <= year <= current_year:
+            raise ValidationError(f"历史导入项目编号年份须在 1900 至 {current_year} 之间", code="VALIDATION_ERROR")
+    elif year != current_year:
+        raise ValidationError(
+            f"项目编号须为 {prefix}{current_year} 加四位流水号，例如 {prefix}{current_year}0001",
             code="VALIDATION_ERROR",
         )
     return project_code

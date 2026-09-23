@@ -60,7 +60,7 @@ def test_external_constraints_need_scope_confirmation_and_expose_effective_budge
     assert resolved["effective_budget_source"] == "budget_constraint"
 
 
-def test_non_blocking_constraint_does_not_block_confirmed_external_conditions(client, create_project_payload):
+def test_any_unresolved_constraint_is_external_condition_pending(client, create_project_payload):
     project = client.post("/api/v1/projects", json=create_project_payload()).json()
     template = client.post(
         "/api/v1/external-constraint-templates",
@@ -75,7 +75,147 @@ def test_non_blocking_constraint_does_not_block_confirmed_external_conditions(cl
         f"/api/v1/projects/{project['id']}/confirm-external-constraint-scope",
         json={"operator": "PMO", "note": "仅适用非阻断备案"},
     ).status_code == 200
-    assert _listed_project(client, project["id"])["external_constraints_cleared"] == "true"
+    listed = _listed_project(client, project["id"])
+    assert listed["external_constraints_cleared"] == "false"
+    assert listed["external_constraint_open_count"] == 1
+    ongoing = client.get("/api/v1/projects", params={"external_conditions": "ongoing", "page_size": 20})
+    assert ongoing.status_code == 200
+    assert [item["id"] for item in ongoing.json()["items"]] == [project["id"]]
+    for to_status in ("under_review", "established"):
+        transitioned = client.post(
+            f"/api/v1/projects/{project['id']}/transitions",
+            json={
+                "to_status": to_status, "operator": "PMO", "operator_role": "PMO",
+                "approver": "PMO", "comment": "测试项目库筛选", "deliverable": "测试材料",
+            },
+        )
+        assert transitioned.status_code == 200
+    library_ongoing = client.get(
+        "/api/v1/projects",
+        params={"group": "project_library", "external_conditions": "ongoing", "page_size": 20},
+    )
+    assert [item["id"] for item in library_ongoing.json()["items"]] == [project["id"]]
+
+
+def test_clear_constraint_records_optional_result_and_sets_effective_budget(client, create_project_payload):
+    project = client.post("/api/v1/projects", json=create_project_payload()).json()
+    template = client.post(
+        "/api/v1/external-constraint-templates",
+        json={
+            "name": "预算影响审核",
+            "operator": "PMO",
+            "impact_scope": "effective_budget",
+        },
+    )
+    assert template.status_code == 200
+    assert template.json()["impact_scope"] == "effective_budget"
+
+    constraint = client.post(
+        f"/api/v1/projects/{project['id']}/external-constraints",
+        json={"template_id": template.json()["id"], "operator": "PMO"},
+    )
+    assert constraint.status_code == 200
+    cleared = client.post(
+        f"/api/v1/projects/{project['id']}/external-constraints/{constraint.json()['id']}/actions",
+        json={
+            "action": "clear",
+            "operator": "PMO",
+            "result": "核定完成",
+            "note": "预算调整已确认",
+            "effective_budget": 88.5,
+        },
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["handling_status"] == "concluded"
+    assert cleared.json()["clearance_status"] == "cleared"
+    assert cleared.json()["outcome_json"]["result"] == "核定完成"
+    listed = _listed_project(client, project["id"])
+    assert listed["effective_budget"] == 88.5
+    assert listed["effective_budget_source"] == "budget_constraint"
+
+
+def test_template_budget_impact_cannot_be_overridden_when_creating_constraint(client, create_project_payload):
+    project = client.post("/api/v1/projects", json=create_project_payload()).json()
+    template = client.post(
+        "/api/v1/external-constraint-templates",
+        json={"name": "模板预算审核", "operator": "PMO", "impact_scope": "effective_budget"},
+    ).json()
+
+    created = client.post(
+        f"/api/v1/projects/{project['id']}/external-constraints",
+        json={"template_id": template["id"], "name": template["name"], "impact_scope": "none", "operator": "PMO"},
+    )
+
+    assert created.status_code == 200
+    assert created.json()["impact_scope"] == "effective_budget"
+
+
+def test_effective_budget_constraint_can_clear_with_zero_budget(client, create_project_payload):
+    project = client.post("/api/v1/projects", json=create_project_payload()).json()
+    created = client.post(
+        f"/api/v1/projects/{project['id']}/external-constraints",
+        json={"name": "零预算核定", "impact_scope": "effective_budget", "operator": "PMO"},
+    ).json()
+
+    cleared = client.post(
+        f"/api/v1/projects/{project['id']}/external-constraints/{created['id']}/actions",
+        json={"action": "clear", "operator": "PMO", "effective_budget": 0},
+    )
+
+    assert cleared.status_code == 200
+    assert _listed_project(client, project["id"])["effective_budget"] == 0
+
+
+def test_effective_budget_constraint_cannot_clear_without_budget(client, create_project_payload):
+    project = client.post("/api/v1/projects", json=create_project_payload()).json()
+    created = client.post(
+        f"/api/v1/projects/{project['id']}/external-constraints",
+        json={"name": "预算调整", "impact_scope": "effective_budget", "operator": "PMO"},
+    )
+    result = client.post(
+        f"/api/v1/projects/{project['id']}/external-constraints/{created.json()['id']}/actions",
+        json={"action": "clear", "operator": "PMO"},
+    )
+    assert result.status_code == 422
+    assert "有效预算" in str(result.json())
+
+
+def test_constraint_template_other_impact_requires_note_and_legacy_manual_scope_stays_usable(client):
+    missing_note = client.post(
+        "/api/v1/external-constraint-templates",
+        json={"name": "其他影响缺说明", "impact_scope": "other", "operator": "PMO"},
+    )
+    assert missing_note.status_code == 422
+
+    legacy_manual = client.post(
+        "/api/v1/external-constraint-templates",
+        json={
+            "name": "历史手工范围", "scope_kind": "manual", "impact_scope": "other",
+            "impact_note": "仅记录影响", "operator": "PMO",
+        },
+    )
+    assert legacy_manual.status_code == 200
+    assert legacy_manual.json()["scope_kind"] == "all"
+    assert legacy_manual.json()["impact_scope"] == "other"
+
+
+def test_constraint_first_handling_date_is_set_once_and_projected(client, create_project_payload):
+    project = client.post("/api/v1/projects", json=create_project_payload()).json()
+    created = client.post(
+        f"/api/v1/projects/{project['id']}/external-constraints",
+        json={"name": "数据安全审核", "handling_status": "in_progress", "operator": "PMO"},
+    )
+    assert created.status_code == 200
+    first_started_on = created.json()["handling_started_on"]
+    assert first_started_on
+    begun_again = client.post(
+        f"/api/v1/projects/{project['id']}/external-constraints/{created.json()['id']}/actions",
+        json={"action": "begin", "operator": "PMO"},
+    )
+    assert begun_again.status_code == 200
+    assert begun_again.json()["handling_started_on"] == first_started_on
+    state = _listed_project(client, project["id"])["external_constraint_states"][0]
+    assert state["handling_started_on"] == first_started_on
 
 
 def test_batch_constraint_can_be_saved_as_common_template_and_filtered_as_ongoing(client, create_project_payload):
@@ -110,7 +250,7 @@ def test_standard_project_list_projection_omits_legacy_status(client, create_pro
     assert listed.json()["items"][0]["stage"] == "未立项"
 
 
-def test_completion_can_create_and_reopen_can_void_a_milestone(client, create_project_payload):
+def test_completion_and_reopen_do_not_create_or_void_milestones(client, create_project_payload):
     project = client.post("/api/v1/projects", json=create_project_payload()).json()
     item = client.post(
         f"/api/v1/projects/{project['id']}/work-items",
@@ -121,14 +261,11 @@ def test_completion_can_create_and_reopen_can_void_a_milestone(client, create_pr
         json={"operator": "PMO", "result": "已发文", "create_milestone": True, "milestone_name": "项目正式立项"},
     )
     assert completed.status_code == 200
-    timeline = client.get(f"/api/v1/projects/{project['id']}/management-timeline").json()
-    assert any(event["summary"] == "项目正式立项" for event in timeline)
     assert client.post(
         f"/api/v1/projects/{project['id']}/work-items/{item['id']}/reopen",
         json={"operator": "PMO", "reason": "文件号有误"},
     ).status_code == 200
-    milestones = client.get(f"/api/v1/projects/{project['id']}/milestones").json()
-    assert milestones[0]["is_void"] == 1
+    assert client.get(f"/api/v1/projects/{project['id']}/milestones").json() == []
 
 
 def test_work_package_can_preview_and_apply_external_constraints(client, create_project_payload):
@@ -268,17 +405,20 @@ def test_constraint_progress_logs_are_editable_soft_deleted_and_excluded_from_de
     endpoint = f"/api/v1/projects/{project['id']}/external-constraints/{constraint['id']}/progress-logs"
 
     created = client.post(endpoint, json={"operator": "PMO", "content": "已提交材料"})
+    later = client.post(endpoint, json={"operator": "PMO", "content": "补充说明"})
     assert created.status_code == 200
+    assert later.status_code == 200
+    assert [log["content"] for log in client.get(endpoint).json()] == ["已提交材料", "补充说明"]
     edited = client.patch(f"{endpoint}/{created.json()['id']}", json={"operator": "PMO", "content": "已补充材料"})
     assert edited.status_code == 200
     assert edited.json()["content"] == "已补充材料"
     assert client.request("DELETE", f"{endpoint}/{created.json()['id']}", json={"operator": "PMO", "reason": "重复记录"}).status_code == 200
-    assert client.get(endpoint).json() == []
+    assert [log["content"] for log in client.get(endpoint).json()] == ["补充说明"]
     audit = client.get(f"/api/v1/projects/{project['id']}/audit-events").json()
     assert any(event["event_type"] == "EXTERNAL_CONSTRAINT_PROGRESS_DELETED" for event in audit)
 
 
-def test_external_pending_count_ignores_non_blocking_constraints_and_exposes_compact_cells(client, create_project_payload):
+def test_external_pending_count_includes_all_unresolved_constraints_and_exposes_compact_cells(client, create_project_payload):
     project = client.post("/api/v1/projects", json=create_project_payload()).json()
     non_blocking = client.post(
         f"/api/v1/projects/{project['id']}/external-constraints",
@@ -286,8 +426,8 @@ def test_external_pending_count_ignores_non_blocking_constraints_and_exposes_com
     )
     assert non_blocking.status_code == 200
     listed = _listed_project(client, project["id"])
-    assert listed["external_constraints_cleared"] == "true"
-    assert listed["external_constraint_open_count"] == 0
+    assert listed["external_constraints_cleared"] == "false"
+    assert listed["external_constraint_open_count"] == 1
     assert listed["external_constraint_states"][0]["name"] == "普通备案"
 
 
@@ -335,11 +475,11 @@ def test_batch_constraint_action_accepts_exact_project_instance_targets(client, 
     assert client.get(f"/api/v1/projects/{first['id']}/external-constraints/{first_constraint['id']}/progress-logs").json()[0]["content"] == "统一办理进展"
 
 
-def test_batch_budget_conclusion_requires_per_project_results(client, create_project_payload):
+def test_batch_budget_impact_clear_requires_per_project_results(client, create_project_payload):
     first = client.post("/api/v1/projects", json=create_project_payload(name="预算项目甲")).json()
     second = client.post("/api/v1/projects", json=create_project_payload(name="预算项目乙")).json()
-    template = client.post("/api/v1/external-constraint-templates", json={"name": "预算批量核定", "outcome_schema": {"kind": "budget_determination"}, "operator": "PMO"}).json()
+    template = client.post("/api/v1/external-constraint-templates", json={"name": "预算批量核定", "impact_scope": "effective_budget", "operator": "PMO"}).json()
     assert client.post("/api/v1/projects/batch-external-constraints", json={"project_ids": [first["id"], second["id"]], "operator": "PMO", "constraints": [{"template_id": template["id"]}]}).status_code == 200
-    rejected = client.post("/api/v1/projects/batch-external-constraint-actions", json={"project_ids": [first["id"], second["id"]], "template_id": template["id"], "action": "conclude", "operator": "PMO", "outcome": {"approved_budget": 80}})
+    rejected = client.post("/api/v1/projects/batch-external-constraint-actions", json={"project_ids": [first["id"], second["id"]], "template_id": template["id"], "action": "clear", "operator": "PMO"})
     assert rejected.status_code == 422
     assert all(item["handling_status"] == "not_started" for project in (first, second) for item in client.get(f"/api/v1/projects/{project['id']}/external-constraints").json())

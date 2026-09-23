@@ -37,45 +37,37 @@ def test_batch_advancement_preflight_rejects_mixed_projects_without_partial_writ
     assert client.get(f"/api/v1/projects/{eligible['id']}").json()["stage"] == "项目库—未实施"
 
 
-def test_batch_work_items_are_projected_into_list_and_can_be_saved_as_a_package(client, create_project_payload):
+def test_batch_work_items_keep_each_draft_position_and_common_template_choice(client, create_project_payload):
     first = client.post("/api/v1/projects", json=create_project_payload(name="项目 A")).json()
-    second = client.post("/api/v1/projects", json=create_project_payload(name="项目 B")).json()
+    client.post(f"/api/v1/projects/{first['id']}/work-items", json={"name": "当前事项", "operator": "PMO"})
+    client.post(f"/api/v1/projects/{first['id']}/work-items", json={"name": "原末尾事项", "operator": "PMO"})
 
     response = client.post(
         "/api/v1/projects/batch-work-items",
         json={
-            "project_ids": [first["id"], second["id"]],
+            "project_ids": [first["id"]],
             "operator": "PMO",
             "items": [
                 {
-                    "name": "预算审核",
-                    "execution_mode": "external",
-                    "assignee": "财务老师",
-                    "planned_date": "2026-08-30",
-                    "priority": "high",
-                    "track_as_key_node": True,
-                    "completion_mode": "record_only",
+                    "name": "当前后第一项",
+                    "insert_mode": "after_current",
+                    "save_as_common": True,
                 },
-                {"name": "采购需求书", "track_as_key_node": False, "completion_mode": "milestone"},
+                {"name": "追加事项", "insert_mode": "last", "save_as_common": False},
+                {"name": "当前后第二项", "insert_mode": "after_current", "save_as_common": True},
             ],
-            "save_as_common": True,
             "save_as_package_name": "采购前期准备",
         },
     )
     assert response.status_code == 200
-    assert response.json()["created_count"] == 4
+    assert response.json()["created_count"] == 3
 
-    projects = client.get("/api/v1/projects", params={"page_size": 10}).json()["items"]
-    first_projection = next(item for item in projects if item["id"] == first["id"])
-    assert first_projection["stage"] == "未立项"
-    assert first_projection["work_item_summary"][0]["name"] == "预算审核"
-    assert first_projection["work_item_count"] == 2
-    assert first_projection["work_item_states"]["采购需求书"] == "not_started"
-    assert first_projection["next_key_node"]["name"] == "预算审核"
+    items = client.get(f"/api/v1/projects/{first['id']}/work-items").json()
+    assert [item["name"] for item in items] == ["当前事项", "当前后第一项", "当前后第二项", "原末尾事项", "追加事项"]
 
     templates = client.get("/api/v1/work-item-templates").json()
     packages = client.get("/api/v1/work-packages").json()
-    assert any(item["name"] == "预算审核" for item in templates)
+    assert {item["name"] for item in templates} == {"当前后第一项", "当前后第二项"}
     assert any(package["name"] == "采购前期准备" for package in packages)
 
 
@@ -101,19 +93,48 @@ def test_apply_work_package_and_batch_include_advancement(client, create_project
     assert advancement.json()["success"] == 1
 
 
-def test_default_pmo_package_starts_at_pmo_review_and_is_snapshotted(client, create_project_payload):
-    package = next(item for item in client.get("/api/v1/work-packages").json() if item["name"] == "未立项 PMO 工作包")
-    assert [item["name"] for item in package["items"]] == [
-        "PMO 审核", "校外专家/小组评审", "实验室建设与管理委员会", "校长办公会", "党委会", "立项发文",
-    ]
+def test_fresh_database_has_no_system_seeded_templates_or_project_instances(client, create_project_payload):
+    assert client.get("/api/v1/work-item-templates").json() == []
+    assert client.get("/api/v1/external-constraint-templates").json() == []
+    assert client.get("/api/v1/work-packages").json() == []
 
     project = client.post("/api/v1/projects", json=create_project_payload()).json()
     assert client.get(f"/api/v1/projects/{project['id']}/work-items").json() == []
-    assert client.post("/api/v1/projects/apply-work-package", json={"project_ids": [project["id"]], "package_id": package["id"], "operator": "PMO"}).status_code == 200
-    items = client.get(f"/api/v1/projects/{project['id']}/work-items").json()
-    assert [item["name"] for item in items] == [entry["name"] for entry in package["items"]]
-    listed = next(item for item in client.get("/api/v1/projects", params={"page_size": 20}).json()["items"] if item["id"] == project["id"])
-    assert listed["next_key_node"]["name"] == "PMO 审核"
+    assert client.get(f"/api/v1/projects/{project['id']}/external-constraints").json() == []
+
+
+def test_legacy_system_template_is_archived_when_a_project_instance_references_it(client, create_project_payload):
+    project = client.post("/api/v1/projects", json=create_project_payload()).json()
+    from backend.app.db.connection import get_connection
+    from backend.app.db.migrations import init_database
+
+    with get_connection() as conn:
+        template_id = conn.execute(
+            "INSERT INTO work_item_templates (name,recommended_stage,flow_group,is_common,stage_view_priority) VALUES ('会议','未立项','main',1,4)"
+        ).lastrowid
+        conn.execute(
+            "INSERT INTO project_work_items (project_id,name,source_template_id) VALUES (?,?,?)",
+            (project["id"], "会议", template_id),
+        )
+        init_database(conn)
+        template = conn.execute("SELECT archived_at,is_common FROM work_item_templates WHERE id=?", (template_id,)).fetchone()
+
+    assert template["archived_at"]
+    assert template["is_common"] == 0
+
+
+def test_unreferenced_legacy_system_template_is_removed_during_migration(client):
+    from backend.app.db.connection import get_connection
+    from backend.app.db.migrations import init_database
+
+    with get_connection() as conn:
+        template_id = conn.execute(
+            "INSERT INTO work_item_templates (name,recommended_stage,flow_group,is_common,stage_view_priority) VALUES ('会议','未立项','main',1,4)"
+        ).lastrowid
+        init_database(conn)
+        template = conn.execute("SELECT id FROM work_item_templates WHERE id=?", (template_id,)).fetchone()
+
+    assert template is None
 
 
 def test_updating_a_package_changes_future_applications_not_existing_items(client, create_project_payload):
@@ -147,7 +168,8 @@ def test_package_order_is_normalized_and_applied_to_future_projects(client, crea
         ]},
     )
     assert updated.status_code == 200
-    assert [item["sequence_rank"] for item in updated.json()["items"]] == [100, 200]
+    assert [item["name"] for item in updated.json()["items"]] == ["党委会", "PMO 审核"]
+    assert all("sequence_rank" not in item for item in updated.json()["items"])
 
     project = client.post("/api/v1/projects", json=create_project_payload()).json()
     assert client.post("/api/v1/projects/apply-work-package", json={"project_ids": [project["id"]], "package_id": package["id"], "operator": "PMO"}).status_code == 200
@@ -163,8 +185,34 @@ def test_quick_update_saves_work_item_and_progress_log_together(client, create_p
     )
     assert updated.status_code == 200
     assert updated.json()["work_item"]["status"] == "in_progress"
+    assert updated.json()["work_item"]["started_on"]
     logs = client.get(f"/api/v1/projects/{project['id']}/work-items/{item['id']}/progress-logs").json()
     assert [log["content"] for log in logs] == ["已通知学院补齐材料"]
+
+
+def test_first_start_date_is_written_once_across_updates_and_reopen(client, create_project_payload):
+    project = client.post("/api/v1/projects", json=create_project_payload()).json()
+    item = client.post(
+        f"/api/v1/projects/{project['id']}/work-items",
+        json={"name": "首次开始日期", "operator": "PMO"},
+    ).json()
+    started = client.patch(
+        f"/api/v1/projects/{project['id']}/work-items/{item['id']}",
+        json={"operator": "PMO", "status": "in_progress"},
+    )
+    assert started.status_code == 200
+    first_started_on = started.json()["started_on"]
+    assert first_started_on
+    assert client.post(
+        f"/api/v1/projects/{project['id']}/work-items/{item['id']}/complete",
+        json={"operator": "PMO", "completed_on": "2026-09-18"},
+    ).status_code == 200
+    reopened = client.post(
+        f"/api/v1/projects/{project['id']}/work-items/{item['id']}/reopen",
+        json={"operator": "PMO", "reason": "补充说明"},
+    )
+    assert reopened.status_code == 200
+    assert reopened.json()["started_on"] == first_started_on
 
 
 def test_batch_work_item_action_preflight_and_execution_write_total_and_project_audits(client, create_project_payload):
@@ -202,8 +250,38 @@ def test_batch_work_item_status_update_returns_and_projects_every_target(client,
     projections = {item["id"]: item for item in client.get("/api/v1/projects", params={"page_size": 20}).json()["items"]}
     assert projections[first["id"]]["work_item_column_states"][0]["status"] == "in_progress"
     assert projections[second["id"]]["work_item_column_states"][0]["status"] == "in_progress"
+    assert projections[first["id"]]["work_item_column_states"][0]["started_on"]
+    assert projections[second["id"]]["work_item_column_states"][0]["started_on"]
     assert any(event["event_type"] == "WORK_ITEM_UPDATED" for event in client.get(f"/api/v1/projects/{first['id']}/audit-events").json())
     assert any(event["event_type"] == "WORK_ITEM_UPDATED" for event in client.get(f"/api/v1/projects/{second['id']}/audit-events").json())
+
+
+def test_completed_item_completion_facts_can_be_corrected_without_creating_or_updating_milestones(client, create_project_payload):
+    project = client.post("/api/v1/projects", json=create_project_payload()).json()
+    item = client.post(
+        f"/api/v1/projects/{project['id']}/work-items",
+        json={"name": "立项发文", "operator": "PMO"},
+    ).json()
+    completed = client.post(
+        f"/api/v1/projects/{project['id']}/work-items/{item['id']}/complete",
+        json={
+            "operator": "PMO", "result": "旧结果", "note": "旧说明",
+            "completed_on": "2026-09-10", "create_milestone": True, "milestone_name": "旧里程碑",
+        },
+    )
+    assert completed.status_code == 200
+    assert completed.json()["completion_record_json"]["completed_on"] == "2026-09-10"
+    corrected = client.patch(
+        f"/api/v1/projects/{project['id']}/work-items/{item['id']}/completion-record",
+        json={"operator": "PMO", "result": "更正结果", "note": "更正说明", "completed_on": "2026-09-18", "milestone_name": "更正里程碑"},
+    )
+    assert corrected.status_code == 200
+    assert corrected.json()["status"] == "completed"
+    assert corrected.json()["completion_record_json"]["completed_on"] == "2026-09-18"
+    assert completed.json()["completion_record_json"]["create_milestone"] is False
+    assert client.get(f"/api/v1/projects/{project['id']}/milestones").json() == []
+    audit = client.get(f"/api/v1/projects/{project['id']}/audit-events").json()
+    assert any(event["event_type"] == "WORK_ITEM_COMPLETION_CORRECTED" for event in audit)
 
 
 def test_batch_work_item_action_rejects_invalid_target_without_partial_write(client, create_project_payload):
@@ -214,13 +292,13 @@ def test_batch_work_item_action_rejects_invalid_target_without_partial_write(cli
     assert client.get(f"/api/v1/projects/{project['id']}/work-items").json()[0]["status"] == "not_started"
 
 
-def test_progress_summary_prioritizes_overdue_items_before_waiting_external(client, create_project_payload):
+def test_progress_summary_prioritizes_overdue_items_before_in_progress(client, create_project_payload):
     project = client.post("/api/v1/projects", json=create_project_payload()).json()
     response = client.post(
         "/api/v1/projects/batch-work-items",
         json={"project_ids": [project["id"]], "operator": "PMO", "items": [
             {"name": "逾期事项", "planned_date": "2025-01-01", "status": "not_started"},
-            {"name": "等待外部事项", "planned_date": "2027-01-01", "status": "waiting_external"},
+            {"name": "进行中事项", "planned_date": "2027-01-01", "status": "in_progress"},
         ]},
     )
     assert response.status_code == 200
@@ -228,21 +306,41 @@ def test_progress_summary_prioritizes_overdue_items_before_waiting_external(clie
     assert item["work_item_summary"][0]["name"] == "逾期事项"
 
 
-def test_work_item_content_effects_and_progress_logs_are_kept_separate_from_management_timeline(client, create_project_payload):
+def test_work_item_summary_shows_two_main_flow_items_then_every_focus_item(client, create_project_payload):
+    project = client.post("/api/v1/projects", json=create_project_payload()).json()
+    package = client.post(
+        "/api/v1/work-packages",
+        json={"name": "自定义主流程", "operator": "PMO", "items": [
+            {"name": "第一节点", "flow_group": "main"},
+            {"name": "第二节点", "flow_group": "main"},
+            {"name": "第三节点", "flow_group": "main"},
+            {"name": "单独重点事项", "flow_group": "independent", "track_as_key_node": True},
+        ]},
+    ).json()
+    assert client.post(
+        "/api/v1/projects/apply-work-package",
+        json={"project_ids": [project["id"]], "package_id": package["id"], "operator": "PMO"},
+    ).status_code == 200
+
+    listed = next(item for item in client.get("/api/v1/projects", params={"page_size": 20}).json()["items"] if item["id"] == project["id"])
+    assert [item["name"] for item in listed["work_item_summary"]] == ["第一节点", "第二节点", "单独重点事项"]
+
+
+def test_work_item_progress_logs_are_chronological_and_ignore_timeline_highlight(client, create_project_payload):
     project = client.post("/api/v1/projects", json=create_project_payload()).json()
     item = client.post(
         f"/api/v1/projects/{project['id']}/work-items",
         json={
             "name": "采购需求书修改",
             "content": "等待学院补充数据接口范围",
-            "status": "waiting_external",
+            "status": "in_progress",
             "operator": "PMO",
             "completion_effects": {"create_milestone": True, "require_result": True, "result_type": "pass_fail", "milestone_name": "需求书确认", "require_business_record": True},
         },
     )
     assert item.status_code == 200
     assert item.json()["content"] == "等待学院补充数据接口范围"
-    assert item.json()["completion_rule_snapshot"]["effects"]["create_milestone"] is True
+    assert item.json()["completion_rule_snapshot"]["effects"]["create_milestone"] is False
 
     ordinary = client.post(
         f"/api/v1/projects/{project['id']}/work-items/{item.json()['id']}/progress-logs",
@@ -255,11 +353,8 @@ def test_work_item_content_effects_and_progress_logs_are_kept_separate_from_mana
     assert ordinary.status_code == 200
     assert highlighted.status_code == 200
     logs = client.get(f"/api/v1/projects/{project['id']}/work-items/{item.json()['id']}/progress-logs")
-    assert [log["content"] for log in logs.json()] == ["专家确认修改方向", "学院已返回修改稿，仍需补充接口范围"]
-
-    timeline = client.get(f"/api/v1/projects/{project['id']}/management-timeline")
-    assert timeline.status_code == 200
-    assert [event["summary"] for event in timeline.json()] == ["专家确认修改方向", "新增跟踪事项"]
+    assert [log["content"] for log in logs.json()] == ["学院已返回修改稿，仍需补充接口范围", "专家确认修改方向"]
+    assert all(log["is_timeline_highlight"] == 0 for log in logs.json())
 
 
 def test_project_detail_exposes_fixed_stage_projection(client, create_project_payload):
@@ -276,10 +371,10 @@ def test_main_flow_order_skips_cancelled_and_paused_item_blocks_key_node(client,
     cancelled = client.post(f"/api/v1/projects/{project['id']}/work-items", json={"name": "校长办公会", "operator": "PMO", "flow_group": "main", "sequence_rank": 500}).json()
     assert client.post(f"/api/v1/projects/{project['id']}/work-items/{cancelled['id']}/cancel", json={"operator": "PMO", "reason": "本项目无需上会"}).status_code == 200
     listed = client.get(f"/api/v1/projects/{project['id']}/work-items").json()
-    assert [item["name"] for item in listed] == ["专家评审", "校长办公会", "党委会"]
+    assert [item["name"] for item in listed] == ["专家评审", "党委会", "校长办公会"]
     projection = next(item for item in client.get("/api/v1/projects", params={"page_size": 20}).json()["items"] if item["id"] == project["id"])
-    assert projection["next_key_node"]["name"] == "专家评审"
-    assert first["flow_group"] == "main"
+    assert projection["work_item_summary"][0]["name"] == "专家评审"
+    assert "flow_group" not in first
 
 
 def test_project_main_flow_can_be_reordered_without_exposing_ranks(client, create_project_payload):
@@ -292,7 +387,116 @@ def test_project_main_flow_can_be_reordered_without_exposing_ranks(client, creat
     )
     assert reordered.status_code == 200
     assert [item["name"] for item in reordered.json()] == ["党委会", "PMO 审核"]
-    assert [item["sequence_rank"] for item in reordered.json()] == [100, 200]
+    assert all("sequence_rank" not in item for item in reordered.json())
+
+
+def test_unified_item_order_reorders_legacy_groups_together(client, create_project_payload):
+    """A legacy independent item must no longer be excluded from project ordering."""
+    project = client.post("/api/v1/projects", json=create_project_payload()).json()
+    first = client.post(
+        f"/api/v1/projects/{project['id']}/work-items",
+        json={"name": "原主流程事项", "operator": "PMO", "flow_group": "main"},
+    ).json()
+    second = client.post(
+        f"/api/v1/projects/{project['id']}/work-items",
+        json={"name": "原独立事项", "operator": "PMO", "flow_group": "independent"},
+    ).json()
+
+    reordered = client.post(
+        f"/api/v1/projects/{project['id']}/work-items/reorder",
+        json={"operator": "PMO", "item_ids": [second["id"], first["id"]]},
+    )
+
+    assert reordered.status_code == 200
+    assert [item["name"] for item in reordered.json()] == ["原独立事项", "原主流程事项"]
+    assert all("flow_group" not in item for item in reordered.json())
+    assert all("sequence_rank" not in item for item in reordered.json())
+
+
+def test_batch_add_items_inserts_after_each_projects_first_open_item(client, create_project_payload):
+    """Batch insertion must use each project's own first non-terminal item."""
+    first = client.post("/api/v1/projects", json=create_project_payload(name="插入甲")).json()
+    second = client.post("/api/v1/projects", json=create_project_payload(name="插入乙")).json()
+    first_open = client.post(
+        f"/api/v1/projects/{first['id']}/work-items",
+        json={"name": "甲当前事项", "operator": "PMO", "flow_group": "main"},
+    ).json()
+    client.post(
+        f"/api/v1/projects/{first['id']}/work-items",
+        json={"name": "甲后续事项", "operator": "PMO", "flow_group": "main"},
+    )
+    client.post(
+        f"/api/v1/projects/{second['id']}/work-items",
+        json={"name": "乙已完成事项", "operator": "PMO", "flow_group": "main", "status": "completed"},
+    )
+    second_open = client.post(
+        f"/api/v1/projects/{second['id']}/work-items",
+        json={"name": "乙当前事项", "operator": "PMO", "flow_group": "main"},
+    ).json()
+
+    result = client.post(
+        "/api/v1/projects/batch-work-items",
+        json={
+            "project_ids": [first["id"], second["id"]],
+            "operator": "PMO",
+            "insert_mode": "after_current",
+            "items": [{"name": "共同插入事项"}],
+        },
+    )
+
+    assert result.status_code == 200
+    first_items = client.get(f"/api/v1/projects/{first['id']}/work-items").json()
+    second_items = client.get(f"/api/v1/projects/{second['id']}/work-items").json()
+    assert [item["name"] for item in first_items] == ["甲当前事项", "共同插入事项", "甲后续事项"]
+    assert [item["name"] for item in second_items] == ["乙已完成事项", "乙当前事项", "共同插入事项"]
+    assert first_items[0]["id"] == first_open["id"]
+    assert second_items[1]["id"] == second_open["id"]
+
+
+def test_single_item_insert_after_anchor_keeps_the_unified_order(client, create_project_payload):
+    project = client.post("/api/v1/projects", json=create_project_payload()).json()
+    first = client.post(f"/api/v1/projects/{project['id']}/work-items", json={"name": "第一项", "operator": "PMO"}).json()
+    client.post(f"/api/v1/projects/{project['id']}/work-items", json={"name": "第三项", "operator": "PMO"})
+    inserted = client.post(
+        f"/api/v1/projects/{project['id']}/work-items",
+        json={"name": "第二项", "operator": "PMO", "insert_after_id": first["id"]},
+    )
+    assert inserted.status_code == 200
+    items = client.get(f"/api/v1/projects/{project['id']}/work-items").json()
+    assert [item["name"] for item in items] == ["第一项", "第二项", "第三项"]
+    assert all("sequence_rank" not in item for item in items)
+
+
+def test_batch_work_item_errors_name_each_invalid_project_without_partial_write(client, create_project_payload):
+    """Direct save must expose the invalid target instead of requiring a preview round trip."""
+    project = client.post("/api/v1/projects", json=create_project_payload(name="不可办理项目")).json()
+    item = client.post(
+        f"/api/v1/projects/{project['id']}/work-items",
+        json={"name": "不可办理事项", "operator": "PMO"},
+    ).json()
+    completed_project = client.post("/api/v1/projects", json=create_project_payload(name="已完成事项项目")).json()
+    completed_item = client.post(
+        f"/api/v1/projects/{completed_project['id']}/work-items",
+        json={"name": "已完成事项", "operator": "PMO", "status": "completed"},
+    ).json()
+
+    response = client.post(
+        "/api/v1/projects/batch-work-item-actions",
+        json={
+            "operator": "PMO",
+            "action": "update",
+            "targets": [
+                {"project_id": project["id"], "work_item_id": item["id"]},
+                {"project_id": completed_project["id"], "work_item_id": completed_item["id"]},
+            ],
+            "defaults": {"status": "in_progress"},
+        },
+    )
+
+    assert response.status_code == 422
+    assert "已完成事项项目" in response.json()["message"]
+    assert "事项已完成或不适用" in response.json()["message"]
+    assert client.get(f"/api/v1/projects/{project['id']}/work-items").json()[0]["status"] == "not_started"
 
 
 def test_advancement_cycle_can_be_deferred_and_restarted(client, create_project_payload):

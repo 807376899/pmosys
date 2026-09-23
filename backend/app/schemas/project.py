@@ -52,7 +52,8 @@ class ProjectBase(APIModel):
     major: str = ""
     location: str = ""
     procurement_nature: str = ""
-    budget: float = 0
+    establishment_document_no: str = ""
+    budget: float | None = None
     contract_amount: float | None = None
     special_note: str = ""
     actual_start_date: str = ""
@@ -96,7 +97,10 @@ class ProjectUpdate(APIModel):
     reason: str = Field(min_length=1)
 
     def cleaned_updates(self) -> dict[str, Any]:
-        return self.model_dump(exclude_none=True, exclude={"operator", "reason"})
+        return {
+            field: getattr(self, field)
+            for field in self.model_fields_set - {"operator", "reason"}
+        }
 
 
 class ProjectDeleteRequest(APIModel):
@@ -130,15 +134,18 @@ class ProjectListItem(APIModel):
     created_at: str | None = None
     updated_at: str | None = None
     status_updated_at: str | None = None
+    latest_activity_at: str | None = None
     stage: str | None = None
     work_item_summary: list[dict[str, Any]] = Field(default_factory=list)
     work_item_count: int = 0
     active_work_item_count: int = 0
     work_item_states: dict[str, str] = Field(default_factory=dict)
     work_item_column_states: list[dict[str, Any]] = Field(default_factory=list)
-    next_key_node: dict[str, Any] | None = None
-    progress_focus_item: dict[str, Any] | None = None
     advancement: dict[str, Any] | None = None
+    implementation_year: int | None = None
+    planned_advancement_year: int | None = None
+    planned_advancement_status: str | None = None
+    has_completed_advancement_cycle: bool = False
     external_constraints_cleared: str | None = None
     external_constraint_count: int = 0
     external_constraint_open_count: int = 0
@@ -146,14 +153,18 @@ class ProjectListItem(APIModel):
     external_constraint_scope_confirmation: dict[str, Any] | None = None
     effective_budget: float | None = None
     effective_budget_source: str | None = None
+    formal_allocation_total: float | None = None
+    funding_allocations: list[dict[str, Any]] = Field(default_factory=list)
+    contract_summary: dict[str, Any] = Field(default_factory=dict)
 
 
 class ProjectDetail(ProjectListItem):
-    pass
+    stage_events: list[dict[str, Any]] = Field(default_factory=list)
+    contracts: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ProjectListResponse(PagedResponse[ProjectListItem]):
-    pass
+    filter_options: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class StatusHistoryItem(APIModel):
@@ -251,3 +262,17 @@ class BatchTransitionExecuteResponse(APIModel):
     success: int
     failed: int
     errors: list[BatchTransitionErrorItem]
+
+
+class BatchStageAdvanceRequest(APIModel):
+    project_ids: list[int] = Field(min_length=1)
+    action: str
+    operator: str = Field(min_length=1)
+    establishment_document_no: str = ""
+
+    @field_validator("action")
+    @classmethod
+    def validate_action(cls, value: str) -> str:
+        if value not in {"establish", "complete"}:
+            raise ValueError("Stage 推进动作无效")
+        return value

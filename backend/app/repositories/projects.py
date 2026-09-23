@@ -19,13 +19,14 @@ _STAGE_UNESTABLISHED_STATUSES = "'draft','under_review'"
 def external_conditions_filter_condition(state: str, alias: str = "p") -> str | None:
     """One predicate for list/export external-condition views.
 
-    A project is ready when it has no unresolved blocking constraint; an empty
-    constraint set is therefore ready by design.
+    A project is ready when it has no unresolved external constraint; an empty
+    constraint set is therefore ready by design.  `is_blocking` remains only
+    for historical SQLite compatibility and never participates in this view.
     """
     unresolved = (
         "EXISTS (SELECT 1 FROM project_external_constraints ec "
-        f"WHERE ec.project_id={alias}.id AND ec.is_blocking=1 "
-        "AND ec.clearance_status NOT IN ('cleared','not_applicable'))"
+        f"WHERE ec.project_id={alias}.id "
+        "AND ec.clearance_status='unresolved')"
     )
     if state == "ongoing":
         return unresolved
@@ -43,6 +44,8 @@ def stage_group_condition(group: str, alias: str = "p") -> str | None:
     if group == "abandoned":
         return f"{alias}.current_status = 'terminated'"
     base = f"{alias}.current_status NOT IN ({_STAGE_UNESTABLISHED_STATUSES},{_STAGE_TERMINAL_STATUSES})"
+    if group == "project_library":
+        return base
     if group == "pool_active":
         # "推进中" is a PMO management view, not a mutually-exclusive Stage.
         # Specially advanced unestablished projects stay in the 未立项 view too.
@@ -62,8 +65,8 @@ def insert_project(conn: sqlite3.Connection, payload: dict) -> int:
         INSERT INTO projects (
             project_code, name, description, department, sponsor, project_manager,
             current_status, category, project_type, budget, approved_budget,
-            contract_amount, special_note, actual_start_date, actual_end_date, major, location, procurement_nature
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            contract_amount, special_note, actual_start_date, actual_end_date, major, location, procurement_nature, establishment_document_no
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             payload["project_code"],
@@ -75,7 +78,7 @@ def insert_project(conn: sqlite3.Connection, payload: dict) -> int:
             payload.get("current_status", "draft"),
             payload.get("category", ""),
             payload.get("project_type"),
-            payload.get("budget", 0),
+            payload.get("budget"),
             payload.get("approved_budget"),
             payload.get("contract_amount"),
             payload.get("special_note", ""),
@@ -84,6 +87,7 @@ def insert_project(conn: sqlite3.Connection, payload: dict) -> int:
             payload.get("major", ""),
             payload.get("location", ""),
             payload.get("procurement_nature", ""),
+            payload.get("establishment_document_no", ""),
         ),
     )
     return int(cursor.lastrowid)
@@ -195,8 +199,8 @@ def fetch_status_history(conn: sqlite3.Connection, project_id: int) -> list[dict
 
 
 def _order_clause(filters: dict) -> str:
-    sort_by = filters.get("sort_by") or "status_updated_at"
-    sort_dir = "ASC" if filters.get("sort_dir") == "asc" else "DESC"
+    sort_by = filters.get("sort_by") or "department"
+    sort_dir = "DESC" if filters.get("sort_dir") == "desc" else "ASC"
     department_order = list(filters.get("department_order") or [])
     legacy_cases: list[str] = []
     for index, department in enumerate(department_order):
@@ -204,19 +208,55 @@ def _order_clause(filters: dict) -> str:
         legacy_cases.append(f"WHEN p.department = '{escaped}' THEN {index}")
     legacy_department_cases = " ".join(legacy_cases)
     legacy_department_rank = f"CASE {legacy_department_cases} ELSE {len(department_order)} END" if legacy_department_cases else "0"
+    department_terms = [
+        "CASE WHEN ds.sort_order IS NULL THEN 1 ELSE 0 END",
+        "ds.sort_order",
+        legacy_department_rank,
+        "p.department",
+    ]
+    project_type_terms = [
+        "CASE WHEN pt.sort_order IS NULL THEN 1 ELSE 0 END",
+        "pt.sort_order",
+        "p.project_type",
+    ]
+
+    def ordered(terms: list[str], direction: str) -> str:
+        return ", ".join(f"{term} {direction}" for term in terms)
+
+    def year_order(expression: str, direction: str) -> str:
+        # Keep unknown years after recorded years for either direction.
+        null_value = "9999" if direction == "ASC" else "0"
+        return f"COALESCE({expression}, {null_value}) {direction}"
+
     mapping = {
         "project_type": "CASE WHEN pt.sort_order IS NULL THEN 1 ELSE 0 END, pt.sort_order, p.project_type, CASE WHEN ds.sort_order IS NULL THEN 1 ELSE 0 END, ds.sort_order, p.department",
         "current_status": "p.current_status",
         "department": f"CASE WHEN ds.sort_order IS NULL THEN 1 ELSE 0 END, ds.sort_order, {legacy_department_rank}, p.department",
         "category": f"CASE WHEN pc.sort_order IS NULL THEN 1 ELSE 0 END, pc.sort_order, p.category, CASE WHEN ds.sort_order IS NULL THEN 1 ELSE 0 END, ds.sort_order, {legacy_department_rank}, p.department",
-        "implementation_year": "substr(p.actual_start_date, 1, 4)",
+        "implementation_year": "p.advancement_year",
+        "completion_year": "substr(p.actual_end_date, 1, 4)",
         "status_updated_at": "p.status_updated_at",
+        "latest_activity_at": "p.latest_activity_at",
     }
-    expression = mapping.get(sort_by, "status_updated_at")
+    expression = mapping.get(sort_by, "p.latest_activity_at")
+    if sort_by == "department":
+        return (
+            f"ORDER BY {ordered(department_terms, sort_dir)}, "
+            "COALESCE(p.advancement_year, 9999) ASC, "
+            f"{ordered(project_type_terms, 'ASC')}, p.project_code ASC"
+        )
+    if sort_by == "implementation_year":
+        return (
+            f"ORDER BY {year_order('p.advancement_year', sort_dir)}, "
+            f"{ordered(department_terms, 'ASC')}, p.project_code ASC"
+        )
+    if sort_by == "completion_year":
+        return (
+            f"ORDER BY {year_order('CAST(substr(p.actual_end_date, 1, 4) AS INTEGER)', sort_dir)}, "
+            f"{ordered(department_terms, 'ASC')}, p.project_code ASC"
+        )
     if sort_by in {"department", "category", "project_type"}:
         return f"ORDER BY {expression} {sort_dir}, p.name {sort_dir}, p.project_code {sort_dir}"
-    if sort_by == "implementation_year":
-        return f"ORDER BY COALESCE(NULLIF({expression}, ''), '0000') {sort_dir}, p.updated_at DESC, p.id DESC"
     return f"ORDER BY {expression} {sort_dir}, p.updated_at DESC, p.id DESC"
 
 
@@ -227,8 +267,9 @@ def _project_keyword_condition(alias: str = "p") -> str:
     )
 
 
-def _project_filter_parts(filters: dict, *, include_deleted: bool) -> tuple[list[str], list[object]]:
+def _project_filter_parts(filters: dict, *, include_deleted: bool, exclude: set[str] | None = None) -> tuple[list[str], list[object]]:
     """Build list/export predicates against the same qualified project alias."""
+    exclude = exclude or set()
     conditions: list[str] = ["p.deleted_at IS NOT NULL"] if include_deleted else ["p.deleted_at IS NULL"]
     params: list[object] = []
     if filters.get("status"):
@@ -248,11 +289,13 @@ def _project_filter_parts(filters: dict, *, include_deleted: bool) -> tuple[list
         like_value = f"%{filters['keyword']}%"
         params.extend([like_value] * 5)
     for field in ("department", "project_manager", "category"):
+        if field in exclude:
+            continue
         value = filters.get(field)
         if value:
             conditions.append(f"p.{field} = ?")
             params.append(value)
-    if filters.get("project_type"):
+    if filters.get("project_type") and "project_type" not in exclude:
         conditions.append("CASE p.project_type WHEN 'teaching_software' THEN 'software' WHEN 'practical_teaching_site' THEN 'laboratory' ELSE p.project_type END = ?")
         params.append({"teaching_software": "software", "practical_teaching_site": "laboratory"}.get(filters["project_type"], filters["project_type"]))
     if filters.get("min_budget") is not None:
@@ -273,10 +316,30 @@ def _project_filter_parts(filters: dict, *, include_deleted: bool) -> tuple[list
             "(p.project_code LIKE ? OR p.project_code LIKE ? OR p.project_code LIKE ? OR substr(p.created_at, 1, 4) = ?)"
         )
         params.extend([f"SW{year}%", f"SY{year}%", f"PMO-{year}-%", year])
-    if filters.get("implementation_year"):
-        conditions.append("substr(p.actual_start_date, 1, 4) = ?")
+    if filters.get("implementation_year") and "implementation_year" not in exclude:
+        conditions.append("CAST(p.advancement_year AS TEXT) = ?")
         params.append(str(filters["implementation_year"]))
     return conditions, params
+
+
+def fetch_project_filter_options(conn: sqlite3.Connection, filters: dict) -> dict[str, list[str]]:
+    include_deleted = bool(filters.get("include_deleted"))
+
+    def values(field: str, expression: str) -> list[str]:
+        conditions, params = _project_filter_parts(filters, include_deleted=include_deleted, exclude={field})
+        where_clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        rows = conn.execute(
+            f"SELECT DISTINCT {expression} AS value FROM projects p{where_clause} "
+            f"AND {expression} IS NOT NULL AND {expression} <> '' ORDER BY value",
+            params,
+        ).fetchall()
+        return [str(row["value"]) for row in rows]
+
+    return {
+        "departments": values("department", "p.department"),
+        "project_types": values("project_type", "CASE p.project_type WHEN 'teaching_software' THEN 'software' WHEN 'practical_teaching_site' THEN 'laboratory' ELSE p.project_type END"),
+        "implementation_years": values("implementation_year", "CAST(p.advancement_year AS TEXT)"),
+    }
 
 
 def fetch_project_page(conn: sqlite3.Connection, filters: dict) -> tuple[list[dict], int]:
