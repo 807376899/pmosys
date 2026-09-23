@@ -345,7 +345,15 @@ function DashboardPage() {
   const [workItemActivity, setWorkItemActivity] = useState<WorkItemActivity | null>(null);
   const [batchArrangeOpen, setBatchArrangeOpen] = useState(false);
   const [batchDraft, setBatchDraft] = useState({ name: "", scheduled_on: "", note: "" });
+  const [activityJoinChoices, setActivityJoinChoices] = useState<WorkItemActivity[]>([]);
   const [activityResult, setActivityResult] = useState({ result_on: today(), result: "", note: "" });
+  const [activityProgress, setActivityProgress] = useState("");
+  const [activityEditingProgressId, setActivityEditingProgressId] = useState<number | null>(null);
+  const [activityMemberManaging, setActivityMemberManaging] = useState(false);
+  const [activityMembersOnly, setActivityMembersOnly] = useState(true);
+  const [activityMemberReason, setActivityMemberReason] = useState("");
+  const [activityEditOpen, setActivityEditOpen] = useState(false);
+  const [activityEditDraft, setActivityEditDraft] = useState({ name: "", scheduled_on: "", note: "" });
   const [batchHistoryOpen, setBatchHistoryOpen] = useState(false);
   const [batchHistory, setBatchHistory] = useState<WorkItemActivity[]>([]);
   const [batchHistoryFilters, setBatchHistoryFilters] = useState({ year: "", keyword: "", status: "" });
@@ -710,6 +718,8 @@ function DashboardPage() {
       const activity = await apiGet<WorkItemActivity>(`/work-item-activities/${activityId}`);
       setBatchReturnMode(returnMode);
       setWorkItemActivity(activity);
+      setActivityMembersOnly(true); setActivityMemberManaging(false); setActivityMemberReason(""); setActivityProgress(""); setActivityEditingProgressId(null); setActivityEditOpen(false);
+      setTableView("stage");
       setSelectedIds(activity.members.filter((member) => member.member_status === "active" && ["not_started", "in_progress"].includes(member.work_item_status)).map((member) => member.project_id));
       setRailExpanded(true);
     } catch (err) { setError(err instanceof ApiError ? err.message : "无法打开办理活动。"); }
@@ -722,6 +732,94 @@ function DashboardPage() {
       setBatchArrangeOpen(false); setBatchDraft({ name: "", scheduled_on: "", note: "" }); setFeedback("办理活动已安排；事项状态未改变。");
       await openWorkItemActivity(activity.id); await loadDashboard();
     } catch (err) { setError(err instanceof ApiError ? err.message : "办理活动未创建，请检查所选事项。"); }
+  }
+
+  async function loadActivityJoinChoices() {
+    if (!columnBatchTarget || columnBatchTarget.kind !== "work_item") return;
+    try {
+      const query = `work_item_name=${encodeURIComponent(columnBatchTarget.label)}`;
+      const [pending, active] = await Promise.all([
+        apiGet<{ items: WorkItemActivity[] }>(`/work-item-activities?status=not_started&${query}`),
+        apiGet<{ items: WorkItemActivity[] }>(`/work-item-activities?status=in_progress&${query}`),
+      ]);
+      setActivityJoinChoices([...pending.items, ...active.items]);
+    } catch (err) { setError(err instanceof ApiError ? err.message : "可加入的办理活动加载失败。"); }
+  }
+
+  async function joinWorkItemActivity(activity: WorkItemActivity) {
+    if (!columnBatchTarget || columnBatchTarget.kind !== "work_item") return;
+    try {
+      const updated = await apiPost<WorkItemActivity>(`/work-item-activities/${activity.id}/members`, { operator, targets: columnTargetsPayload() });
+      setBatchArrangeOpen(false); setFeedback("已将所选事项加入办理活动；事项状态未改变。");
+      setWorkItemActivity(updated); await openWorkItemActivity(updated.id); await loadDashboard();
+    } catch (err) { setError(err instanceof ApiError ? err.message : "所选事项未加入办理活动。请检查是否已加入、已完成或不可办理。"); }
+  }
+
+  function activityMemberTargets() {
+    if (!workItemActivity) return [];
+    return selectedIds.map((projectId) => {
+      const item = projects.find((project) => project.id === projectId)?.work_item_column_states?.find((candidate) => candidate.name === workItemActivity.work_item_name && candidate.actionable);
+      return item ? { project_id: projectId, work_item_id: item.id } : null;
+    }).filter((target): target is { project_id: number; work_item_id: number } => Boolean(target));
+  }
+
+  async function saveActivityProgress() {
+    if (!workItemActivity || !activityProgress.trim()) { setError("请填写活动进展。"); return; }
+    try {
+      const path = activityEditingProgressId == null
+        ? `/work-item-activities/${workItemActivity.id}/progress-logs`
+        : `/work-item-activities/${workItemActivity.id}/progress-logs/${activityEditingProgressId}`;
+      const activity = activityEditingProgressId == null
+        ? await apiPost<WorkItemActivity>(path, { operator, content: activityProgress.trim() })
+        : await apiPatch<WorkItemActivity>(path, { operator, content: activityProgress.trim() });
+      setWorkItemActivity(activity); setActivityProgress(""); setActivityEditingProgressId(null); setFeedback("活动进展已保存。");
+    } catch (err) { setError(err instanceof ApiError ? err.message : "活动进展未保存。"); }
+  }
+
+  async function deleteActivityProgress(logId: number) {
+    if (!workItemActivity || !activityMemberReason.trim()) { setError("删除活动进展必须填写原因。"); return; }
+    try {
+      const activity = await apiDelete<WorkItemActivity>(`/work-item-activities/${workItemActivity.id}/progress-logs/${logId}`, { operator, reason: activityMemberReason.trim() });
+      setWorkItemActivity(activity); setActivityMemberReason(""); setFeedback("活动进展已删除，原记录仍保留在审计中。");
+    } catch (err) { setError(err instanceof ApiError ? err.message : "活动进展未删除。"); }
+  }
+
+  async function saveActivityEdit() {
+    if (!workItemActivity || !activityEditDraft.name.trim()) { setError("请填写活动名称。"); return; }
+    try {
+      const activity = await apiPatch<WorkItemActivity>(`/work-item-activities/${workItemActivity.id}`, { operator, ...activityEditDraft, name: activityEditDraft.name.trim() });
+      setWorkItemActivity(activity); setActivityEditOpen(false); setFeedback("活动信息已更新。");
+    } catch (err) { setError(err instanceof ApiError ? err.message : "活动信息未更新。"); }
+  }
+
+  async function updateActivityMembers(action: "add" | "remove") {
+    if (!workItemActivity) return;
+    const memberIds = workItemActivity.members.filter((member) => selectedIds.includes(member.project_id) && member.member_status === "active").map((member) => member.id);
+    const targets = activityMemberTargets();
+    if (action === "add" && !targets.length) { setError("所选项目没有可加入的同名待办理事项。"); return; }
+    if (action === "remove" && (!memberIds.length || !activityMemberReason.trim())) { setError("请选择活动成员并填写移出原因。"); return; }
+    try {
+      const activity = action === "add"
+        ? await apiPost<WorkItemActivity>(`/work-item-activities/${workItemActivity.id}/members`, { operator, targets })
+        : await apiPost<WorkItemActivity>(`/work-item-activities/${workItemActivity.id}/members/remove`, { operator, member_ids: memberIds, reason: activityMemberReason.trim() });
+      setWorkItemActivity(activity); setActivityMemberReason(""); setSelectedIds(activity.members.filter((member) => member.member_status === "active").map((member) => member.project_id)); setFeedback(action === "add" ? "已加入活动成员。" : "已移出活动成员，原因已记录。"); await loadDashboard();
+    } catch (err) { setError(err instanceof ApiError ? err.message : "成员管理未保存，活动保持原状。"); }
+  }
+
+  async function executeActivityWorkItemAction() {
+    if (!workItemActivity) return;
+    const targets = workItemActivity.members.filter((member) => selectedIds.includes(member.project_id) && member.member_status === "active" && ["not_started", "in_progress"].includes(member.work_item_status)).map((member) => ({ project_id: member.project_id, work_item_id: member.work_item_id }));
+    if (!targets.length) { setError("请选择活动中可办理的项目。"); return; }
+    if (columnWorkItemAction === "progress" && !columnBatchValue.progress_content.trim()) { setError("请填写共同进展。"); return; }
+    if (columnWorkItemAction === "update" && !columnBatchValue.status && !columnBatchValue.planned_date && columnBatchValue.track_as_key_node === "") { setError("请至少填写一项要更新的事项设置。"); return; }
+    setExecuting(true); setError("");
+    try {
+      const result = await apiPost<{ processed_targets: Array<{ project_id: number }> }>("/projects/batch-work-item-actions", { project_ids: targets.map((target) => target.project_id), targets, action: columnWorkItemAction, operator, defaults: columnWorkItemDefaults() });
+      await refreshSelectedProjects(result.processed_targets.map((target) => target.project_id));
+      const activity = await apiGet<WorkItemActivity>(`/work-item-activities/${workItemActivity.id}`);
+      setWorkItemActivity(activity); setFeedback(columnWorkItemAction === "complete" ? "所选事项已完成；当前活动与项目选择保留，可继续安排后续事项。" : "已完成所选活动成员的事项办理。");
+    } catch (err) { setError(err instanceof ApiError ? err.message : "活动内事项办理失败，所有项目保持原状。"); }
+    finally { setExecuting(false); }
   }
 
   async function recordCurrentActivityResults() {
@@ -1559,7 +1657,7 @@ function DashboardPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {(workItemActivity ? projects.filter((project) => workItemActivity.members.some((member) => member.project_id === project.id)) : projects).map((project) => {
+                    {(workItemActivity && activityMembersOnly ? projects.filter((project) => workItemActivity.members.some((member) => member.project_id === project.id)) : projects).map((project) => {
                       const selected = selectedIds.includes(project.id);
                       return (
                         <tr key={project.id} className={selected && !columnBatchTarget ? "selected" : ""} onClick={(event) => handleProjectRowClick(event, project)}>
@@ -1642,16 +1740,23 @@ function DashboardPage() {
                 <div className="quick-panel-heading"><strong>{workItemActivity.name}</strong><button type="button" className="text-button" onClick={() => { setWorkItemActivity(null); setOperationMode(batchReturnMode === "batch" ? "batch" : "advance"); if (batchReturnMode === "stage") setTableView("stage"); }}>返回{batchReturnMode === "batch" ? "办理活动" : "阶段跟踪"}</button></div>
                 <p className="operation-lead">事项 · <strong>{workItemActivity.work_item_name}</strong>{workItemActivity.scheduled_on ? ` · ${workItemActivity.scheduled_on}` : ""}</p>
                 <p className="muted-copy">活动成员 {workItemActivity.member_count} 个，已登记结果 {workItemActivity.recorded_outcome_count} 个；当前选择只决定本次办理，不会移出活动。</p>
-                <div className="quick-actions">{workItemActivity.status === "not_started" ? <button className="mini-button" onClick={() => void apiPost<WorkItemActivity>(`/work-item-activities/${workItemActivity.id}/start`, { operator }).then(setWorkItemActivity)}>开始活动</button> : null}{["not_started", "in_progress"].includes(workItemActivity.status) ? <button className="mini-button" onClick={() => void apiPost<WorkItemActivity>(`/work-item-activities/${workItemActivity.id}/end`, { operator }).then(setWorkItemActivity)}>结束活动</button> : null}</div>
-                <section className="quick-group"><strong>活动进展</strong>{workItemActivity.progress_logs.map((log) => <p key={log.id} className="muted-copy">{formatDate(log.created_at)} · {log.content}</p>)}<textarea className="textarea" rows={2} placeholder="记录本次活动进展" onBlur={(event) => { const content = event.target.value.trim(); if (content) void apiPost<WorkItemActivity>(`/work-item-activities/${workItemActivity.id}/progress-logs`, { operator, content }).then((activity) => { setWorkItemActivity(activity); event.target.value = ""; }); }} /></section>
-                {workItemActivity.status === "not_started" || workItemActivity.status === "in_progress" ? <><div className="field-grid"><label className="field"><span>结果日期</span><input className="input" type="date" value={activityResult.result_on} onChange={(event) => setActivityResult((current) => ({ ...current, result_on: event.target.value }))} /></label><label className="field"><span>本次结果（可选）</span><input className="input" value={activityResult.result} onChange={(event) => setActivityResult((current) => ({ ...current, result: event.target.value }))} /></label></div><label className="field"><span>说明（可选）</span><textarea className="textarea" rows={2} value={activityResult.note} onChange={(event) => setActivityResult((current) => ({ ...current, note: event.target.value }))} /></label><button className="action-button primary full" disabled={!selectedIds.length || executing} onClick={() => void recordCurrentActivityResults()}>记录本次办理结果</button></> : <p className="success-copy">该办理活动已{workItemActivity.status === "voided" ? "作废" : "结束"}，可查看保留的成员与结果。</p>}
-                <details className="batch-member-details"><summary>管理成员</summary>{workItemActivity.members.map((member) => <div key={member.id} className="batch-member-row"><span>{member.project_code} · {member.project_name}</span><small>{member.outcome_status === "recorded" ? "已登记结果" : "未登记结果"}</small></div>)}</details>
+                <div className="quick-actions">
+                  <button className="mini-button" onClick={() => { setActivityMembersOnly((value) => !value); setActivityMemberManaging(false); }}>{activityMembersOnly ? "查看全部项目" : "仅看本活动项目"}</button>
+                  {workItemActivity.status === "not_started" ? <button className="mini-button" onClick={() => void apiPost<WorkItemActivity>(`/work-item-activities/${workItemActivity.id}/start`, { operator }).then(setWorkItemActivity)}>开始活动</button> : null}
+                  {["not_started", "in_progress"].includes(workItemActivity.status) ? <button className="mini-button" onClick={() => void apiPost<WorkItemActivity>(`/work-item-activities/${workItemActivity.id}/end`, { operator }).then((activity) => { setWorkItemActivity(activity); setFeedback("办理活动已结束；未登记成员结果已保留。"); })}>结束活动</button> : null}
+                  <button className="mini-button" onClick={() => { setActivityEditDraft({ name: workItemActivity.name, scheduled_on: workItemActivity.scheduled_on || "", note: workItemActivity.note || "" }); setActivityEditOpen((value) => !value); }}>编辑活动</button>
+                  {["not_started", "in_progress"].includes(workItemActivity.status) ? <button className="mini-button" onClick={() => { setActivityMemberManaging((value) => !value); setActivityMembersOnly(false); setSelectedIds([]); }}>管理成员</button> : null}
+                </div>
+                {activityEditOpen ? <section className="quick-group"><strong>编辑活动</strong><label className="field"><span>活动名称</span><input className="input" value={activityEditDraft.name} onChange={(event) => setActivityEditDraft((current) => ({ ...current, name: event.target.value }))} /></label><label className="field"><span>日期（可选）</span><input className="input" type="date" value={activityEditDraft.scheduled_on} onChange={(event) => setActivityEditDraft((current) => ({ ...current, scheduled_on: event.target.value }))} /></label><label className="field"><span>说明（可选）</span><textarea className="textarea" rows={2} value={activityEditDraft.note} onChange={(event) => setActivityEditDraft((current) => ({ ...current, note: event.target.value }))} /></label><div className="quick-actions"><button className="mini-button" onClick={() => setActivityEditOpen(false)}>取消</button><button className="mini-button active" onClick={() => void saveActivityEdit()}>保存活动</button></div></section> : null}
+                <section className="quick-group"><strong>活动进展</strong>{workItemActivity.progress_logs.map((log) => <article key={log.id} className="batch-member-row"><span>{formatDate(log.created_at)} · {log.content}</span><aside><button className="text-button" onClick={() => { setActivityEditingProgressId(log.id); setActivityProgress(log.content); }}>编辑</button><button className="text-button danger" onClick={() => setActivityEditingProgressId(log.id)}>删除</button></aside></article>)}{activityEditingProgressId != null && workItemActivity.progress_logs.some((log) => log.id === activityEditingProgressId) ? <label className="field"><span>删除原因</span><input className="input" value={activityMemberReason} onChange={(event) => setActivityMemberReason(event.target.value)} placeholder="删除时必填" /></label> : null}<textarea className="textarea" rows={2} value={activityProgress} onChange={(event) => setActivityProgress(event.target.value)} placeholder={activityEditingProgressId == null ? "记录本次活动进展" : "修改活动进展"} /><div className="quick-actions"><button className="mini-button" onClick={() => { setActivityEditingProgressId(null); setActivityProgress(""); }}>取消</button><button className="mini-button" onClick={() => void saveActivityProgress()}>{activityEditingProgressId == null ? "记录进展" : "保存修改"}</button>{activityEditingProgressId != null ? <button className="mini-button danger" onClick={() => void deleteActivityProgress(activityEditingProgressId)}>确认删除</button> : null}</div></section>
+                {activityMemberManaging ? <section className="quick-group"><strong>管理办理活动成员</strong><p className="muted-copy">左侧已切换为全部项目：有同名待办理事项的项目可加入；当前成员可移出。</p><label className="field"><span>移出原因</span><input className="input" value={activityMemberReason} onChange={(event) => setActivityMemberReason(event.target.value)} placeholder="移出成员时必填" /></label><div className="quick-actions"><button className="mini-button" onClick={() => void updateActivityMembers("add")}>将已选项目加入</button><button className="mini-button danger" onClick={() => void updateActivityMembers("remove")}>移出已选成员</button><button className="mini-button" onClick={() => { setActivityMemberManaging(false); setActivityMembersOnly(true); setSelectedIds(workItemActivity.members.filter((member) => member.member_status === "active").map((member) => member.project_id)); }}>完成成员管理</button></div></section> : null}
+                {workItemActivity.status === "not_started" || workItemActivity.status === "in_progress" ? <><section className="quick-group"><label className="field"><span>当前选中项目办理</span><select className="select" value={columnWorkItemAction} onChange={(event) => setColumnWorkItemAction(event.target.value as typeof columnWorkItemAction)}><option value="progress">添加事项进展</option><option value="update">修改事项状态或计划完成日期</option><option value="complete">完成事项</option></select></label>{columnWorkItemAction === "progress" ? <textarea className="textarea" rows={2} value={columnBatchValue.progress_content} onChange={(event) => setColumnBatchValue((current) => ({ ...current, progress_content: event.target.value }))} placeholder="共同事项进展" /> : null}{columnWorkItemAction === "update" ? <div className="field-grid"><select className="select" value={columnBatchValue.status} onChange={(event) => setColumnBatchValue((current) => ({ ...current, status: event.target.value }))}><option value="">不修改状态</option><option value="not_started">待办理</option><option value="in_progress">进行中</option><option value="paused">暂停</option></select><input className="input" type="date" value={columnBatchValue.planned_date} onChange={(event) => setColumnBatchValue((current) => ({ ...current, planned_date: event.target.value }))} /></div> : null}{columnWorkItemAction === "complete" ? <div className="field-grid"><input className="input" type="date" value={columnBatchValue.completed_on} onChange={(event) => setColumnBatchValue((current) => ({ ...current, completed_on: event.target.value }))} /><input className="input" value={columnBatchValue.result} onChange={(event) => setColumnBatchValue((current) => ({ ...current, result: event.target.value }))} placeholder="完成结果（可选）" /><input className="input" value={columnBatchValue.note} onChange={(event) => setColumnBatchValue((current) => ({ ...current, note: event.target.value }))} placeholder="完成说明（可选）" /></div> : null}<button className="action-button primary full" disabled={!selectedIds.length || executing} onClick={() => void executeActivityWorkItemAction()}>{columnWorkItemAction === "complete" ? "完成事项" : "保存事项办理"}</button></section><section className="quick-group"><strong>记录本次办理结果</strong><div className="field-grid"><label className="field"><span>结果日期</span><input className="input" type="date" value={activityResult.result_on} onChange={(event) => setActivityResult((current) => ({ ...current, result_on: event.target.value }))} /></label><label className="field"><span>本次结果（可选）</span><input className="input" value={activityResult.result} onChange={(event) => setActivityResult((current) => ({ ...current, result: event.target.value }))} /></label></div><label className="field"><span>说明（可选）</span><textarea className="textarea" rows={2} value={activityResult.note} onChange={(event) => setActivityResult((current) => ({ ...current, note: event.target.value }))} /></label><button className="action-button primary full" disabled={!selectedIds.length || executing} onClick={() => void recordCurrentActivityResults()}>记录本次办理结果</button><button className="mini-button" onClick={() => { setWorkItemActivity(null); setTableView("stage"); setFeedback("已保留当前项目选择，请在阶段跟踪选择下一事项列后安排下一办理活动。"); }}>安排下一办理活动</button></section></> : <p className="success-copy">该办理活动已{workItemActivity.status === "voided" ? "作废" : "结束"}，可查看保留的成员与结果。</p>}
               </section> : columnBatchTarget ? <section className="column-batch-panel">
                 <div className="quick-panel-heading"><strong>阶段跟踪批量办理</strong><button type="button" className="text-button" onClick={clearColumnBatchTarget}>取消列选择</button></div>
                 <p className="operation-lead">{columnBatchTarget.kind === "work_item" ? "事项" : "约束"} · <strong>{columnBatchTarget.label}</strong>，已选 {selectedIds.length} 个实际存在的实例。</p>
                 {columnBatchTarget.kind === "work_item" ? <>
-                  <button type="button" className="mini-button" disabled={!selectedIds.length} onClick={() => setBatchArrangeOpen((value) => !value)}>安排办理活动</button>
-                  {batchArrangeOpen ? <section className="batch-arrange-form"><label className="field"><span>活动名称</span><input className="input" value={batchDraft.name} onChange={(event) => setBatchDraft((current) => ({ ...current, name: event.target.value }))} /></label><label className="field"><span>日期（可选）</span><input className="input" type="date" value={batchDraft.scheduled_on} onChange={(event) => setBatchDraft((current) => ({ ...current, scheduled_on: event.target.value }))} /></label><label className="field"><span>说明（可选）</span><textarea className="textarea" rows={2} value={batchDraft.note} onChange={(event) => setBatchDraft((current) => ({ ...current, note: event.target.value }))} /></label><button className="action-button primary full" disabled={!batchDraft.name.trim() || executing} onClick={() => void createWorkItemActivity()}>保存办理活动</button></section> : null}
+                  <button type="button" className="mini-button" disabled={!selectedIds.length} onClick={() => { setBatchArrangeOpen((value) => !value); void loadActivityJoinChoices(); }}>安排办理活动</button>
+                  {batchArrangeOpen ? <section className="batch-arrange-form"><strong>新建活动</strong><label className="field"><span>活动名称</span><input className="input" value={batchDraft.name} onChange={(event) => setBatchDraft((current) => ({ ...current, name: event.target.value }))} /></label><label className="field"><span>日期（可选）</span><input className="input" type="date" value={batchDraft.scheduled_on} onChange={(event) => setBatchDraft((current) => ({ ...current, scheduled_on: event.target.value }))} /></label><label className="field"><span>说明（可选）</span><textarea className="textarea" rows={2} value={batchDraft.note} onChange={(event) => setBatchDraft((current) => ({ ...current, note: event.target.value }))} /></label><button className="action-button primary full" disabled={!batchDraft.name.trim() || executing} onClick={() => void createWorkItemActivity()}>保存办理活动</button>{activityJoinChoices.length ? <section className="quick-group"><strong>加入已有活动</strong>{activityJoinChoices.map((activity) => <button type="button" key={activity.id} className="batch-member-row" disabled={executing} onClick={() => void joinWorkItemActivity(activity)}><span>{activity.name}{activity.scheduled_on ? ` · ${activity.scheduled_on}` : ""}</span><small>{activity.status === "in_progress" ? "进行中" : "待办理"} · {activity.member_count} 个项目</small></button>)}</section> : <small className="muted-copy">当前没有同事项、未结束的可加入活动。</small>}</section> : null}
                   <label className="field"><span>办理动作</span><select className="select" value={columnWorkItemAction} onChange={(event) => { setColumnWorkItemAction(event.target.value as typeof columnWorkItemAction); setColumnBatchPreview(null); }}><option value="progress">添加共同进展</option><option value="update">修改事项设置</option><option value="complete">完成事项</option></select></label>
                   {columnWorkItemAction === "progress" ? <label className="field"><span>共同进展</span><textarea className="textarea" rows={3} value={columnBatchValue.progress_content} onChange={(event) => setColumnBatchValue((current) => ({ ...current, progress_content: event.target.value }))} /></label> : null}
                 {columnWorkItemAction === "update" ? <div className="field-grid"><label className="field"><span>当前状态</span><select className="select" value={columnBatchValue.status} onChange={(event) => setColumnBatchValue((current) => ({ ...current, status: event.target.value }))}><option value="">不修改</option><option value="not_started">待办理</option><option value="in_progress">进行中</option><option value="paused">暂停</option></select></label><label className="field"><span>计划完成日期</span><input className="input" type="date" value={columnBatchValue.planned_date} onChange={(event) => setColumnBatchValue((current) => ({ ...current, planned_date: event.target.value }))} /></label><label className="field"><span>总览重点关注</span><select className="select" value={columnBatchValue.track_as_key_node} onChange={(event) => setColumnBatchValue((current) => ({ ...current, track_as_key_node: event.target.value }))}><option value="">不修改</option><option value="true">设为重点关注</option><option value="false">取消重点关注</option></select></label></div> : null}

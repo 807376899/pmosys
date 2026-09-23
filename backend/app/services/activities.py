@@ -152,6 +152,48 @@ def create_work_item_activity_progress_log(activity_id: int, payload: dict) -> d
         return _serialize(conn, activity_id)
 
 
+def update_work_item_activity_progress_log(activity_id: int, log_id: int, payload: dict) -> dict:
+    operator, content = str(payload.get("operator") or "").strip(), str(payload.get("content") or "").strip()
+    if not operator or not content:
+        raise ValidationError("请填写活动进展和操作人")
+    with get_connection() as conn:
+        _activity(conn, activity_id, editable=True)
+        log = conn.execute(
+            "SELECT id FROM work_item_activity_progress_logs WHERE id=? AND activity_id=? AND deleted_at IS NULL",
+            (log_id, activity_id),
+        ).fetchone()
+        if not log:
+            raise NotFoundError("办理活动进展不存在")
+        now = _now()
+        conn.execute(
+            "UPDATE work_item_activity_progress_logs SET content=?,updated_at=?,updated_by=? WHERE id=?",
+            (content, now, operator, log_id),
+        )
+        _event(conn, activity_id, "WORK_ITEM_ACTIVITY_PROGRESS_UPDATED", operator, {"progress_log_id": log_id})
+        return _serialize(conn, activity_id)
+
+
+def delete_work_item_activity_progress_log(activity_id: int, log_id: int, payload: dict) -> dict:
+    operator, reason = str(payload.get("operator") or "").strip(), str(payload.get("reason") or "").strip()
+    if not operator or not reason:
+        raise ValidationError("删除活动进展必须填写原因和操作人")
+    with get_connection() as conn:
+        _activity(conn, activity_id, editable=True)
+        log = conn.execute(
+            "SELECT id FROM work_item_activity_progress_logs WHERE id=? AND activity_id=? AND deleted_at IS NULL",
+            (log_id, activity_id),
+        ).fetchone()
+        if not log:
+            raise NotFoundError("办理活动进展不存在")
+        now = _now()
+        conn.execute(
+            "UPDATE work_item_activity_progress_logs SET deleted_at=?,deleted_by=?,deleted_reason=? WHERE id=?",
+            (now, operator, reason, log_id),
+        )
+        _event(conn, activity_id, "WORK_ITEM_ACTIVITY_PROGRESS_DELETED", operator, {"progress_log_id": log_id, "reason": reason})
+        return _serialize(conn, activity_id)
+
+
 def update_work_item_activity(activity_id: int, payload: dict) -> dict:
     operator = str(payload.get("operator") or "").strip()
     if not operator:

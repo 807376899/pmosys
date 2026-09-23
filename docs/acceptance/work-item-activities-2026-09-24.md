@@ -5,16 +5,16 @@
 | 日期 | 2026-09-24 |
 | 需求与验收 | REQ-ACTIVITY-001@v1；AC-032 |
 | 代码状态 | 当前工作树，未提交 |
-| 数据环境 | pytest 临时 SQLite；未修改用户 `pmo.db` |
+| 数据环境 | pytest 临时 SQLite；浏览器使用本机测试数据，仅新增一条活动共享进展 |
 
 ## 已执行证据
 
-- API：` .\.venv\Scripts\python.exe -m pytest backend\tests\test_work_item_activities.py backend\tests\test_pmo_operations.py -q`，13 passed。覆盖创建活动不新增/不改变事项、共享活动进展不写入项目事项进展、成员可登记不同结果、结果不完成事项、全员登记后自动结束。
+- API：` .\.venv\Scripts\python.exe -m pytest backend\tests\test_work_item_activities.py backend\tests\test_pmo_operations.py -q`，16 passed。覆盖创建活动不新增/不改变事项、共享活动进展的新增/编辑/软删除不写入项目事项进展、成员可加入/移出且不改变事项、成员可登记不同结果、结果不完成事项、全员登记后自动结束。
 - Build：`npm.cmd --prefix frontend run build`，通过。
 - Document：` .\.venv\Scripts\python.exe scripts\check_docs_governance.py`，通过；仅验证结构和引用，不代表语义或浏览器验收。
 
 ## 浏览器与尚未执行
 
-- Browser：NOT_RUN（已做只读入口观察）。在本机 `127.0.0.1:5173` 总览右侧观察到“推进管理”“办理活动”为并列一级入口；打开办理活动后显示独立的年度、状态、事项/项目/活动名称筛选和迁移后的活动记录，未进入推进管理。未执行任何浏览器写入。
-- 尚未在真实浏览器逐项完成阶段列新建/加入活动、单元格活动入口、成员管理、活动内批量完成、返回上下文及窄屏滚动写链路。
+- Browser：部分执行，整体仍为 NOT_RUN。在本机 `127.0.0.1:5173` 总览右侧观察到“推进管理”“办理活动”为并列一级入口；打开迁移后的活动后，左侧切换为阶段跟踪并只显示活动成员、右侧显示活动状态、成员结果计数、活动进展、活动内事项办理和结果登记。写入“浏览器验收：活动进展保存”后即时回显，随后进入“管理办理活动成员”模式，左侧切换为全部项目且提示同名待办理事项准入规则。
+- 尚未在真实浏览器逐项完成阶段列新建/加入活动、成员实际增删、活动内批量完成、不同结论后的下一事项分组、作废、返回上下文及窄屏滚动写链路。
 - 完整回归：NOT_RUN，留待 Phase 收尾或独立回归窗口。

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Body
 
-from backend.app.services.activities import add_work_item_activity_members, create_work_item_activity, create_work_item_activity_progress_log, end_work_item_activity, get_work_item_activity, list_work_item_activities, record_work_item_activity_results, remove_work_item_activity_members, start_work_item_activity, update_work_item_activity, void_work_item_activity
+from backend.app.services.activities import add_work_item_activity_members, create_work_item_activity, create_work_item_activity_progress_log, delete_work_item_activity_progress_log, end_work_item_activity, get_work_item_activity, list_work_item_activities, record_work_item_activity_results, remove_work_item_activity_members, start_work_item_activity, update_work_item_activity, update_work_item_activity_progress_log, void_work_item_activity
 
 router = APIRouter(prefix="/work-item-activities", tags=["work-item-activities"])
 
@@ -37,3 +37,9 @@ def post_results(activity_id: int, payload: dict = Body(...)): return record_wor
 
 @router.post("/{activity_id}/progress-logs")
 def post_progress_log(activity_id: int, payload: dict = Body(...)): return create_work_item_activity_progress_log(activity_id, payload)
+
+@router.patch("/{activity_id}/progress-logs/{log_id}")
+def patch_progress_log(activity_id: int, log_id: int, payload: dict = Body(...)): return update_work_item_activity_progress_log(activity_id, log_id, payload)
+
+@router.delete("/{activity_id}/progress-logs/{log_id}")
+def delete_progress_log(activity_id: int, log_id: int, payload: dict = Body(...)): return delete_work_item_activity_progress_log(activity_id, log_id, payload)

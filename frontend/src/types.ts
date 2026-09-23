@@ -390,7 +390,7 @@ export interface WorkItemActivity {
   members: WorkItemActivityMember[];
   member_count: number;
   recorded_outcome_count: number;
-  progress_logs: Array<{ id: number; content: string; operator: string; created_at: string }>;
+  progress_logs: Array<{ id: number; content: string; operator: string; created_at: string; updated_at?: string; updated_by?: string }>;
 }
 
 export interface WorkItemColumnState {
