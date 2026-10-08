@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import io
 
-import pandas as pd
+from openpyxl import Workbook
 
 from backend.app.db.connection import get_connection
 from backend.app.core.config import get_settings
@@ -48,8 +48,13 @@ def export_projects(filters: dict) -> bytes:
                 "更新时间": project.get("updated_at") or "",
             }
         )
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "项目列表"
+    headers = list(rows[0]) if rows else ["项目编号", "项目名称"]
+    sheet.append(headers)
+    for row in rows:
+        sheet.append([row.get(header) for header in headers])
     output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        pd.DataFrame(rows).to_excel(writer, index=False, sheet_name="项目列表")
-    output.seek(0)
+    workbook.save(output)
     return output.getvalue()

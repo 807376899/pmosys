@@ -10,6 +10,8 @@
 - [2026-09-16 Phase 3年度资金与正式分配定向验证](phase-3-funding-2026-09-16.md)：记录资金安排、正式分配与导入的 API 证据及待执行的浏览器写操作。
 - [2026-09-19 合同与验收定向验证](phase-4-contracts-2026-09-19.md)：记录合同领域 API 与构建证据，以及尚待执行的浏览器交互验收。
 - [2026-09-22 工作台列表与阶段跟踪收敛定向验证](ui-list-stage-convergence-2026-09-22.md)：记录本轮排序、列集、表头/阶段标题选择及详情独立字段证据；完整视口矩阵仍待阶段回归。
+- [2026-09-24 环境与启动依赖同步](environment-sync-2026-09-24.md)：记录依赖同步、启动修复与构建证据，以及导入模块两项定向测试失败。
+- [2026-10-08 Windows 应用控制策略启动修复](startup-application-control-2026-10-08.md)：记录 pandas 原生 DLL 被企业签名策略阻止后的替换、启动保护和定向验证。
 - [Phase 1历史执行](phase-1-regression.md)、[Phase 2历史执行](phase-2-external-constraint.md)、[视口历史执行](viewport-regression.md)：原事实保留，旧使用规则不再作为当前规范。
 - [本次文档整改结果](../requirements/governance-remediation-2026-09-11.md)：结构检查及只读保护证据，不是产品回归结果。
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import io
 
-import pandas as pd
+from backend.tests import excel_test_utils as pd
 
 
 def _establish(client, project_id: int) -> None:

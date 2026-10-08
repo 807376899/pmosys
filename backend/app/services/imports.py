@@ -1,8 +1,10 @@
 from __future__ import annotations
+import csv
 import io
 from datetime import datetime
 from typing import Any
-import pandas as pd
+import xlrd
+from openpyxl import Workbook, load_workbook
 from backend.app.core.errors import DuplicateProjectCodeError, ValidationError
 from backend.app.core.money import parse_money
 from backend.app.db.connection import get_connection
@@ -31,22 +33,39 @@ def generate_import_template()->bytes:
         type_rows = conn.execute("SELECT name,code_prefix FROM project_types WHERE is_active=1 ORDER BY sort_order,id").fetchall()
     formats = "；".join(f"{row['name']}：{row['code_prefix']}YYYYNNNN，例如 {row['code_prefix']}20250001" for row in type_rows)
     guide=[["字段","必填","适用状态","格式与示例"],["项目编号","选填","全部","留空按当前年份自动生成；手工历史编号须符合：" + formats + f"；YYYY 为 1900 至 {datetime.now().year}"],["项目名称","必填","全部","普通文本"],["项目状态","必填","全部","仅可填：未立项、项目库—未实施、推进中、已完成、已废弃"],["项目分类","必填","全部","填写启用分类名称，不填内部代码"],["初始预算","选填","全部","金额（万元）；空白代表未记录，0 代表真实零预算"],["有效预算","选填","全部","金额（万元）；写入历史审核预算来源，不覆盖初始预算"],["采购属性","选填","全部","货物、服务或混合"],["地点","选填","全部","普通文本"],["立项文件号","必填","项目库—未实施","普通文本"],["完成日期","必填","已完成","YYYY、YYYY-MM 或 YYYY-MM-DD；可晚于推进年度"],["推进年度","必填","推进中、已完成","四位实施年份，例如 2025，不从完成日期推断"],["废弃原因","必填","已废弃","普通文本"],["审批人","必填","已废弃","普通文本"]]
-    output=io.BytesIO()
-    with pd.ExcelWriter(output,engine="openpyxl") as writer:
-        pd.DataFrame([["","示例项目","项目库—未实施","专业教学软件项目","信息中心","软件工程","李工","张主任","","","100","88.5","服务","","立项〔2026〕1号","","","",""]],columns=cols).to_excel(writer,index=False,sheet_name="项目数据")
-        pd.DataFrame(guide[1:],columns=guide[0]).to_excel(writer,index=False,sheet_name="填写说明")
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "项目数据"
+    sheet.append(cols)
+    sheet.append(["","示例项目","项目库—未实施","专业教学软件项目","信息中心","软件工程","李工","张主任","","","100","88.5","服务","","立项〔2026〕1号","","","",""])
+    guide_sheet = workbook.create_sheet("填写说明")
+    for row in guide:
+        guide_sheet.append(row)
+    output = io.BytesIO()
+    workbook.save(output)
     return output.getvalue()
 
-def _read_table(file_name:str,content:bytes)->pd.DataFrame:
-    if file_name.lower().endswith(".csv"): return pd.read_csv(io.BytesIO(content),dtype=str).fillna("")
-    workbook=io.BytesIO(content)
+def _records(headers: list[object], rows: list[tuple[object, ...] | list[object]]) -> list[dict[str, str]]:
+    names = [str(value or "").strip() for value in headers]
+    return [{name: "" if value is None else str(value).strip() for name, value in zip(names, row)} for row in rows if any(value not in (None, "") for value in row)]
+
+
+def _read_table(file_name:str,content:bytes)->list[dict[str, str]]:
+    suffix = file_name.lower()
+    if suffix.endswith(".csv"):
+        return [dict((key, str(value or "").strip()) for key, value in row.items()) for row in csv.DictReader(io.StringIO(content.decode("utf-8-sig")))]
+    if suffix.endswith(".xls"):
+        workbook = xlrd.open_workbook(file_contents=content)
+        sheet = workbook.sheet_by_name("项目数据") if "项目数据" in workbook.sheet_names() else workbook.sheet_by_index(0)
+        return _records(sheet.row_values(0), [sheet.row_values(index) for index in range(1, sheet.nrows)])
+    workbook = load_workbook(io.BytesIO(content), data_only=True, read_only=True)
+    sheet = workbook["项目数据"] if "项目数据" in workbook.sheetnames else workbook.active
+    rows = sheet.iter_rows(values_only=True)
     try:
-        return pd.read_excel(workbook,dtype=str,sheet_name="\u9879\u76ee\u6570\u636e").fillna("")
-    except ValueError:
-        # Legacy workbooks are readable for diagnostic preview, but only the
-        # unified template has the headers required for a valid import.
-        workbook.seek(0)
-        return pd.read_excel(workbook,dtype=str,sheet_name=0).fillna("")
+        headers = next(rows)
+    except StopIteration:
+        return []
+    return _records(list(headers), list(rows))
 
 def _next_code(conn,project_type:str,reserved:set[str])->str:
     code=generate_project_code(conn,project_type); prefix,num=code[:-4],int(code[-4:])
@@ -54,13 +73,13 @@ def _next_code(conn,project_type:str,reserved:set[str])->str:
     return code
 
 def preview_import(file_name:str,content:bytes)->dict:
-    try: df=_read_table(file_name,content)
+    try: rows=_read_table(file_name,content)
     except Exception as exc: raise ValidationError(f"无法读取文件：{exc}") from exc
     records=[]; errors=[]; reserved=set()
-    manual_codes = [str(_pick(row, "project_code") or "").strip().upper() for row in df.to_dict("records")]
+    manual_codes = [str(_pick(row, "project_code") or "").strip().upper() for row in rows]
     with get_connection() as conn:
         types={r["name"]:r["code"] for r in conn.execute("SELECT code,name FROM project_types WHERE is_active=1")}
-        for number,row in enumerate(df.to_dict("records"),2):
+        for number,row in enumerate(rows,2):
             try:
                 name=_pick(row,"name"); label=_pick(row,"status"); kind=types.get(_pick(row,"project_type")); status=STATUS_MAP.get(label)
                 if not name: raise ValidationError("项目名称不能为空")
@@ -79,7 +98,7 @@ def preview_import(file_name:str,content:bytes)->dict:
                 initial,effective=_pick(row,"budget"),_pick(row,"approved_budget")
                 records.append(ImportPreviewRecord(row_number=number,project_code=code,name=name,description=_pick(row,"description"),department=_pick(row,"department"),major=_pick(row,"major"),sponsor=_pick(row,"sponsor"),project_manager=_pick(row,"project_manager"),current_status=status,project_type=kind,budget=parse_money(initial,"初始预算",required=False),approved_budget=parse_money(effective,"有效预算",required=False),procurement_nature=nature,location=_pick(row,"location"),establishment_document_no=document,actual_end_date=completed,advancement_year=int(year) if year else None,import_advancing=label in {"推进中", "已完成"},termination_reason=reason,approver=approver,special_note=_pick(row,"special_note")))
             except Exception as exc: errors.append(ImportPreviewErrorItem(row_number=number,code=getattr(exc,"code","IMPORT_PREVIEW_ERROR"),message=str(exc),name=_pick(row,"name") or None))
-    return {"total_rows":len(df),"valid_rows":len(records),"invalid_rows":len(errors),"records":records,"errors":errors}
+    return {"total_rows":len(rows),"valid_rows":len(records),"invalid_rows":len(errors),"records":records,"errors":errors}
 
 
 def _commit_validation_errors(conn, records:list[ImportPreviewRecord]) -> list[ImportCommitErrorItem]:

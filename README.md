@@ -35,7 +35,7 @@ pmosys/
 ### 1. 后端（FastAPI）
 
 ```powershell
-# 首次运行会创建 .venv、安装依赖并启动 API
+# 首次运行创建 .venv；每次启动同步声明的依赖后再启动 API
 .\run.ps1
 ```
 
@@ -44,6 +44,8 @@ pmosys/
 ```powershell
 winget install --id Python.Python.3.11 --exact
 ```
+
+每次启动都会执行 `pip install -r requirements.txt`，补齐新增依赖和不满足版本要求的包；已满足要求的包不主动升级。安装完成后，脚本还会实际导入 PMO API；任一步失败都会停止启动并显示错误，避免服务表面启动但子进程随即退出。
 
 如需手动创建环境，可在新的 PowerShell 窗口中执行：
 
@@ -71,13 +73,27 @@ $env:PMO_DB_PATH = Join-Path $PWD "data\pmo.db"
 
 ```powershell
 cd frontend
-npm.cmd install
+npm.cmd ci
 npm.cmd run dev
 ```
 
 工作台地址：[http://127.0.0.1:5173](http://127.0.0.1:5173)。开发服务器会将 `/api` 代理到 `http://127.0.0.1:8000`。
 
 > PowerShell 因执行策略无法直接调用 `npm` 时，请使用 `npm.cmd`。
+
+### 同步测试机代码与环境
+
+先停止测试机上的前后端进程，在仓库根目录执行：
+
+```powershell
+git pull --ff-only
+# 上一步成功后，按仓库锁文件恢复前端依赖
+npm.cmd --prefix frontend ci
+# 安装成功后启动后端；另开终端执行 npm.cmd --prefix frontend run dev
+.\run.ps1
+```
+
+任何一步失败都先处理错误再继续。新机需安装 Git、Python 和 Node.js；不要复制 `.venv` 或 `node_modules`，也不要用代码更新覆盖测试机数据库。数据库迁移前先停止服务并备份，SQLite WAL 数据库须使用一致性备份方式，不能在运行中只复制主数据库文件。Python 当前使用最低版本约束，尚不是全量锁定文件，因此两台机器的实际依赖版本可能不同；排查时同时记录 Python、Node.js 和依赖版本。
 
 ## 测试与构建
 

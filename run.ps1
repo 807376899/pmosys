@@ -70,14 +70,19 @@ if (-not (Test-Path $venvPython)) {
     New-ProjectVenv
 }
 
-Write-Host "[2/3] Checking Python dependencies..."
-& $venvPython -c "import fastapi, uvicorn, pandas, openpyxl" *> $null
+Write-Host "[2/4] Syncing Python dependencies from requirements.txt..."
+& $venvPython -m pip install -r requirements.txt
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "Installing dependencies from requirements.txt..."
-    & $venvPython -m pip install -r requirements.txt
+    throw 'Python dependency installation failed. Resolve the pip error above, then run .\run.ps1 again.'
 }
 
-Write-Host "[3/3] Starting PMO API at http://${Address}:$Port"
+Write-Host "[3/4] Verifying the PMO API can load..."
+& $venvPython -c "import backend.app.main"
+if ($LASTEXITCODE -ne 0) {
+    throw 'PMO API dependencies could not load. The virtual environment may be blocked by local application-control policy. Recreate .venv from the repository dependencies, then run .\run.ps1 again.'
+}
+
+Write-Host "[4/4] Starting PMO API at http://${Address}:$Port"
 $uvicornArgs = @("-m", "uvicorn", "backend.app.main:app", "--host", $Address, "--port", $Port)
 if (-not $NoReload) {
     $uvicornArgs += "--reload"

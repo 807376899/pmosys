@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import io
 
-import pandas as pd
+from backend.tests import excel_test_utils as pd
 
 
 def test_export_projects(client, create_project_payload):
@@ -14,7 +14,7 @@ def test_export_projects(client, create_project_payload):
     )
     assert len(response.content) > 0
     exported = pd.read_excel(io.BytesIO(response.content))
-    assert exported.loc[0, "合同金额"] == 88
+    assert exported.loc[0, "合同金额"] == "88"
 
 
 def test_export_uses_advancing_management_view_and_structured_attributes(client, create_project_payload):

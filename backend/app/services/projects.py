@@ -14,7 +14,7 @@ from backend.app.core.errors import (
     ValidationError,
 )
 from backend.app.core.config import get_settings
-from backend.app.core.money import legacy_number, parse_money, preferred
+from backend.app.core.money import decimal_of, legacy_number, parse_money, preferred
 from backend.app.db.connection import get_connection
 from backend.app.repositories import projects as project_repo
 from backend.app.repositories import workflow as workflow_repo
@@ -1643,8 +1643,9 @@ def batch_backfill_completed_advancement(payload: dict) -> dict:
                     (project["id"], year, now, reason, operator, now, reason, operator),
                 )
             updates = {"advancement_year": year, "advancement_date": now, "updated_at": now}
-            if payload.get("clear_zero_budget") and project.get("budget") == 0:
+            if payload.get("clear_zero_budget") and decimal_of(project.get("budget")) == 0:
                 updates["budget"] = None
+                updates["budget_decimal"] = None
             project_repo.update_project_status(conn, project["id"], updates)
             _audit(conn, project["id"], "PROJECT_COMPLETED_ADVANCEMENT_BACKFILLED", operator, reason, {
                 "advancement_year": year,

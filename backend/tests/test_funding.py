@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import io
 
-import pandas as pd
+from backend.tests import excel_test_utils as pd
 
 
 def _advancing_project(client, create_project_payload, *, name: str, budget: float, year: int):

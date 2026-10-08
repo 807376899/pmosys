@@ -5,8 +5,7 @@ import json
 import sqlite3
 from datetime import datetime
 
-import pandas as pd
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 from backend.app.core.errors import NotFoundError, ValidationError
 from backend.app.core.money import decimal_of, difference, legacy_number, parse_money, preferred, total
@@ -514,20 +513,27 @@ def funding_import_template(year: int) -> bytes:
                WHERE d.advancement_year=? ORDER BY p.project_code""", (year,)
         ).fetchall()
     template_columns = ["项目编号", "项目名称", "项目分类", "学院", "预算（本年资金安排）", "资金代码", "资金名称", "资金负责人", "资金金额", "分配金额"]
-    frame = pd.DataFrame([{
-        "项目编号": row["project_code"], "项目名称": row["name"], "项目分类": row["project_type_name"] or "未分类", "学院": row["department"],
-        "预算（本年资金安排）": preferred(dict(row), "planned_new_amount"), "资金代码": "", "资金名称": "", "资金负责人": "", "资金金额": "", "分配金额": "",
-    } for row in rows], columns=template_columns)
-    info = pd.DataFrame([
+    info = [
         ["填写说明", "仅可导入当前年度已保存计划中的项目；一行对应一个项目 × 资金代码关系；同一项目可占多行。"],
         ["项目分类 / 学院 / 预算（本年资金安排）", "系统导出的参考信息，项目分类使用用户可读名称；不用于识别或修改项目。"],
         ["资金代码", "必填；新资金代码会按关联项目规划年度创建有效期。"],
         ["资金名称 / 资金负责人", "选填；保存到资金代码信息。"],
         ["资金金额", "必填，单位：万元；表示资金代码的金额，不是该项目分配金额。"],
         ["分配金额", "选填，单位：万元；留空仍保存项目 × 资金代码关系，后续可再补录。"],
-    ], columns=["字段", "说明"])
+    ]
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "正式资金分配"
+    sheet.append(template_columns)
+    for row in rows:
+        sheet.append([
+            row["project_code"], row["name"], row["project_type_name"] or "未分类", row["department"],
+            preferred(dict(row), "planned_new_amount"), "", "", "", "", "",
+        ])
+    info_sheet = workbook.create_sheet("填写说明")
+    info_sheet.append(["字段", "说明"])
+    for row in info:
+        info_sheet.append(row)
     output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        frame.to_excel(writer, index=False, sheet_name="正式资金分配")
-        info.to_excel(writer, index=False, sheet_name="填写说明")
+    workbook.save(output)
     return output.getvalue()

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import io
 
-import pandas as pd
+from backend.tests import excel_test_utils as pd
 
 from backend.app.db.connection import get_connection
 
@@ -29,7 +29,7 @@ def test_import_preview_and_commit(client):
     assert preview.status_code == 200
     body = preview.json()
     assert body["valid_rows"] == 1
-    assert body["records"][0]["approved_budget"] == 45.0
+    assert body["records"][0]["approved_budget"] == "45"
     commit = client.post(
         "/api/v1/imports/projects/commit",
         json={"records": body["records"], "operator": "批量导入"},
