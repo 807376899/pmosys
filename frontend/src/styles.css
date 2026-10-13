@@ -1335,6 +1335,10 @@ textarea {
 
 .column-chip-list b { color: var(--accent-red); }
 .column-config-list { display: grid; gap: 4px; }
+.stage-base-columns-section { display: grid; gap: 6px; }
+.column-config-section-toggle { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 8px; inline-size: 100%; padding: 7px 8px; border: 1px solid var(--line); background: rgba(255, 252, 246, .7); color: var(--ink); cursor: pointer; text-align: left; }
+.column-config-section-toggle span { color: var(--muted); font-size: .76rem; }
+.column-config-section-toggle b { color: var(--accent-cyan); font-size: .78rem; }
 .column-config-row { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 7px; min-height: 32px; padding: 4px 6px; border: 1px solid var(--line); background: rgba(255, 252, 246, .7); cursor: grab; }
 .column-config-row:active { cursor: grabbing; }
 .column-config-row input { inline-size: 16px; block-size: 16px; margin: 0; accent-color: var(--accent-cyan); cursor: pointer; }

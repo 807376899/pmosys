@@ -54,6 +54,15 @@
 | 文档 | `python scripts/check_docs_governance.py --root .`：PASS；`python -m pytest tests/test_docs_governance.py -q`：PASS（26 passed）。 |
 | Browser | NOT_RUN（部分验证）。已观察未立项项目名称格显示结构化摘要；总览显示列面板显示基础列手柄和开关；阶段跟踪面板显示可独立移动的“阶段跟踪列组”及现有事项/约束管理区。实际取消总览“项目概括”列并刷新后该列保持隐藏，恢复勾选并刷新后恢复显示。尚未在浏览器实际拖拽基础列/列组、验证跨视图同步顺序或完成窄屏回归，故不升级为 PASS。 |
 
+## 2026-10-13 阶段基础列显隐修复
+
+| 字段 | 内容 |
+| --- | --- |
+| 需求/验收版本 | REQ-UI-003@v16、REQ-UI-004@v12；AC-019、AC-020、REG-UI-001 |
+| 前端单元 | `npm.cmd --prefix frontend run test:columns`：PASS（4 passed）。覆盖隐藏基础列后阶段跟踪列组仍保持配置位置。 |
+| Build | `npm.cmd --prefix frontend run build`：PASS。 |
+| Browser | 定向路径 PASS：阶段跟踪“显示列”首次打开时基础信息区折叠；展开后取消“最新动态”即移除表头和单元格，刷新后仍隐藏且该配置项仍可展开并重新勾选恢复。完整 AC-019、AC-020 与 `REG-UI-001` 仍为 NOT_RUN，尚未覆盖拖拽列组、跨视图顺序与窄屏矩阵。 |
+
 ## 已执行证据
 
 | 验证层 | 命令/步骤 | 结果 | 证据 |

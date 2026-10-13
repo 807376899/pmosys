@@ -9,6 +9,15 @@ export function insertStageGroup<T extends string>(columns: readonly T[], anchor
   return [...columns.slice(0, index + 1), "stage_group" as const, ...columns.slice(index + 1)];
 }
 
+export function stageLayoutForVisibleColumns<T extends string>(
+  configuredColumns: readonly T[],
+  visibleColumns: readonly T[],
+  anchor: T | null,
+) {
+  const visible = new Set(visibleColumns);
+  return insertStageGroup(configuredColumns, anchor).filter((column) => column === "stage_group" || visible.has(column));
+}
+
 export function replaceVisibleOrder<T extends string>(sharedOrder: readonly T[], visibleColumns: readonly T[], reorderedVisibleColumns: readonly T[]) {
   const visible = new Set(visibleColumns);
   const reordered = [...reorderedVisibleColumns];

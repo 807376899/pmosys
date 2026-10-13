@@ -31,7 +31,7 @@ import AnnualBudgetView from "./AnnualBudgetView";
 import ContractPanel from "./ContractPanel";
 import ProjectFundingPanel from "./ProjectFundingPanel";
 import { ApiError, apiDelete, apiGet, apiPatch, apiPost, apiPostForm, buildExportUrl } from "./lib/api";
-import { applySharedOrder, insertStageGroup, replaceVisibleOrder, stageGroupAnchorForLayout } from "./lib/column-layout";
+import { applySharedOrder, insertStageGroup, replaceVisibleOrder, stageGroupAnchorForLayout, stageLayoutForVisibleColumns } from "./lib/column-layout";
 import { formatCurrency, formatDate, formatDateTime, projectTypeLabel, statusLabel, sumMoney } from "./lib/format";
 import type {
   BatchExecuteResponse,
@@ -416,6 +416,7 @@ function DashboardPage() {
   const [tableView, setTableView] = useState<"overview" | "stage" | "annual">("overview");
   const [columnPickerOpen, setColumnPickerOpen] = useState(false);
   const [overviewColumnPickerOpen, setOverviewColumnPickerOpen] = useState(false);
+  const [stageBaseColumnsOpen, setStageBaseColumnsOpen] = useState(false);
   const [columnSearch, setColumnSearch] = useState("");
   const [columnBatchTarget, setColumnBatchTarget] = useState<ColumnBatchTarget | null>(null);
   const [workItemActivity, setWorkItemActivity] = useState<WorkItemActivity | null>(null);
@@ -589,6 +590,9 @@ function DashboardPage() {
   const stageBaseColumns = useMemo<BaseColumn[]>(() => {
     return visibleBaseColumns("stage", overviewPreferenceStage, stageAllowedColumns);
   }, [stageAllowedColumns, overviewPreferenceStage, baseColumnVisibility, baseOrderCustomized, sharedBaseColumnOrder]);
+  const stageConfigBaseColumns = useMemo<BaseColumn[]>(() => {
+    return applySharedOrder(sharedBaseColumnOrder, stageAllowedColumns);
+  }, [sharedBaseColumnOrder, stageAllowedColumns]);
 
   useEffect(() => {
     if (!showImplementationFilter && selectedImplementationYear) {
@@ -667,7 +671,8 @@ function DashboardPage() {
   }, [projects]);
   const contractColorFor = (contractId: number) => contractColorsById.get(contractId) ?? CONTRACT_BAR_COLORS[0];
   const stageGroupAnchor = stageGroupAnchors[overviewPreferenceStage] ?? defaultStageGroupAnchor(overviewPreferenceStage);
-  const stageLayout = useMemo<StageLayoutToken[]>(() => insertStageGroup(stageBaseColumns, stageGroupAnchor), [stageBaseColumns, stageGroupAnchor]);
+  const stageConfigLayout = useMemo<StageLayoutToken[]>(() => insertStageGroup(stageConfigBaseColumns, stageGroupAnchor), [stageConfigBaseColumns, stageGroupAnchor]);
+  const stageLayout = useMemo<StageLayoutToken[]>(() => stageLayoutForVisibleColumns(stageConfigBaseColumns, stageBaseColumns, stageGroupAnchor), [stageConfigBaseColumns, stageBaseColumns, stageGroupAnchor]);
   const tableColumnCount = 2 + (tableView === "overview" ? overviewColumns.length : stageLayout.reduce((count, column) => count + (column === "stage_group" ? stageColumns.length : 1), 0));
 
   function columnTargetFor(column: StageColumn): ColumnBatchTarget | null {
@@ -781,14 +786,14 @@ function DashboardPage() {
 
   function dropStageLayout(source: StageLayoutToken, target: StageLayoutToken) {
     if (source === target) return;
-    const next = [...stageLayout];
+    const next = [...stageConfigLayout];
     const from = next.indexOf(source);
     const to = next.indexOf(target);
     if (from < 0 || to < 0) return;
     const [moved] = next.splice(from, 1);
     next.splice(to, 0, moved);
     const orderedBaseColumns = next.filter((column): column is BaseColumn => column !== "stage_group");
-    setSharedBaseColumnOrder((current) => replaceVisibleOrder(current, stageBaseColumns, orderedBaseColumns));
+    setSharedBaseColumnOrder((current) => replaceVisibleOrder(current, stageConfigBaseColumns, orderedBaseColumns));
     setBaseOrderCustomized(true);
     setStageGroupAnchors((current) => ({ ...current, [overviewPreferenceStage]: stageGroupAnchorForLayout(next) }));
   }
@@ -1744,9 +1749,9 @@ function DashboardPage() {
                   <p className="column-sync-note">基础列顺序会同步到其他视图，显示/隐藏仅影响当前视图。</p>
                   <button type="button" className="text-button column-reset" onClick={() => resetBaseColumnLayout("overview")}>恢复默认列配置</button>
                 </div> : null}</div> : null}
-                {tableView === "stage" ? <div className="column-picker"><button type="button" className="mini-button" aria-expanded={columnPickerOpen} onClick={() => setColumnPickerOpen((open) => !open)}>显示列</button>{columnPickerOpen ? <div className="column-picker-menu" role="dialog" aria-label="配置阶段跟踪显示列">
+                {tableView === "stage" ? <div className="column-picker"><button type="button" className="mini-button" aria-expanded={columnPickerOpen} onClick={() => setColumnPickerOpen((open) => { if (!open) setStageBaseColumnsOpen(false); return !open; })}>显示列</button>{columnPickerOpen ? <div className="column-picker-menu" role="dialog" aria-label="配置阶段跟踪显示列">
                   <div className="column-picker-heading"><strong>显示列</strong><button type="button" className="text-button" onClick={() => setColumnPickerOpen(false)}>关闭</button></div>
-                  <section><span>基础列与阶段跟踪列组</span><div className="column-config-list">{stageLayout.map((entry) => entry === "stage_group" ? <div className="column-config-row stage-group-config" draggable key={entry} onDragStart={(event) => event.dataTransfer.setData("text/plain", "layout:stage_group")} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { const source = event.dataTransfer.getData("text/plain").replace("layout:", ""); if (source === "stage_group" || isBaseColumn(source)) dropStageLayout(source as StageLayoutToken, entry); }}><span className="drag-handle" aria-hidden="true">☰</span><strong>阶段跟踪列组</strong><small>事项与约束</small></div> : <label className="column-config-row" draggable key={entry} onDragStart={(event) => event.dataTransfer.setData("text/plain", `layout:${entry}`)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { const source = event.dataTransfer.getData("text/plain").replace("layout:", ""); if (source === "stage_group" || isBaseColumn(source)) dropStageLayout(source as StageLayoutToken, entry); }}><span className="drag-handle" aria-hidden="true">☰</span><span>{OVERVIEW_COLUMN_LABELS[entry]}</span><input type="checkbox" checked={stageBaseColumns.includes(entry)} onChange={() => toggleBaseColumn("stage", entry)} /></label>)}</div></section>
+                  <section className="stage-base-columns-section"><button type="button" className="column-config-section-toggle" aria-expanded={stageBaseColumnsOpen} onClick={() => setStageBaseColumnsOpen((open) => !open)}><strong>基础信息列</strong><span>与总览共享顺序</span><b aria-hidden="true">{stageBaseColumnsOpen ? "收起" : "展开"}</b></button>{stageBaseColumnsOpen ? <div className="column-config-list">{stageConfigLayout.map((entry) => entry === "stage_group" ? <div className="column-config-row stage-group-config" draggable key={entry} onDragStart={(event) => event.dataTransfer.setData("text/plain", "layout:stage_group")} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { const source = event.dataTransfer.getData("text/plain").replace("layout:", ""); if (source === "stage_group" || isBaseColumn(source)) dropStageLayout(source as StageLayoutToken, entry); }}><span className="drag-handle" aria-hidden="true">☰</span><strong>阶段跟踪列组</strong><small>事项与约束</small></div> : <label className="column-config-row" draggable key={entry} onDragStart={(event) => event.dataTransfer.setData("text/plain", `layout:${entry}`)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { const source = event.dataTransfer.getData("text/plain").replace("layout:", ""); if (source === "stage_group" || isBaseColumn(source)) dropStageLayout(source as StageLayoutToken, entry); }}><span className="drag-handle" aria-hidden="true">☰</span><span>{OVERVIEW_COLUMN_LABELS[entry]}</span><input type="checkbox" checked={stageBaseColumns.includes(entry)} onChange={() => toggleBaseColumn("stage", entry)} /></label>)}</div> : null}</section>
                   <section><span>阶段跟踪列组</span><div className="column-chip-list">{stageColumns.map((column, index) => <button type="button" draggable key={`${column.kind}:${column.key}`} aria-label={`${column.kind === "external_constraint" ? "外部约束" : "事项"}列 ${column.label}`} onDragStart={(event) => event.dataTransfer.setData("text/plain", String(index))} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { const from = Number(event.dataTransfer.getData("text/plain")); if (Number.isInteger(from) && from !== index) { const next = [...stageColumns]; const [moved] = next.splice(from, 1); next.splice(index, 0, moved); saveStageColumns(next); } }} onClick={() => removeStageColumn(column)}><span className="drag-handle">⋮⋮</span>{column.label} <b>×</b></button>)}{!stageColumns.length ? <small>暂无显示列</small> : null}</div></section>
                   <section><span>推荐列</span><div className="column-action-list">{recommendedColumns.filter((column) => !stageColumns.some((item) => item.kind === column.kind && item.key === column.key)).map((column) => <button type="button" key={`${column.kind}:${column.key}`} aria-label={`添加${column.kind === "external_constraint" ? "外部约束" : "事项"}列 ${column.label}`} onClick={() => addStageColumn(column)}>＋ {column.label}</button>)}{!recommendedColumns.filter((column) => !stageColumns.some((item) => item.kind === column.kind && item.key === column.key)).length ? <small>已全部加入</small> : null}</div></section>
                 <section><span>当前结果中存在</span><div className="column-action-list">{[...currentConstraintColumns, ...currentProjectColumns].filter((column) => !stageColumns.some((item) => item.kind === column.kind && item.key === column.key) && !recommendedColumns.some((item) => item.kind === column.kind && item.key === column.key)).slice(0, 8).map((column) => <button type="button" key={`${column.kind}:${column.key}`} aria-label={`添加${column.kind === "external_constraint" ? "外部约束" : "事项"}列 ${column.label}`} onClick={() => addStageColumn(column)}>＋ {column.label}</button>)}</div></section>
