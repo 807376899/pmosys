@@ -31,6 +31,7 @@ import AnnualBudgetView from "./AnnualBudgetView";
 import ContractPanel from "./ContractPanel";
 import ProjectFundingPanel from "./ProjectFundingPanel";
 import { ApiError, apiDelete, apiGet, apiPatch, apiPost, apiPostForm, buildExportUrl } from "./lib/api";
+import { applySharedOrder, insertStageGroup, replaceVisibleOrder, stageGroupAnchorForLayout } from "./lib/column-layout";
 import { formatCurrency, formatDate, formatDateTime, projectTypeLabel, statusLabel, sumMoney } from "./lib/format";
 import type {
   BatchExecuteResponse,
@@ -153,6 +154,9 @@ type ColumnBatchTarget = {
 };
 
 type OverviewColumn = "stage" | "document" | "implementation_year" | "completion_year" | "department" | "budget" | "summary" | "allocation" | "contract" | "progress" | "latest_activity";
+type BaseColumn = OverviewColumn;
+type ConfigurableTableView = "overview" | "stage";
+type StageLayoutToken = BaseColumn | "stage_group";
 
 const OVERVIEW_COLUMN_LABELS: Record<OverviewColumn, string> = {
   stage: "Stage", document: "立项文件", implementation_year: "实施年份", completion_year: "完成年份",
@@ -171,6 +175,64 @@ const overviewColumnsForStage = (stage: string): OverviewColumn[] => {
   if (stage === "completed") return ["stage", "document", "department", "budget", "allocation", "contract", "implementation_year", "completion_year"];
   return ["stage", "document", "department", "budget", "latest_activity"];
 };
+
+const stageBaseColumnsForStage = (stage: string): BaseColumn[] => {
+  if (stage === "removed") return ["stage", "department", "budget", "latest_activity"];
+  if (stage === "pre_establish") return ["stage", "department", "budget", "latest_activity"];
+  if (stage === "pool_pending") return ["stage", "document", "department", "budget", "latest_activity"];
+  if (stage === "pool_active") return ["stage", "document", "implementation_year", "department", "budget", "allocation", "contract", "latest_activity"];
+  if (stage === "completed") return ["stage", "document", "contract", "department", "budget", "allocation", "implementation_year", "completion_year"];
+  return ["stage", "document", "department", "budget", "latest_activity"];
+};
+
+const defaultStageGroupAnchor = (stage: string): BaseColumn | null => {
+  if (stage === "completed") return "completion_year";
+  if (stage === "pool_active") return "implementation_year";
+  if (stage === "pool_pending") return "document";
+  return "stage";
+};
+
+type ProjectTableColumnPreferences = {
+  order: BaseColumn[];
+  visibility: Record<ConfigurableTableView, Record<string, BaseColumn[]>>;
+  stageGroupAnchors: Record<string, BaseColumn | null>;
+  orderCustomized: boolean;
+};
+
+const allBaseColumns = DEFAULT_OVERVIEW_COLUMNS;
+
+function isBaseColumn(value: unknown): value is BaseColumn {
+  return typeof value === "string" && value in OVERVIEW_COLUMN_LABELS;
+}
+
+function readProjectTableColumnPreferences(): ProjectTableColumnPreferences {
+  const fallback: ProjectTableColumnPreferences = { order: [...allBaseColumns], visibility: { overview: {}, stage: {} }, stageGroupAnchors: {}, orderCustomized: false };
+  try {
+    const raw = JSON.parse(localStorage.getItem("pmo-project-table-columns-v1") || "null") as Partial<ProjectTableColumnPreferences> | null;
+    if (raw && Array.isArray(raw.order) && raw.order.every(isBaseColumn)) {
+      return {
+        order: [...new Set([...raw.order, ...allBaseColumns])],
+        visibility: {
+          overview: Object.fromEntries(Object.entries(raw.visibility?.overview ?? {}).map(([stage, columns]) => [stage, Array.isArray(columns) ? columns.filter(isBaseColumn) : []])),
+          stage: Object.fromEntries(Object.entries(raw.visibility?.stage ?? {}).map(([stage, columns]) => [stage, Array.isArray(columns) ? columns.filter(isBaseColumn) : []])),
+        },
+        stageGroupAnchors: Object.fromEntries(Object.entries(raw.stageGroupAnchors ?? {}).filter(([, anchor]) => anchor === null || isBaseColumn(anchor))),
+        orderCustomized: Boolean(raw.orderCustomized),
+      };
+    }
+    const overview = JSON.parse(localStorage.getItem("pmo-overview-columns-v3") || "{}") as Record<string, unknown>;
+    const legacy = JSON.parse(localStorage.getItem("pmo-overview-columns-v2") || "[]") as unknown;
+    return {
+      ...fallback,
+      visibility: {
+        overview: Object.keys(overview).length
+          ? Object.fromEntries(Object.entries(overview).map(([stage, columns]) => [stage, Array.isArray(columns) ? columns.filter(isBaseColumn) : []]))
+          : Array.isArray(legacy) ? { legacy: legacy.filter(isBaseColumn) } : {},
+        stage: {},
+      },
+    };
+  } catch { return fallback; }
+}
 
 function ProgressSituation({ project, onSelect, onConstraintSelect }: { project: Project; onSelect?: (itemId: number) => void; onConstraintSelect?: () => void }) {
   const items = project.work_item_summary ?? [];
@@ -383,21 +445,16 @@ function DashboardPage() {
       return Object.fromEntries(Object.entries(raw).map(([stage, columns]) => [stage, columns.map((column) => typeof column === "string" ? { kind: "work_item", key: column, label: column } : column)]));
     } catch { return {}; }
   });
-  const [overviewColumnsByStage, setOverviewColumnsByStage] = useState<Record<string, OverviewColumn[]>>(() => {
-    try {
-      const raw = JSON.parse(localStorage.getItem("pmo-overview-columns-v3") || "{}");
-      if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-        return Object.fromEntries(Object.entries(raw as Record<string, unknown>).flatMap(([stage, columns]) =>
-          Array.isArray(columns) && columns.every((column) => typeof column === "string" && column in OVERVIEW_COLUMN_LABELS)
-            ? [[stage, columns as OverviewColumn[]]] : [],
-        ));
-      }
-      const legacy = JSON.parse(localStorage.getItem("pmo-overview-columns-v2") || "[]");
-      return Array.isArray(legacy) && legacy.every((column) => typeof column === "string" && column in OVERVIEW_COLUMN_LABELS)
-        ? { legacy: legacy as OverviewColumn[] } : {};
-    } catch { return {}; }
-  });
+  const columnPreferencesRef = useRef(readProjectTableColumnPreferences());
+  const [sharedBaseColumnOrder, setSharedBaseColumnOrder] = useState<BaseColumn[]>(columnPreferencesRef.current.order);
+  const [baseColumnVisibility, setBaseColumnVisibility] = useState<ProjectTableColumnPreferences["visibility"]>(columnPreferencesRef.current.visibility);
+  const [stageGroupAnchors, setStageGroupAnchors] = useState<Record<string, BaseColumn | null>>(columnPreferencesRef.current.stageGroupAnchors);
+  const [baseOrderCustomized, setBaseOrderCustomized] = useState(columnPreferencesRef.current.orderCustomized);
   const columnHeaderClickTimer = useRef<number | null>(null);
+
+  useEffect(() => {
+    localStorage.setItem("pmo-project-table-columns-v1", JSON.stringify({ order: sharedBaseColumnOrder, visibility: baseColumnVisibility, stageGroupAnchors, orderCustomized: baseOrderCustomized }));
+  }, [sharedBaseColumnOrder, baseColumnVisibility, stageGroupAnchors, baseOrderCustomized]);
 
   const exportQuery = useMemo(() => {
     const params = new URLSearchParams();
@@ -516,20 +573,22 @@ function DashboardPage() {
     if (showCompletionYearColumn) allowed.delete("latest_activity");
     return DEFAULT_OVERVIEW_COLUMNS.filter((column) => allowed.has(column));
   }, [activeGroup, showCompletionYearColumn, showImplementationYearColumn, showProgressColumn, showRemoved]);
+  const stageAllowedColumns = useMemo<BaseColumn[]>(() => {
+    const allowed = new Set(stageBaseColumnsForStage(showRemoved ? "removed" : activeGroup));
+    return allBaseColumns.filter((column) => allowed.has(column));
+  }, [activeGroup, showRemoved]);
+  const visibleBaseColumns = (view: ConfigurableTableView, stage: string, allowedColumns: BaseColumn[]) => {
+    const defaults = view === "overview" ? overviewColumnsForStage(stage) : stageBaseColumnsForStage(stage);
+    const stored = baseColumnVisibility[view][stage] ?? baseColumnVisibility[view].legacy ?? defaults;
+    const visible = stored.filter((column) => allowedColumns.includes(column));
+    return baseOrderCustomized ? applySharedOrder(sharedBaseColumnOrder, visible) : defaults.filter((column) => visible.includes(column) && allowedColumns.includes(column));
+  };
   const overviewColumns = useMemo<OverviewColumn[]>(() => {
-    const saved = overviewColumnsByStage[overviewPreferenceStage] ?? overviewColumnsByStage.legacy ?? overviewColumnsForStage(overviewPreferenceStage);
-    return saved.filter((column) => overviewAllowedColumns.includes(column));
-  }, [overviewAllowedColumns, overviewColumnsByStage, overviewPreferenceStage]);
-  const overviewContextColumns = useMemo<OverviewColumn[]>(() => {
-    const ordered = overviewColumns;
-    if (showCompletionYearColumn) {
-      return [...ordered.filter((column) => column !== "implementation_year" && column !== "completion_year"), "implementation_year", "completion_year"];
-    }
-    if (showProgressColumn) {
-      return [...ordered.filter((column) => column !== "progress" && column !== "latest_activity"), "progress", "latest_activity"];
-    }
-    return ordered;
-  }, [overviewColumns, showCompletionYearColumn, showProgressColumn]);
+    return visibleBaseColumns("overview", overviewPreferenceStage, overviewAllowedColumns);
+  }, [overviewAllowedColumns, overviewPreferenceStage, baseColumnVisibility, baseOrderCustomized, sharedBaseColumnOrder]);
+  const stageBaseColumns = useMemo<BaseColumn[]>(() => {
+    return visibleBaseColumns("stage", overviewPreferenceStage, stageAllowedColumns);
+  }, [stageAllowedColumns, overviewPreferenceStage, baseColumnVisibility, baseOrderCustomized, sharedBaseColumnOrder]);
 
   useEffect(() => {
     if (!showImplementationFilter && selectedImplementationYear) {
@@ -602,22 +661,14 @@ function DashboardPage() {
     [activeGroup, groups, activeTemplates, activeConstraintTemplates],
   );
   const stageColumns = visibleColumnsByStage[activeGroup] ?? recommendedColumns;
-  const showContractProgressColumn = !showRemoved && (activeGroup === "pool_active" || activeGroup === "completed");
   const contractColorsById = useMemo(() => {
     const ids = [...new Set(projects.flatMap((project) => project.contract_summary?.contracts?.map((contract) => contract.id) ?? []))].sort((left, right) => left - right);
     return new Map(ids.map((id, index) => [id, contractBarColor(index)]));
   }, [projects]);
   const contractColorFor = (contractId: number) => contractColorsById.get(contractId) ?? CONTRACT_BAR_COLORS[0];
-  const stageStaticColumnCount = 1
-    + (activeGroup !== "pre_establish" && !showRemoved ? 1 : 0)
-    + (showImplementationYearColumn ? 1 : 0)
-    + (showCompletionYearColumn ? 1 : 0)
-    + 1 // department
-    + 1 // budget
-    + (activeGroup !== "pre_establish" && activeGroup !== "pool_pending" && !showRemoved ? 1 : 0)
-    + (showContractProgressColumn ? 1 : 0)
-    + (activeGroup !== "completed" ? 1 : 0); // latest activity
-  const tableColumnCount = 2 + (tableView === "overview" ? overviewContextColumns.length : stageStaticColumnCount + stageColumns.length);
+  const stageGroupAnchor = stageGroupAnchors[overviewPreferenceStage] ?? defaultStageGroupAnchor(overviewPreferenceStage);
+  const stageLayout = useMemo<StageLayoutToken[]>(() => insertStageGroup(stageBaseColumns, stageGroupAnchor), [stageBaseColumns, stageGroupAnchor]);
+  const tableColumnCount = 2 + (tableView === "overview" ? overviewColumns.length : stageLayout.reduce((count, column) => count + (column === "stage_group" ? stageColumns.length : 1), 0));
 
   function columnTargetFor(column: StageColumn): ColumnBatchTarget | null {
     const instances: Record<number, number> = {};
@@ -695,25 +746,51 @@ function DashboardPage() {
     });
   }
 
-  function saveOverviewColumns(columns: OverviewColumn[]) {
-    const unique = [...new Set(columns)].filter((column) => overviewAllowedColumns.includes(column));
-    setOverviewColumnsByStage((current) => {
-      const result = { ...current, [overviewPreferenceStage]: unique };
-      localStorage.setItem("pmo-overview-columns-v3", JSON.stringify(result));
-      return result;
+  function saveBaseColumnVisibility(view: ConfigurableTableView, columns: BaseColumn[]) {
+    const allowed = view === "overview" ? overviewAllowedColumns : stageAllowedColumns;
+    const unique = [...new Set(columns)].filter((column) => allowed.includes(column));
+    setBaseColumnVisibility((current) => ({ ...current, [view]: { ...current[view], [overviewPreferenceStage]: unique } }));
+  }
+
+  function toggleBaseColumn(view: ConfigurableTableView, column: BaseColumn) {
+    const visible = view === "overview" ? overviewColumns : stageBaseColumns;
+    saveBaseColumnVisibility(view, visible.includes(column) ? visible.filter((item) => item !== column) : [...visible, column]);
+  }
+
+  function resetBaseColumnLayout(view: ConfigurableTableView) {
+    const defaults = view === "overview" ? overviewColumnsForStage(overviewPreferenceStage) : stageBaseColumnsForStage(overviewPreferenceStage);
+    saveBaseColumnVisibility(view, defaults);
+    setSharedBaseColumnOrder([...allBaseColumns]);
+    setBaseOrderCustomized(false);
+    if (view === "stage") setStageGroupAnchors((current) => ({ ...current, [overviewPreferenceStage]: defaultStageGroupAnchor(overviewPreferenceStage) }));
+  }
+
+  function moveBaseColumn(source: BaseColumn, target: BaseColumn) {
+    if (source === target) return;
+    setSharedBaseColumnOrder((current) => {
+      const next = [...current];
+      const from = next.indexOf(source);
+      const to = next.indexOf(target);
+      if (from < 0 || to < 0) return current;
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
     });
+    setBaseOrderCustomized(true);
   }
 
-  function resetOverviewColumns() {
-    saveOverviewColumns(overviewColumnsForStage(overviewPreferenceStage));
-  }
-
-  function moveOverviewColumn(from: number, to: number) {
-    if (from === to) return;
-    const next = [...overviewColumns];
+  function dropStageLayout(source: StageLayoutToken, target: StageLayoutToken) {
+    if (source === target) return;
+    const next = [...stageLayout];
+    const from = next.indexOf(source);
+    const to = next.indexOf(target);
+    if (from < 0 || to < 0) return;
     const [moved] = next.splice(from, 1);
     next.splice(to, 0, moved);
-    saveOverviewColumns(next);
+    const orderedBaseColumns = next.filter((column): column is BaseColumn => column !== "stage_group");
+    setSharedBaseColumnOrder((current) => replaceVisibleOrder(current, stageBaseColumns, orderedBaseColumns));
+    setBaseOrderCustomized(true);
+    setStageGroupAnchors((current) => ({ ...current, [overviewPreferenceStage]: stageGroupAnchorForLayout(next) }));
   }
 
   function selectColumnBatch(column: StageColumn, mode: "manual" | "all") {
@@ -922,6 +999,21 @@ function DashboardPage() {
     if (column === "contract") return <td key={column} className="contract-column"><ContractSummaryCell project={project} onOpenCollection={() => openContractPanel(project)} onOpenContract={(contractId) => openContractPanel(project, contractId)} colorForContract={contractColorFor} /></td>;
     if (column === "progress") return <td key={column} className="progress-column"><ProgressSituation project={project} onSelect={(itemId) => void openQuickItem(project.id, itemId)} onConstraintSelect={() => void openQuickConstraintList(project.id)} /></td>;
     return <td key={column} className="updated-date">{formatDate(project.latest_activity_at)}</td>;
+  }
+
+  function stageGroupHeaders() {
+    return stageColumns.map((column) => {
+      const active = columnBatchTarget?.kind === column.kind && columnBatchTarget.key === column.key;
+      const available = Boolean(columnTargetFor(column));
+      return <th key={`${column.kind}:${column.key}`} className={`${active ? "column-batch-header" : ""} ${column.kind === "external_constraint" ? "stage-constraint-header" : "stage-item-header"}`}><button type="button" className="stage-column-heading" disabled={!available} aria-label={`单击手动选择“${column.label}”列，双击全选实例`} onClick={() => queueColumnBatchSelection(column)} onDoubleClick={() => selectAllColumnBatch(column)} onKeyDown={(event) => { if ((event.key === "Enter" || event.key === " ") && event.shiftKey) { event.preventDefault(); selectAllColumnBatch(column); } }}>{column.label}</button></th>;
+    });
+  }
+
+  function stageGroupCells(project: Project, selected: boolean) {
+    return stageColumns.map((column) => {
+      const columnSelected = Boolean(selected && columnBatchTarget?.kind === column.kind && columnBatchTarget.key === column.key && columnBatchTarget.instances[project.id]);
+      return <td key={`${column.kind}:${column.key}`} className={columnSelected ? "column-batch-cell" : ""}><StageItemCell project={project} column={column} highlighted={columnSelected} onWorkItemSelect={(itemId) => void openQuickItem(project.id, itemId)} onConstraintSelect={(constraintId) => void openQuickConstraint(project.id, constraintId)} onActivitySelect={(activityId) => void openWorkItemActivity(activityId, "stage")} /></td>;
+    });
   }
 
   function closeRail() {
@@ -1648,20 +1740,20 @@ function DashboardPage() {
                 <button className="mini-button" onClick={() => { clearColumnBatchTarget(); setTableView("annual"); setColumnPickerOpen(false); }}>年度预算安排</button>
                 {tableView === "overview" ? <div className="column-picker"><button type="button" className="mini-button" aria-expanded={overviewColumnPickerOpen} onClick={() => setOverviewColumnPickerOpen((open) => !open)}>显示列</button>{overviewColumnPickerOpen ? <div className="column-picker-menu" role="dialog" aria-label="配置总览显示列">
                   <div className="column-picker-heading"><strong>显示列</strong><button type="button" className="text-button" onClick={() => setOverviewColumnPickerOpen(false)}>关闭</button></div>
-                  <p>“选中”和“项目”固定；这里只显示当前 Stage 可用的列。</p>
-                  <section><span>已显示（拖动调整顺序）</span><div className="column-chip-list">{overviewColumns.map((column, index) => <button type="button" draggable key={column} onDragStart={(event) => event.dataTransfer.setData("text/plain", String(index))} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { const from = Number(event.dataTransfer.getData("text/plain")); if (Number.isInteger(from)) moveOverviewColumn(from, index); }} onClick={() => saveOverviewColumns(overviewColumns.filter((item) => item !== column))}><span className="drag-handle">⋮⋮</span>{OVERVIEW_COLUMN_LABELS[column]} <b>×</b></button>)}</div></section>
-                  <section><span>可添加</span><div className="column-action-list">{overviewAllowedColumns.filter((column) => !overviewColumns.includes(column)).map((column) => <button type="button" key={column} onClick={() => saveOverviewColumns([...overviewColumns, column])}>＋ {OVERVIEW_COLUMN_LABELS[column]}</button>)}{!overviewAllowedColumns.filter((column) => !overviewColumns.includes(column)).length ? <small>当前 Stage 的可用列已全部显示</small> : null}</div></section>
-                  <button type="button" className="text-button column-reset" onClick={resetOverviewColumns}>恢复默认显示列</button>
+                  <section><span>基础列</span><div className="column-config-list">{applySharedOrder(sharedBaseColumnOrder, overviewAllowedColumns).map((column) => <label className="column-config-row" draggable key={column} onDragStart={(event) => event.dataTransfer.setData("text/plain", `base:${column}`)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { const source = event.dataTransfer.getData("text/plain").replace("base:", ""); if (isBaseColumn(source)) moveBaseColumn(source, column); }}><span className="drag-handle" aria-hidden="true">☰</span><span>{OVERVIEW_COLUMN_LABELS[column]}</span><input type="checkbox" checked={overviewColumns.includes(column)} onChange={() => toggleBaseColumn("overview", column)} /></label>)}</div></section>
+                  <p className="column-sync-note">基础列顺序会同步到其他视图，显示/隐藏仅影响当前视图。</p>
+                  <button type="button" className="text-button column-reset" onClick={() => resetBaseColumnLayout("overview")}>恢复默认列配置</button>
                 </div> : null}</div> : null}
                 {tableView === "stage" ? <div className="column-picker"><button type="button" className="mini-button" aria-expanded={columnPickerOpen} onClick={() => setColumnPickerOpen((open) => !open)}>显示列</button>{columnPickerOpen ? <div className="column-picker-menu" role="dialog" aria-label="配置阶段跟踪显示列">
                   <div className="column-picker-heading"><strong>显示列</strong><button type="button" className="text-button" onClick={() => setColumnPickerOpen(false)}>关闭</button></div>
-                  <p>只影响当前工作台视图，不会创建事项。</p>
-                  <section><span>已显示（拖动调整顺序）</span><div className="column-chip-list">{stageColumns.map((column, index) => <button type="button" draggable key={`${column.kind}:${column.key}`} aria-label={`${column.kind === "external_constraint" ? "外部约束" : "事项"}列 ${column.label}`} onDragStart={(event) => event.dataTransfer.setData("text/plain", String(index))} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { const from = Number(event.dataTransfer.getData("text/plain")); if (Number.isInteger(from) && from !== index) { const next = [...stageColumns]; const [moved] = next.splice(from, 1); next.splice(index, 0, moved); saveStageColumns(next); } }} onClick={() => removeStageColumn(column)}><span className="drag-handle">⋮⋮</span>{column.label} <b>×</b></button>)}{!stageColumns.length ? <small>暂无显示列</small> : null}</div></section>
+                  <section><span>基础列与阶段跟踪列组</span><div className="column-config-list">{stageLayout.map((entry) => entry === "stage_group" ? <div className="column-config-row stage-group-config" draggable key={entry} onDragStart={(event) => event.dataTransfer.setData("text/plain", "layout:stage_group")} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { const source = event.dataTransfer.getData("text/plain").replace("layout:", ""); if (source === "stage_group" || isBaseColumn(source)) dropStageLayout(source as StageLayoutToken, entry); }}><span className="drag-handle" aria-hidden="true">☰</span><strong>阶段跟踪列组</strong><small>事项与约束</small></div> : <label className="column-config-row" draggable key={entry} onDragStart={(event) => event.dataTransfer.setData("text/plain", `layout:${entry}`)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { const source = event.dataTransfer.getData("text/plain").replace("layout:", ""); if (source === "stage_group" || isBaseColumn(source)) dropStageLayout(source as StageLayoutToken, entry); }}><span className="drag-handle" aria-hidden="true">☰</span><span>{OVERVIEW_COLUMN_LABELS[entry]}</span><input type="checkbox" checked={stageBaseColumns.includes(entry)} onChange={() => toggleBaseColumn("stage", entry)} /></label>)}</div></section>
+                  <section><span>阶段跟踪列组</span><div className="column-chip-list">{stageColumns.map((column, index) => <button type="button" draggable key={`${column.kind}:${column.key}`} aria-label={`${column.kind === "external_constraint" ? "外部约束" : "事项"}列 ${column.label}`} onDragStart={(event) => event.dataTransfer.setData("text/plain", String(index))} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { const from = Number(event.dataTransfer.getData("text/plain")); if (Number.isInteger(from) && from !== index) { const next = [...stageColumns]; const [moved] = next.splice(from, 1); next.splice(index, 0, moved); saveStageColumns(next); } }} onClick={() => removeStageColumn(column)}><span className="drag-handle">⋮⋮</span>{column.label} <b>×</b></button>)}{!stageColumns.length ? <small>暂无显示列</small> : null}</div></section>
                   <section><span>推荐列</span><div className="column-action-list">{recommendedColumns.filter((column) => !stageColumns.some((item) => item.kind === column.kind && item.key === column.key)).map((column) => <button type="button" key={`${column.kind}:${column.key}`} aria-label={`添加${column.kind === "external_constraint" ? "外部约束" : "事项"}列 ${column.label}`} onClick={() => addStageColumn(column)}>＋ {column.label}</button>)}{!recommendedColumns.filter((column) => !stageColumns.some((item) => item.kind === column.kind && item.key === column.key)).length ? <small>已全部加入</small> : null}</div></section>
                 <section><span>当前结果中存在</span><div className="column-action-list">{[...currentConstraintColumns, ...currentProjectColumns].filter((column) => !stageColumns.some((item) => item.kind === column.kind && item.key === column.key) && !recommendedColumns.some((item) => item.kind === column.kind && item.key === column.key)).slice(0, 8).map((column) => <button type="button" key={`${column.kind}:${column.key}`} aria-label={`添加${column.kind === "external_constraint" ? "外部约束" : "事项"}列 ${column.label}`} onClick={() => addStageColumn(column)}>＋ {column.label}</button>)}</div></section>
                   <label className="column-search"><span>搜索其他常用事项</span><input className="input" value={columnSearch} onChange={(event) => setColumnSearch(event.target.value)} placeholder="输入事项名称" /></label>
                   {columnSearch.trim() ? <div className="column-action-list search-results">{searchedColumns.map((column) => <button type="button" key={`${column.kind}:${column.key}`} aria-label={`添加${column.kind === "external_constraint" ? "外部约束" : "事项"}列 ${column.label}`} onClick={() => addStageColumn(column)}>＋ {column.label}</button>)}{!searchedColumns.length ? <small>未找到可添加的事项或约束</small> : null}</div> : null}
-                  <button type="button" className="text-button column-reset" onClick={resetStageColumns}>恢复默认推荐列</button>
+                  <p className="column-sync-note">基础列顺序会同步到其他视图，显示/隐藏仅影响当前视图。</p>
+                  <button type="button" className="text-button column-reset" onClick={() => resetBaseColumnLayout("stage")}>恢复默认基础列</button><button type="button" className="text-button column-reset" onClick={resetStageColumns}>恢复默认阶段跟踪列</button>
                 </div> : null}</div> : null}
                 <button className="mini-button active" onClick={() => setNewProjectOpen(true)}><Plus size={15} />新增项目</button>
               </div>
@@ -1679,30 +1771,7 @@ function DashboardPage() {
                     <tr>
                       <th className="selection-column"><button type="button" className="table-select-all" onClick={toggleAllVisible} aria-label={projects.length && projects.every((project) => selectedIds.includes(project.id)) ? "取消全选当前结果" : "全选当前结果"}>选中</button></th>
                       <th>项目</th>
-                      {tableView === "overview" ? overviewContextColumns.map(overviewTableHeader) : <>
-                      <th>Stage</th>
-                      {activeGroup !== "pre_establish" && !showRemoved ? <th className="document-column">立项文件</th> : null}
-                      {showImplementationYearColumn ? <th className="year-column"><button className="sort-button" onClick={() => toggleSort("implementation_year")}>实施年份 {sortLabel("implementation_year")}</button></th> : null}
-                      {showCompletionYearColumn ? <th className="year-column"><button className="sort-button" onClick={() => toggleSort("completion_year")}>完成年份 {sortLabel("completion_year")}</button></th> : null}
-                      {stageColumns.map((column) => {
-                        const active = columnBatchTarget?.kind === column.kind && columnBatchTarget.key === column.key;
-                        const available = Boolean(columnTargetFor(column));
-                        return <th key={`${column.kind}:${column.key}`} className={`${active ? "column-batch-header" : ""} ${column.kind === "external_constraint" ? "stage-constraint-header" : "stage-item-header"}`}><button type="button" className="stage-column-heading" disabled={!available} aria-label={`单击手动选择“${column.label}”列，双击全选实例`} onClick={() => queueColumnBatchSelection(column)} onDoubleClick={() => selectAllColumnBatch(column)} onKeyDown={(event) => { if ((event.key === "Enter" || event.key === " ") && event.shiftKey) { event.preventDefault(); selectAllColumnBatch(column); } }}>{column.label}</button></th>;
-                      })}
-                      {showContractProgressColumn ? <th className="contract-progress-column">合同进度</th> : null}
-                      <th className="department-column">
-                        <button className="sort-button" onClick={() => toggleSort("department")}>
-                          部门 / 负责人 {sortLabel("department")}
-                        </button>
-                      </th>
-                      <th className="budget-column">预算</th>
-                      {activeGroup !== "pre_establish" && activeGroup !== "pool_pending" && !showRemoved ? <th className="budget-column">正式分配</th> : null}
-                      {!showCompletionYearColumn ? <th className="updated-date">
-                        <button className="sort-button" onClick={() => toggleSort("latest_activity_at")}>
-                          最新动态 {sortLabel("latest_activity_at")}
-                        </button>
-                      </th> : null}
-                      </>}
+                      {tableView === "overview" ? overviewColumns.map(overviewTableHeader) : stageLayout.flatMap((column) => column === "stage_group" ? stageGroupHeaders() : overviewTableHeader(column))}
                     </tr>
                   </thead>
                   <tbody>
@@ -1725,36 +1794,11 @@ function DashboardPage() {
                             <div className="project-cell">
                               {showRemoved ? <strong title={project.name}>{project.name}</strong> : <Link className="project-link" title={project.name} to={`/projects/${project.id}`}>{project.name}</Link>}
                               <span>{project.project_code}</span>
-                              {activeGroup !== "pre_establish" ? <small>{project.project_summary_display || "未分类"}</small> : null}
+                              <small>{project.project_summary_display || "未分类"}</small>
                               {showRemoved ? <button className="text-button" onClick={() => setRestoreTarget(project)}>恢复项目</button> : null}
                             </div>
                           </td>
-                          {tableView === "overview" ? overviewContextColumns.map((column) => overviewTableCell(project, column)) : <>
-                          <td><div className="stage-cell"><strong>{project.stage || "未归属"}</strong>{project.advancement?.status === "special_active" ? <small className="special-advancement">特批推进中</small> : null}</div></td>
-                          {activeGroup !== "pre_establish" && !showRemoved ? <td className="document-column">{project.establishment_document_no || "—"}</td> : null}
-                          {showImplementationYearColumn ? <td className="year-column">{project.implementation_year ?? "未记录"}</td> : null}
-                          {showCompletionYearColumn ? <td className="year-column">{project.actual_end_date?.slice(0, 4) || "未记录"}</td> : null}
-                          {stageColumns.map((column) => {
-                            const columnSelected = Boolean(selected && columnBatchTarget?.kind === column.kind && columnBatchTarget.key === column.key && columnBatchTarget.instances[project.id]);
-                            return <td key={`${column.kind}:${column.key}`} className={columnSelected ? "column-batch-cell" : ""}><StageItemCell project={project} column={column} highlighted={columnSelected} onWorkItemSelect={(itemId) => void openQuickItem(project.id, itemId)} onConstraintSelect={(constraintId) => void openQuickConstraint(project.id, constraintId)} onActivitySelect={(activityId) => void openWorkItemActivity(activityId, "stage")} /></td>;
-                          })}
-                          {showContractProgressColumn ? <td className="contract-progress-column"><ContractSummaryCell project={project} onOpenCollection={() => openContractPanel(project)} onOpenContract={(contractId) => openContractPanel(project, contractId)} colorForContract={contractColorFor} /></td> : null}
-                          <td className="department-column">
-                            <div className="stacked">
-                              <span>{project.department || "未录入部门"}</span>
-                              <small>{project.project_manager || "未录入负责人"}</small>
-                            </div>
-                          </td>
-                          <td className="budget-column">
-                            <div className="stacked">
-                              <span>有效 {project.effective_budget == null ? "未记录" : `${formatCurrency(project.effective_budget)} 万`}</span>
-                              <small>初始 {project.budget == null ? "未记录" : `${formatCurrency(project.budget)} 万`}</small>
-                              <small>{project.effective_budget_source === "budget_constraint" ? "来源：预算核定" : project.effective_budget_source === "historical_review" ? "来源：历史审核" : project.effective_budget_source === "initial_budget" ? "来源：初始预算" : "来源：未记录"}</small>
-                            </div>
-                          </td>
-                          {activeGroup !== "pre_establish" && activeGroup !== "pool_pending" && !showRemoved ? <td className="budget-column">{project.formal_allocation_total == null ? "暂未确定" : `${formatCurrency(project.formal_allocation_total)} 万`}</td> : null}
-                          {!showCompletionYearColumn ? <td className="updated-date">{formatDate(project.latest_activity_at)}</td> : null}
-                          </>}
+                          {tableView === "overview" ? overviewColumns.map((column) => overviewTableCell(project, column)) : stageLayout.flatMap((column) => column === "stage_group" ? stageGroupCells(project, selected) : overviewTableCell(project, column))}
                         </tr>
                       );
                     })}

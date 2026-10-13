@@ -1,5 +1,6 @@
 node_modules
 dist
+.column-layout-test-dist/
 *.tsbuildinfo
 .DS_Store
 *.swp

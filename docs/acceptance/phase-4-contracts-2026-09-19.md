@@ -44,6 +44,16 @@
 | Build | `npm.cmd --prefix frontend run build`：PASS。 |
 | Browser | NOT_RUN（部分只读验证）。已在真实浏览器观察阶段跟踪与总览均使用“集合入口 + mini bar”摘要；点击 mini bar 可直达对应合同办理并返回合同列表，集合入口具备明确可访问名称。尚未用隔离数据完成集合入口完整列表切换、空白单元格行选择、共享色/三种付款填充、窄屏换行及写入后刷新持久化，故不升级为 PASS。 |
 
+## 2026-10-13 共享基础列与阶段跟踪列组
+
+| 字段 | 内容 |
+| --- | --- |
+| 需求/验收版本 | REQ-UI-003@v15、REQ-UI-004@v11；AC-019、AC-020、REG-UI-001 |
+| 前端单元 | `npm.cmd --prefix frontend run test:columns`：PASS（3 passed）。覆盖共享顺序过滤、阶段组锚点与隐藏列不被重排。 |
+| Build | `npm.cmd --prefix frontend run build`：PASS。 |
+| 文档 | `python scripts/check_docs_governance.py --root .`：PASS；`python -m pytest tests/test_docs_governance.py -q`：PASS（26 passed）。 |
+| Browser | NOT_RUN（部分验证）。已观察未立项项目名称格显示结构化摘要；总览显示列面板显示基础列手柄和开关；阶段跟踪面板显示可独立移动的“阶段跟踪列组”及现有事项/约束管理区。实际取消总览“项目概括”列并刷新后该列保持隐藏，恢复勾选并刷新后恢复显示。尚未在浏览器实际拖拽基础列/列组、验证跨视图同步顺序或完成窄屏回归，故不升级为 PASS。 |
+
 ## 已执行证据
 
 | 验证层 | 命令/步骤 | 结果 | 证据 |
