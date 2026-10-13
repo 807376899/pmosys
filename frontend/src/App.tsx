@@ -105,6 +105,20 @@ function ContractCell({ project, onOpen }: { project: Project; onOpen: () => voi
   return <button type="button" className="text-button contract-summary-link" onClick={(event) => { event.stopPropagation(); onOpen(); }}>{summary.contracts?.length ? summary.contracts.map((contract) => <span key={contract.id}>{contract.contract_no} · {contract.name} · {({ not_started: "未开始", performing: "履约中", completed: "已完成", terminated: "已解除", paused: "暂停" }[contract.status])}</span>) : summary.label}</button>;
 }
 
+const CONTRACT_BAR_COLORS = ["#2563a6", "#9b4d1d", "#087c78", "#7955a4", "#a04350", "#57722d"];
+const contractBarColor = (id: number) => CONTRACT_BAR_COLORS[id % CONTRACT_BAR_COLORS.length];
+
+function ContractProgressCell({ project, onOpen }: { project: Project; onOpen: (contractId: number) => void }) {
+  const contracts = project.contract_summary?.contracts ?? [];
+  if (!contracts.length) return <span className="muted-copy">—</span>;
+  return <div className="contract-progress-bars" aria-label={`${project.name}的合同进度`}>
+    {contracts.map((contract) => {
+      const label = `${contract.contract_no} · ${contract.name}｜${contract.supplier || "未填写供应商"}｜合同金额 ${contract.total_amount == null ? "未记录" : `${formatCurrency(contract.total_amount)} 万`}｜${({ unpaid: "未支付", partial: "部分支付", paid: "已全部支付" }[contract.payment_status])}｜关联 ${contract.project_count} 个项目`;
+      return <button type="button" key={contract.id} title={label} aria-label={label} className={`contract-mini-bar payment-${contract.payment_status}`} style={{ "--contract-color": contractBarColor(contract.id) } as CSSProperties} onClick={(event) => { event.stopPropagation(); onOpen(contract.id); }} />;
+    })}
+  </div>;
+}
+
 const workItemStageFacts = (item: NonNullable<Project["work_item_column_states"]>[number]) => {
   if (item.status === "completed") return [workStatusLabel(item.status), item.completed_on ? `完成：${item.completed_on}` : "未记录完成日期", item.completion_result || item.completion_note || ""];
   if (["in_progress", "paused"].includes(item.status)) return [workStatusLabel(item.status), item.started_on ? `开始：${item.started_on}` : "未记录开始日期", ""];
@@ -588,6 +602,7 @@ function DashboardPage() {
     [activeGroup, groups, activeTemplates, activeConstraintTemplates],
   );
   const stageColumns = visibleColumnsByStage[activeGroup] ?? recommendedColumns;
+  const showContractProgressColumn = !showRemoved && (activeGroup === "pool_active" || activeGroup === "completed");
   const stageStaticColumnCount = 1
     + (activeGroup !== "pre_establish" && !showRemoved ? 1 : 0)
     + (showImplementationYearColumn ? 1 : 0)
@@ -595,6 +610,7 @@ function DashboardPage() {
     + 1 // department
     + 1 // budget
     + (activeGroup !== "pre_establish" && activeGroup !== "pool_pending" && !showRemoved ? 1 : 0)
+    + (showContractProgressColumn ? 1 : 0)
     + (activeGroup !== "completed" ? 1 : 0); // latest activity
   const tableColumnCount = 2 + (tableView === "overview" ? overviewContextColumns.length : stageStaticColumnCount + stageColumns.length);
 
@@ -1003,11 +1019,11 @@ function DashboardPage() {
     await loadDashboard();
   }
 
-  function openContractPanel(project: Project) {
+  function openContractPanel(project: Project, contractId?: number) {
     const eligibleSelected = selectedProjects.filter((entry) => entry.stage === "项目库—推进中").map((entry) => entry.id);
     const projectIds = eligibleSelected.length ? eligibleSelected : project.stage === "项目库—推进中" ? [project.id] : [];
     setQuickItem(null); setQuickConstraint(null); setQuickConstraintList(null);
-    setContractPanel({ projectId: project.id, projectIds, contextProject: project }); setRailExpanded(true);
+    setContractPanel({ projectId: project.id, projectIds, contractId, contextProject: project }); setRailExpanded(true);
   }
 
   async function restoreProject() {
@@ -1668,6 +1684,7 @@ function DashboardPage() {
                         const available = Boolean(columnTargetFor(column));
                         return <th key={`${column.kind}:${column.key}`} className={`${active ? "column-batch-header" : ""} ${column.kind === "external_constraint" ? "stage-constraint-header" : "stage-item-header"}`}><button type="button" className="stage-column-heading" disabled={!available} aria-label={`单击手动选择“${column.label}”列，双击全选实例`} onClick={() => queueColumnBatchSelection(column)} onDoubleClick={() => selectAllColumnBatch(column)} onKeyDown={(event) => { if ((event.key === "Enter" || event.key === " ") && event.shiftKey) { event.preventDefault(); selectAllColumnBatch(column); } }}>{column.label}</button></th>;
                       })}
+                      {showContractProgressColumn ? <th className="contract-progress-column">合同进度</th> : null}
                       <th className="department-column">
                         <button className="sort-button" onClick={() => toggleSort("department")}>
                           部门 / 负责人 {sortLabel("department")}
@@ -1716,6 +1733,7 @@ function DashboardPage() {
                             const columnSelected = Boolean(selected && columnBatchTarget?.kind === column.kind && columnBatchTarget.key === column.key && columnBatchTarget.instances[project.id]);
                             return <td key={`${column.kind}:${column.key}`} className={columnSelected ? "column-batch-cell" : ""}><StageItemCell project={project} column={column} highlighted={columnSelected} onWorkItemSelect={(itemId) => void openQuickItem(project.id, itemId)} onConstraintSelect={(constraintId) => void openQuickConstraint(project.id, constraintId)} onActivitySelect={(activityId) => void openWorkItemActivity(activityId, "stage")} /></td>;
                           })}
+                          {showContractProgressColumn ? <td className="contract-progress-column"><ContractProgressCell project={project} onOpen={(contractId) => openContractPanel(project, contractId)} /></td> : null}
                           <td className="department-column">
                             <div className="stacked">
                               <span>{project.department || "未录入部门"}</span>

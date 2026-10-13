@@ -4,8 +4,10 @@ from fastapi import APIRouter, Body, Query
 
 from backend.app.services.contracts import (
     create_contract,
+    create_contract_payment_record,
     create_contract_progress_log,
     delete_contract_progress_log,
+    delete_contract_payment_record,
     get_contract,
     get_contract_progress_logs,
     list_project_contracts,
@@ -13,6 +15,7 @@ from backend.app.services.contracts import (
     search_contracts,
     supplier_suggestions,
     update_contract,
+    update_contract_payment_record,
     update_contract_progress_log,
     update_contract_projects,
 )
@@ -76,6 +79,21 @@ def remove_progress(contract_id: int, log_id: int, payload: dict = Body(...)):
 @router.post("/{contract_id}/acceptance-records")
 def add_acceptance(contract_id: int, payload: dict = Body(...)):
     return record_contract_acceptance(contract_id, payload)
+
+
+@router.post("/{contract_id}/payment-records")
+def add_payment(contract_id: int, payload: dict = Body(...)):
+    return create_contract_payment_record(contract_id, payload)
+
+
+@router.patch("/{contract_id}/payment-records/{payment_id}")
+def patch_payment(contract_id: int, payment_id: int, payload: dict = Body(...)):
+    return update_contract_payment_record(contract_id, payment_id, payload)
+
+
+@router.delete("/{contract_id}/payment-records/{payment_id}")
+def remove_payment(contract_id: int, payment_id: int):
+    return delete_contract_payment_record(contract_id, payment_id)
 
 
 @project_router.get("/{project_id}/contracts")

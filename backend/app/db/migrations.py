@@ -349,6 +349,19 @@ def init_database(conn: sqlite3.Connection) -> None:
         )"""
     )
     conn.execute(
+        """CREATE TABLE IF NOT EXISTS contract_payment_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        contract_id INTEGER NOT NULL REFERENCES contracts(id) ON DELETE RESTRICT,
+        amount REAL,
+        amount_decimal TEXT,
+        paid_on TEXT NOT NULL,
+        note TEXT DEFAULT '',
+        created_at TEXT DEFAULT (datetime('now','localtime')),
+        updated_at TEXT DEFAULT (datetime('now','localtime')),
+        deleted_at TEXT
+        )"""
+    )
+    conn.execute(
         """CREATE TABLE IF NOT EXISTS contract_audit_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         contract_id INTEGER NOT NULL REFERENCES contracts(id) ON DELETE RESTRICT,
@@ -362,6 +375,7 @@ def init_database(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_contract_projects_project ON contract_projects(project_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_contract_progress_contract ON contract_progress_logs(contract_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_contract_acceptance_contract ON contract_acceptance_records(contract_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_contract_payment_contract ON contract_payment_records(contract_id)")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS annual_advancement_drafts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -761,6 +775,7 @@ def ensure_project_schema(conn: sqlite3.Connection) -> None:
         "annual_advancement_draft_members": ("planned_new_amount_decimal",),
         "contracts": ("total_amount_decimal",),
         "contract_projects": ("allocated_amount_decimal",),
+        "contract_payment_records": ("amount_decimal",),
     }.items():
         for column in columns:
             if not column_exists(conn, table, column):

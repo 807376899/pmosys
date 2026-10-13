@@ -11,10 +11,12 @@ import {
 import type {
   Contract,
   ContractAcceptanceRecord,
+  ContractPaymentRecord,
   ContractProgressLog,
   Project,
   ProjectListResponse,
 } from "./types";
+import { formatCurrency } from "./lib/format";
 
 const today = () => new Date().toISOString().slice(0, 10);
 const contractStatus: Record<Contract["status"], string> = {
@@ -29,6 +31,11 @@ const acceptanceStatus: Record<Contract["acceptance_status"], string> = {
   accepting: "验收中",
   needs_rectification: "待整改",
   accepted: "验收通过",
+};
+const paymentStatus: Record<Contract["payment_status"], string> = {
+  unpaid: "未支付",
+  partial: "部分支付",
+  paid: "已全部支付",
 };
 
 type FormState = {
@@ -118,6 +125,8 @@ export default function ContractPanel({
     note: string;
   }>({ status: "accepting", date: today(), result: "", note: "" });
   const [relationReason, setRelationReason] = useState("");
+  const [payment, setPayment] = useState({ amount: "", paid_on: today(), note: "" });
+  const [editingPayment, setEditingPayment] = useState<ContractPaymentRecord | null>(null);
   const [error, setError] = useState("");
   const [feedback, setFeedback] = useState("");
   const [editing, setEditing] = useState(!defaultReadOnly);
@@ -429,6 +438,31 @@ export default function ContractPanel({
     }
   }
 
+  async function savePayment() {
+    if (!contract) return;
+    try {
+      const payload = { amount: payment.amount, paid_on: payment.paid_on, note: payment.note };
+      const updated = editingPayment
+        ? await apiPatch<Contract>(`/contracts/${contract.id}/payment-records/${editingPayment.id}`, payload)
+        : await apiPost<Contract>(`/contracts/${contract.id}/payment-records`, payload);
+      setPayment({ amount: "", paid_on: today(), note: "" });
+      setEditingPayment(null);
+      await refresh(updated, editingPayment ? "付款记录已更正。" : "付款记录已登记。");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "付款记录保存失败");
+    }
+  }
+
+  async function removePayment(paymentId: number) {
+    if (!contract) return;
+    try {
+      const updated = await apiDelete<Contract>(`/contracts/${contract.id}/payment-records/${paymentId}`);
+      await refresh(updated, "付款记录已删除。");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "付款记录删除失败");
+    }
+  }
+
   async function openExistingContracts() {
     try {
       setAllContracts(await apiGet<Contract[]>("/contracts"));
@@ -670,6 +704,33 @@ export default function ContractPanel({
           </div>
         </div>
       ) : null}
+      {mode === "detail" && contract ? (
+        <section className="contract-payments">
+          <h4>付款记录</h4>
+          <div className="detail-grid">
+            <div className="detail-field"><span>支付状态</span><strong>{paymentStatus[contract.payment_status]}</strong></div>
+            <div className="detail-field"><span>累计付款</span><strong>{formatCurrency(contract.paid_total)} 万</strong></div>
+            <div className="detail-field"><span>待付款</span><strong>{contract.remaining_amount == null ? "待录入合同金额" : `${formatCurrency(contract.remaining_amount)} 万`}</strong></div>
+          </div>
+          <div className="progress-list">
+            {(contract.payment_records || []).map((item) => (
+              <div className="progress-entry" key={item.id}>
+                <span>{item.paid_on} · {formatCurrency(item.amount)} 万{item.note ? ` · ${item.note}` : ""}</span>
+                <button type="button" className="text-button" onClick={() => { setEditingPayment(item); setPayment({ amount: item.amount, paid_on: item.paid_on, note: item.note }); }}>更正</button>
+                <button type="button" className="text-button danger" onClick={() => void removePayment(item.id)}>删除</button>
+              </div>
+            ))}
+            {!contract.payment_records?.length ? <span className="muted-copy">尚未登记付款。</span> : null}
+          </div>
+          {contract.status !== "terminated" ? <div className="inline-form contract-payment-form">
+            <input className="input" inputMode="decimal" value={payment.amount} onChange={(event) => setPayment({ ...payment, amount: event.target.value })} placeholder="付款金额（万元）" />
+            <input className="input" type="date" value={payment.paid_on} onChange={(event) => setPayment({ ...payment, paid_on: event.target.value })} />
+            <input className="input" value={payment.note} onChange={(event) => setPayment({ ...payment, note: event.target.value })} placeholder="说明（可选）" />
+            {editingPayment ? <button type="button" className="mini-button" onClick={() => { setEditingPayment(null); setPayment({ amount: "", paid_on: today(), note: "" }); }}>取消</button> : null}
+            <button type="button" className="mini-button active" onClick={() => void savePayment()}>{editingPayment ? "保存更正" : "登记付款"}</button>
+          </div> : null}
+        </section>
+      ) : null}
       {mode === "create" || (mode === "detail" && editing) ? (
         <>
           <div className="field-grid">
@@ -750,27 +811,19 @@ export default function ContractPanel({
           </div>
           <label className="field">
             <span>当前状态</span>
+            {form.status === "completed" ? <strong className="readonly-value">已完成（验收通过且已全部支付）</strong> :
             <select
               className="select"
               value={form.status}
-              onChange={(event) => {
-                const status = event.target.value as Contract["status"];
-                setForm({ ...form, status });
-                if (status === "completed" && form.status !== "completed")
-                  setAcceptance({
-                    status: "accepted",
-                    date: today(),
-                    result: "验收通过",
-                    note: "",
-                  });
-              }}
+              onChange={(event) => setForm({ ...form, status: event.target.value as Contract["status"] })}
             >
-              {Object.entries(contractStatus).map(([key, label]) => (
+              {Object.entries(contractStatus).filter(([key]) => key !== "completed").map(([key, label]) => (
                 <option key={key} value={key}>
                   {label}
                 </option>
               ))}
             </select>
+            }
           </label>
           {form.status === "terminated" ? (
             <label className="field">

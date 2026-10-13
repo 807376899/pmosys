@@ -25,6 +25,16 @@
 | Build | `npm.cmd --prefix frontend run build`：PASS。 |
 | Browser | NOT_RUN（只读观察）。工作台已完成项目“暂无合同”点击后进入右侧合同列表；详情补录表单可见必填合同编号、补录原因及两个已完成项目的可选关联。为保护当前数据未提交表单，保存后返回列表与刷新持久化仍待隔离数据写入验证。 |
 
+## 2026-10-13 合同付款与阶段跟踪进度
+
+| 字段 | 内容 |
+| --- | --- |
+| 需求/验收版本 | REQ-GOV-001@v7、REQ-CONTRACT-002@v3、REQ-UI-004@v9、REQ-UI-005@v10、REQ-UI-006@v12；AC-001、AC-020、AC-021、AC-022、AC-030、AC-031、REG-UI-001 |
+| API | `./.venv/Scripts/python.exe -m pytest backend/tests/test_contracts.py -q`：PASS（8 passed）。覆盖无付款、部分付款、全额付款、日期/金额/上限校验、付款更正与软删除、验收通过且付清自动完成及条件回退。 |
+| Build | `npm.cmd --prefix frontend run build`：PASS。 |
+| Browser | NOT_RUN。本轮尚未以隔离浏览器库执行“付款登记/更正/删除→阶段跟踪 mini bar→刷新持久化”写入链路；API 和构建结果不能替代该证据。 |
+| 全量后端回归 | FAIL（150 passed, 1 failed）。`backend/tests/test_lifecycle_upgrade.py::test_pmo_override_and_submission_budget_return_to_library` 在旧“申报评审完成”路径的年度草案投影中读取已关闭 SQLite 连接；失败可独立复现，不涉及合同付款接口。该问题未在本轮范围内顺手修复。 |
+
 ## 已执行证据
 
 | 验证层 | 命令/步骤 | 结果 | 证据 |

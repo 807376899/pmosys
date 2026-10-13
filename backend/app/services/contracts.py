@@ -123,6 +123,50 @@ def _acceptance_records(conn: sqlite3.Connection, contract_id: int) -> list[dict
     ).fetchall()]
 
 
+def _payment_records(conn: sqlite3.Connection, contract_id: int) -> list[dict]:
+    rows = conn.execute(
+        """SELECT * FROM contract_payment_records
+           WHERE contract_id=? AND deleted_at IS NULL ORDER BY paid_on ASC,id ASC""",
+        (contract_id,),
+    ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["amount"] = preferred(item, "amount")
+        result.append(item)
+    return result
+
+
+def _payment_projection(conn: sqlite3.Connection, contract: dict) -> dict:
+    records = _payment_records(conn, contract["id"])
+    total_amount = preferred(contract, "total_amount")
+    paid_total = total(item["amount"] for item in records)
+    if not records:
+        payment_status = "unpaid"
+    elif total_amount is not None and decimal_of(paid_total) == decimal_of(total_amount):
+        payment_status = "paid"
+    else:
+        payment_status = "partial"
+    return {
+        "payment_records": records,
+        "paid_total": paid_total,
+        "remaining_amount": difference(total_amount, paid_total) if total_amount is not None else None,
+        "payment_status": payment_status,
+    }
+
+
+def _sync_contract_completion(conn: sqlite3.Connection, contract_id: int) -> None:
+    contract = _contract_row(conn, contract_id)
+    if contract["status"] == "terminated":
+        return
+    payment = _payment_projection(conn, contract)
+    is_complete = contract["acceptance_status"] == "accepted" and payment["payment_status"] == "paid"
+    if is_complete and contract["status"] != "completed":
+        conn.execute("UPDATE contracts SET status='completed',updated_at=? WHERE id=?", (_now(), contract_id))
+    elif not is_complete and contract["status"] == "completed":
+        conn.execute("UPDATE contracts SET status='performing',updated_at=? WHERE id=?", (_now(), contract_id))
+
+
 def _serialize_contract(conn: sqlite3.Connection, contract: dict, *, include_history: bool = False) -> dict:
     latest_progress = _latest_progress(conn, contract["id"])
     projects = _linked_projects(conn, contract["id"])
@@ -132,6 +176,7 @@ def _serialize_contract(conn: sqlite3.Connection, contract: dict, *, include_his
     allocated = [item["allocated_amount"] for item in projects]
     allocation_complete = bool(projects) and all(amount is not None for amount in allocated)
     allocation_total = total(amount for amount in allocated if amount is not None)
+    payment = _payment_projection(conn, contract)
     result = {
         **contract,
         "projects": projects,
@@ -139,14 +184,18 @@ def _serialize_contract(conn: sqlite3.Connection, contract: dict, *, include_his
         "allocation_complete": allocation_complete,
         "allocation_total": allocation_total,
         "allocation_difference": None if contract["total_amount"] is None or not allocation_complete else difference(contract["total_amount"], allocation_total),
+        "paid_total": payment["paid_total"],
+        "remaining_amount": payment["remaining_amount"],
+        "payment_status": payment["payment_status"],
     }
     if include_history:
         result["progress_logs"] = get_contract_progress_logs_for_connection(conn, contract["id"])
         result["acceptance_records"] = _acceptance_records(conn, contract["id"])
+        result["payment_records"] = payment["payment_records"]
     return result
 
 
-def _contract_summary(rows: list[dict]) -> dict:
+def _contract_summary(conn: sqlite3.Connection, rows: list[dict]) -> dict:
     count = len(rows)
     if not count:
         return {"count": 0, "label": "暂无合同", "performing_count": 0, "pending_acceptance_count": 0, "contracts": []}
@@ -176,7 +225,12 @@ def _contract_summary(rows: list[dict]) -> dict:
         "performing_count": performing,
         "pending_acceptance_count": pending,
         "contracts": [
-            {"id": row["id"], "contract_no": row["contract_no"], "name": row["name"], "status": row["status"]}
+            {
+                "id": row["id"], "contract_no": row["contract_no"], "name": row["name"], "status": row["status"],
+                "supplier": row["supplier"], "total_amount": preferred(row, "total_amount"),
+                "payment_status": _payment_projection(conn, row)["payment_status"],
+                "project_count": len(_linked_projects(conn, row["id"])),
+            }
             for row in rows
         ],
     }
@@ -188,7 +242,7 @@ def project_contract_projection(conn: sqlite3.Connection, project_id: int, *, in
            WHERE cp.project_id=? ORDER BY c.updated_at DESC,c.id DESC""",
         (project_id,),
     ).fetchall()]
-    result = {"contract_summary": _contract_summary(rows)}
+    result = {"contract_summary": _contract_summary(conn, rows)}
     if include_contracts:
         result["contracts"] = [_serialize_contract(conn, row) for row in rows]
     return result
@@ -222,6 +276,8 @@ def create_contract(payload: dict) -> dict:
     status = _text(payload.get("status")) or "not_started"
     if status not in CONTRACT_STATUSES:
         raise ValidationError("合同状态不合法")
+    if status == "completed":
+        raise ValidationError("合同完成由验收通过和付款完成自动决定")
     data = _contract_fields(payload, status)
     completion_acceptance = payload.get("completion_acceptance") or None
     if status == "completed" and (not isinstance(completion_acceptance, dict) or _text(completion_acceptance.get("acceptance_status")) != "accepted"):
@@ -244,6 +300,7 @@ def create_contract(payload: dict) -> dict:
             conn.execute("INSERT INTO contract_projects (contract_id,project_id,linked_by,allocated_amount,allocated_amount_decimal) VALUES (?,?,?,?,?)", (contract_id, project["id"], operator, legacy_number(amount), amount))
         if completion_acceptance:
             _record_contract_acceptance(conn, contract_id, completion_acceptance, operator)
+            _sync_contract_completion(conn, contract_id)
         event = "CONTRACT_HISTORICAL_CREATED" if history_correction else "CONTRACT_CREATED"
         _contract_audit(conn, contract_id, event, operator, reason=reason, payload={"project_ids": [project["id"] for project in projects], "allocations": allocations})
         _project_audit(conn, [project["id"] for project in projects], event, operator, reason=reason, payload={"contract_id": contract_id})
@@ -318,6 +375,8 @@ def update_contract(contract_id: int, payload: dict) -> dict:
         status = _text(payload.get("status")) or before["status"]
         if status not in CONTRACT_STATUSES:
             raise ValidationError("合同状态不合法")
+        if status == "completed" and before["status"] != "completed":
+            raise ValidationError("合同完成由验收通过和付款完成自动决定")
         merged = {**before, **{key: value for key, value in payload.items() if key in {"contract_no", "supplier", "total_amount", "signed_on", "planned_completion_on", "note"}}}
         data = _contract_fields(merged, status)
         _assert_contract_number_available(conn, data["contract_no"], contract_id)
@@ -328,10 +387,6 @@ def update_contract(contract_id: int, payload: dict) -> dict:
         if not name:
             raise ValidationError("合同名称不能为空")
         completion_acceptance = payload.get("completion_acceptance") or None
-        if status == "completed" and before["status"] != "completed":
-            accepted_inline = isinstance(completion_acceptance, dict) and _text(completion_acceptance.get("acceptance_status")) == "accepted"
-            if before["acceptance_status"] != "accepted" and not accepted_inline:
-                raise ValidationError("合同验收通过后才能标记为已完成")
         conn.execute(
             """UPDATE contracts SET name=?,contract_no=?,supplier=?,total_amount=?,total_amount_decimal=?,signed_on=?,planned_completion_on=?,note=?,status=?,updated_by=?,updated_at=? WHERE id=?""",
             (name, data["contract_no"], data["supplier"], legacy_number(data["total_amount"]), data["total_amount"], data["signed_on"], data["planned_completion_on"], data["note"], status, operator, _now(), contract_id),
@@ -339,6 +394,7 @@ def update_contract(contract_id: int, payload: dict) -> dict:
         projects = _linked_projects(conn, contract_id)
         if completion_acceptance:
             _record_contract_acceptance(conn, contract_id, completion_acceptance, operator)
+        _sync_contract_completion(conn, contract_id)
         event = "CONTRACT_STATUS_UPDATED" if status != before["status"] else "CONTRACT_UPDATED"
         _contract_audit(conn, contract_id, event, operator, reason=reason, payload={"before": before, "after": _contract_row(conn, contract_id)})
         _project_audit(conn, [project["id"] for project in projects], event, operator, reason=reason, payload={"contract_id": contract_id})
@@ -464,7 +520,74 @@ def record_contract_acceptance(contract_id: int, payload: dict) -> dict:
         contract = _contract_row(conn, contract_id)
         if contract["status"] not in {"performing", "completed"}:
             raise ValidationError("仅履约中合同可登记验收")
-        return _record_contract_acceptance(conn, contract_id, payload, operator)
+        record = _record_contract_acceptance(conn, contract_id, payload, operator)
+        _sync_contract_completion(conn, contract_id)
+        return record
+
+
+def _payment_input(payload: dict) -> tuple[str, str, str]:
+    amount = _amount(payload.get("amount"), "付款金额", required=True)
+    if decimal_of(amount) <= 0:
+        raise ValidationError("付款金额必须大于 0")
+    return amount, _date(payload.get("paid_on"), "付款日期", required=True), _text(payload.get("note"))
+
+
+def _assert_payment_allowed(conn: sqlite3.Connection, contract: dict, amount: str, *, excluding_id: int | None = None) -> None:
+    if contract["status"] == "terminated":
+        raise ValidationError("已解除合同不能登记付款")
+    total_amount = preferred(contract, "total_amount")
+    if total_amount is None:
+        raise ValidationError("请先填写合同总金额")
+    rows = _payment_records(conn, contract["id"])
+    paid_total = total(item["amount"] for item in rows if item["id"] != excluding_id)
+    if decimal_of(paid_total) + decimal_of(amount) > decimal_of(total_amount):
+        raise ValidationError("累计付款金额不能超过合同总金额")
+
+
+def create_contract_payment_record(contract_id: int, payload: dict) -> dict:
+    amount, paid_on, note = _payment_input(payload)
+    with get_connection() as conn:
+        contract = _contract_row(conn, contract_id)
+        _assert_payment_allowed(conn, contract, amount)
+        conn.execute(
+            "INSERT INTO contract_payment_records (contract_id,amount,amount_decimal,paid_on,note) VALUES (?,?,?,?,?)",
+            (contract_id, legacy_number(amount), amount, paid_on, note),
+        )
+        _sync_contract_completion(conn, contract_id)
+        return _serialize_contract(conn, _contract_row(conn, contract_id), include_history=True)
+
+
+def update_contract_payment_record(contract_id: int, payment_id: int, payload: dict) -> dict:
+    amount, paid_on, note = _payment_input(payload)
+    with get_connection() as conn:
+        contract = _contract_row(conn, contract_id)
+        row = conn.execute(
+            "SELECT id FROM contract_payment_records WHERE id=? AND contract_id=? AND deleted_at IS NULL",
+            (payment_id, contract_id),
+        ).fetchone()
+        if not row:
+            raise NotFoundError("付款记录不存在")
+        _assert_payment_allowed(conn, contract, amount, excluding_id=payment_id)
+        conn.execute(
+            "UPDATE contract_payment_records SET amount=?,amount_decimal=?,paid_on=?,note=?,updated_at=? WHERE id=?",
+            (legacy_number(amount), amount, paid_on, note, _now(), payment_id),
+        )
+        _sync_contract_completion(conn, contract_id)
+        return _serialize_contract(conn, _contract_row(conn, contract_id), include_history=True)
+
+
+def delete_contract_payment_record(contract_id: int, payment_id: int) -> dict:
+    with get_connection() as conn:
+        _contract_row(conn, contract_id)
+        row = conn.execute(
+            "SELECT id FROM contract_payment_records WHERE id=? AND contract_id=? AND deleted_at IS NULL",
+            (payment_id, contract_id),
+        ).fetchone()
+        if not row:
+            raise NotFoundError("付款记录不存在")
+        conn.execute("UPDATE contract_payment_records SET deleted_at=?,updated_at=? WHERE id=?", (_now(), _now(), payment_id))
+        _sync_contract_completion(conn, contract_id)
+        return _serialize_contract(conn, _contract_row(conn, contract_id), include_history=True)
 
 
 def supplier_suggestions(query: str = "") -> list[str]:

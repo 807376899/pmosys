@@ -67,7 +67,10 @@ def test_contract_summary_exposes_compact_contract_entries(client, create_projec
     assert response.status_code == 200
 
     project_row = next(item for item in client.get("/api/v1/projects", params={"page_size": 20}).json()["items"] if item["id"] == project["id"])
-    assert project_row["contract_summary"]["contracts"] == [{"id": response.json()["id"], "contract_no": "HT-2027-004", "name": "摘要合同", "status": "not_started"}]
+    summary_contract = project_row["contract_summary"]["contracts"][0]
+    assert summary_contract["id"] == response.json()["id"]
+    assert summary_contract["payment_status"] == "unpaid"
+    assert summary_contract["project_count"] == 1
 
 
 def test_contract_acceptance_history_and_project_link_correction(client, create_project_payload):
@@ -105,7 +108,9 @@ def test_contract_acceptance_history_and_project_link_correction(client, create_
     })
     assert second.status_code == 200
 
-    assert client.patch(f"/api/v1/contracts/{contract_id}", json={"status": "completed", "operator": "PMO"}).status_code == 200
+    paid = client.post(f"/api/v1/contracts/{contract_id}/payment-records", json={"amount": 100, "paid_on": "2027-06-20"})
+    assert paid.status_code == 200
+    assert paid.json()["status"] == "completed"
 
     detail = client.get(f"/api/v1/contracts/{contract_id}").json()
     assert detail["acceptance_status"] == "accepted"
@@ -139,9 +144,10 @@ def test_contract_allocations_acceptance_and_completion_gate(client, create_proj
         "acceptance_status": "accepted", "acceptance_date": "2027-06-10", "result": "验收通过", "operator": "PMO",
     })
     assert accepted.status_code == 200
-    completed = client.patch(f"/api/v1/contracts/{contract['id']}", json={"status": "completed", "operator": "PMO"})
-    assert completed.status_code == 200
-    assert completed.json()["acceptance_status"] == "accepted"
+    paid = client.post(f"/api/v1/contracts/{contract['id']}/payment-records", json={"amount": 100, "paid_on": "2027-06-20"})
+    assert paid.status_code == 200
+    assert paid.json()["acceptance_status"] == "accepted"
+    assert paid.json()["status"] == "completed"
 
 
 def test_completed_project_can_create_explicit_historical_contract(client, create_project_payload):
@@ -172,3 +178,55 @@ def test_historical_contract_can_link_multiple_completed_projects(client, create
 
     assert response.status_code == 200
     assert {project["id"] for project in response.json()["projects"]} == {first["id"], second["id"]}
+
+
+def test_contract_payments_drive_payment_projection_and_automatic_completion(client, create_project_payload):
+    project = _advancing_project(client, create_project_payload, name="付款合同项目")
+    created = client.post("/api/v1/contracts", json={
+        "name": "付款合同", "contract_no": "HT-2027-007", "supplier": "示例公司",
+        "total_amount": "12.5896", "signed_on": "2027-03-01", "status": "performing",
+        "project_ids": [project["id"]], "operator": "PMO",
+    })
+    assert created.status_code == 200
+    contract_id = created.json()["id"]
+    assert created.json()["payment_status"] == "unpaid"
+
+    partial = client.post(f"/api/v1/contracts/{contract_id}/payment-records", json={
+        "amount": "2.5896", "paid_on": "2027-04-01", "note": "首付款",
+    })
+    assert partial.status_code == 200
+    assert partial.json()["payment_status"] == "partial"
+    assert partial.json()["paid_total"] == "2.5896"
+    assert partial.json()["status"] == "performing"
+
+    accepted = client.post(f"/api/v1/contracts/{contract_id}/acceptance-records", json={
+        "acceptance_status": "accepted", "acceptance_date": "2027-06-10", "result": "验收通过", "operator": "PMO",
+    })
+    assert accepted.status_code == 200
+    assert client.get(f"/api/v1/contracts/{contract_id}").json()["status"] == "performing"
+
+    settled = client.post(f"/api/v1/contracts/{contract_id}/payment-records", json={
+        "amount": "10", "paid_on": "2027-06-20",
+    })
+    assert settled.status_code == 200
+    assert settled.json()["payment_status"] == "paid"
+    assert settled.json()["paid_total"] == "12.5896"
+    assert settled.json()["remaining_amount"] == "0"
+    assert settled.json()["status"] == "completed"
+
+    blocked = client.post(f"/api/v1/contracts/{contract_id}/payment-records", json={
+        "amount": "0.0001", "paid_on": "2027-06-21",
+    })
+    assert blocked.status_code == 422
+
+    corrected = client.patch(f"/api/v1/contracts/{contract_id}/payment-records/{settled.json()['payment_records'][-1]['id']}", json={
+        "amount": "9", "paid_on": "2027-06-20",
+    })
+    assert corrected.status_code == 200
+    assert corrected.json()["payment_status"] == "partial"
+    assert corrected.json()["status"] == "performing"
+
+    deleted = client.delete(f"/api/v1/contracts/{contract_id}/payment-records/{partial.json()['payment_records'][0]['id']}")
+    assert deleted.status_code == 200
+    assert deleted.json()["payment_status"] == "partial"
+    assert deleted.json()["paid_total"] == "9"

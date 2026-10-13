@@ -949,13 +949,16 @@ textarea {
 .contract-panel .panel-heading { display:flex; align-items:start; justify-content:space-between; gap:.75rem; }
 .contract-panel .panel-heading h3 { margin:0; font-size:1.2rem; }
 .contract-panel .panel-heading small { display:block; margin-top:.2rem; color:var(--muted); line-height:1.4; }
-.contract-list, .contract-link-list, .contract-follow-up, .contract-acceptance, .contract-readonly { display:grid; gap:.65rem; }
+.contract-list, .contract-link-list, .contract-follow-up, .contract-acceptance, .contract-readonly, .contract-payments { display:grid; gap:.65rem; }
 .contract-row { display:grid; gap:.2rem; width:100%; padding:.75rem; text-align:left; border:1px solid var(--line); background:rgba(255,252,246,.74); color:var(--ink); cursor:pointer; }
 .contract-row span, .contract-row small, .contract-row em { color:var(--muted); font-style:normal; }
 .contract-project-picker { display:grid; gap:.4rem; padding:.75rem; border:1px solid var(--line); }
 .contract-project-picker summary { cursor:pointer; font-weight:700; }
 .check-row { display:flex; gap:.45rem; align-items:start; }
 .contract-readonly > p { margin:.2rem 0; color:var(--muted); }
+.contract-payments { padding-top:.7rem; border-top:1px solid var(--line); }
+.contract-payments h4 { margin:0; }
+.contract-payment-form { grid-template-columns:minmax(7rem,1fr) auto minmax(9rem,1.2fr) auto; align-items:end; }
 .work-item-list { display:grid; gap:10px; }.work-item-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; align-items:start; padding:15px; border-left:4px solid var(--accent-cyan); background:rgba(255,252,246,.72); }.work-item-row.work-completed { border-left-color:var(--accent-green); opacity:.75; }.work-item-copy { display:grid; gap:5px; }.work-item-copy strong { font-size:1.05rem; }.work-item-copy small { color:var(--muted); }.work-item-copy p { margin:2px 0; line-height:1.55; }.work-item-copy em { color:var(--accent-gold); font-size:.82rem; font-style:normal; }.work-status { color:var(--accent-cyan); font-weight:600; }.work-completed .work-status { color:var(--accent-green); }.work-item-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:7px; }.work-item-edit,.reopen-row { grid-column:1/-1; display:grid; grid-template-columns:1fr 1fr auto; gap:8px; padding-top:10px; border-top:1px solid var(--line); }
 .stage-tracking-event { display:flex; flex-wrap:wrap; gap:4px 10px; align-items:baseline; padding:7px 11px; border-inline-start:3px solid var(--accent-gold); background:rgba(205,141,27,.07); font-size:.88rem; }.stage-tracking-event span { color:var(--muted); }.stage-tracking-event.stage-completed { border-inline-start-color:var(--accent-green); background:rgba(24,116,86,.06); }.stage-tracking-event.stage-abandoned { border-inline-start-color:var(--accent-red); background:rgba(170,66,49,.06); }
 .progress-log-panel { grid-column:1/-1; display:grid; gap:10px; padding:12px 0 0; border-top:1px solid var(--line); }.progress-log-compose { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:end; }.progress-log-compose .toggle { margin:0; }.progress-log-list { display:grid; gap:8px; }.progress-log-list article { padding:10px 12px; background:rgba(12,122,121,.055); border-left:2px solid var(--accent-cyan); }.progress-log-list p { margin:0 0 5px; line-height:1.5; }.progress-log-list small { color:var(--muted); }
@@ -1360,6 +1363,7 @@ textarea {
 .project-table .department-column { width: 168px; min-width: 168px; }
 .project-table .budget-column { width: 150px; min-width: 150px; white-space: nowrap; }
 .project-table .contract-column { width: 128px; min-width: 128px; }
+.project-table .contract-progress-column { width: 142px; min-width: 142px; }
 .project-table .summary-column { width: 176px; min-width: 176px; }
 .contract-add-link, .contract-summary-link { padding: 0; color: var(--accent-cyan); font-weight: 700; text-align: left; }
 .contract-summary-link { display: grid; gap: 3px; color: var(--ink); font-size: .84rem; font-weight: 600; line-height: 1.3; }
@@ -1387,6 +1391,11 @@ textarea {
 .column-batch-cell { background: rgba(12,122,121,.10); }
 .column-batch-cell .stage-business-cell, .stage-business-cell.column-batch-highlight { background: transparent; box-shadow: none; }
 .stage-business-cell.tone-complete strong { color: #173b5f; }
+.contract-progress-bars { display:flex; flex-wrap:wrap; gap:5px; min-height:20px; align-items:center; }
+.contract-mini-bar { --contract-color:#2563a6; inline-size:34px; block-size:12px; border:2px solid var(--contract-color); border-radius:2px; padding:0; background:transparent; cursor:pointer; }
+.contract-mini-bar.payment-partial { background:repeating-linear-gradient(135deg, color-mix(in srgb, var(--contract-color) 72%, transparent) 0 4px, transparent 4px 8px); }
+.contract-mini-bar.payment-paid { background:var(--contract-color); }
+.contract-mini-bar:hover, .contract-mini-bar:focus-visible { outline:2px solid var(--ink); outline-offset:2px; }
 .config-sort-list > div { grid-template-columns: auto minmax(0, 1fr) auto; cursor: grab; }
 .config-sort-list > div:active { cursor: grabbing; }
 .config-sort-list .drag-handle { color: var(--muted); }

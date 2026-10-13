@@ -121,12 +121,22 @@ export interface ContractAcceptanceRecord {
   created_at: string;
 }
 
+export interface ContractPaymentRecord {
+  id: number;
+  contract_id: number;
+  amount: string;
+  paid_on: string;
+  note: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ContractSummary {
   count: number;
   label: string;
   performing_count: number;
   pending_acceptance_count: number;
-  contracts: Array<Pick<Contract, "id" | "contract_no" | "name" | "status">>;
+  contracts: Array<Pick<Contract, "id" | "contract_no" | "name" | "status" | "supplier" | "total_amount" | "payment_status"> & { project_count: number }>;
 }
 
 export interface Contract {
@@ -147,6 +157,10 @@ export interface Contract {
   latest_progress?: ContractProgressLog | null;
   progress_logs?: ContractProgressLog[];
   acceptance_records?: ContractAcceptanceRecord[];
+  payment_records?: ContractPaymentRecord[];
+  paid_total?: string;
+  remaining_amount?: string | null;
+  payment_status: "unpaid" | "partial" | "paid";
 }
 
 export interface FundingArrangement {
