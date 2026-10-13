@@ -1365,9 +1365,7 @@ textarea {
 .project-table .contract-column { width: 128px; min-width: 128px; }
 .project-table .contract-progress-column { width: 142px; min-width: 142px; }
 .project-table .summary-column { width: 176px; min-width: 176px; }
-.contract-add-link, .contract-summary-link { padding: 0; color: var(--accent-cyan); font-weight: 700; text-align: left; }
-.contract-summary-link { display: grid; gap: 3px; color: var(--ink); font-size: .84rem; font-weight: 600; line-height: 1.3; }
-.contract-summary-link span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.contract-add-link { padding: 0; color: var(--accent-cyan); font-weight: 700; text-align: left; }
 .project-table .year-column { width: 104px; min-width: 104px; white-space: nowrap; }
 .project-table .updated-date { width: 116px; min-width: 116px; white-space: nowrap; }
 .table-select-all { border: 0; padding: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
@@ -1391,11 +1389,12 @@ textarea {
 .column-batch-cell { background: rgba(12,122,121,.10); }
 .column-batch-cell .stage-business-cell, .stage-business-cell.column-batch-highlight { background: transparent; box-shadow: none; }
 .stage-business-cell.tone-complete strong { color: #173b5f; }
-.contract-progress-bars { display:flex; flex-wrap:wrap; gap:5px; min-height:20px; align-items:center; }
+.contract-summary-cell { display:flex; flex-wrap:wrap; gap:5px; min-height:20px; align-items:center; }
+.contract-collection-entry { inline-size:22px; block-size:18px; display:grid; place-items:center; padding:0; border:1px solid var(--ink); border-radius:999px; background:rgba(255,252,246,.78); color:var(--ink); cursor:pointer; }
 .contract-mini-bar { --contract-color:#2563a6; inline-size:34px; block-size:12px; border:2px solid var(--contract-color); border-radius:2px; padding:0; background:transparent; cursor:pointer; }
 .contract-mini-bar.payment-partial { background:repeating-linear-gradient(135deg, color-mix(in srgb, var(--contract-color) 72%, transparent) 0 4px, transparent 4px 8px); }
 .contract-mini-bar.payment-paid { background:var(--contract-color); }
-.contract-mini-bar:hover, .contract-mini-bar:focus-visible { outline:2px solid var(--ink); outline-offset:2px; }
+.contract-collection-entry:hover, .contract-collection-entry:focus-visible, .contract-mini-bar:hover, .contract-mini-bar:focus-visible { outline:2px solid var(--ink); outline-offset:2px; }
 .config-sort-list > div { grid-template-columns: auto minmax(0, 1fr) auto; cursor: grab; }
 .config-sort-list > div:active { cursor: grabbing; }
 .config-sort-list .drag-handle { color: var(--muted); }

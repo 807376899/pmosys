@@ -196,6 +196,7 @@ def _serialize_contract(conn: sqlite3.Connection, contract: dict, *, include_his
 
 
 def _contract_summary(conn: sqlite3.Connection, rows: list[dict]) -> dict:
+    rows = sorted(rows, key=lambda row: ((row["contract_no"] or "").casefold(), row["id"]))
     count = len(rows)
     if not count:
         return {"count": 0, "label": "暂无合同", "performing_count": 0, "pending_acceptance_count": 0, "contracts": []}

@@ -7,6 +7,7 @@ import {
   FileDown,
   FileUp,
   Layers3,
+  List,
   LoaderCircle,
   PackagePlus,
   Plus,
@@ -95,26 +96,25 @@ const stageTone = (status: string, clearance?: string) => {
   return "neutral";
 };
 
-function ContractCell({ project, onOpen }: { project: Project; onOpen: () => void }) {
+const CONTRACT_BAR_COLORS = ["#2563a6", "#9b4d1d", "#087c78", "#7955a4", "#a04350", "#57722d"];
+const contractBarColor = (index: number) => CONTRACT_BAR_COLORS[index] ?? `hsl(${(index * 137.508) % 360} 58% 38%)`;
+
+function ContractSummaryCell({ project, onOpenCollection, onOpenContract, colorForContract }: {
+  project: Project;
+  onOpenCollection: () => void;
+  onOpenContract: (contractId: number) => void;
+  colorForContract: (contractId: number) => string;
+}) {
   const supported = project.stage === "项目库—推进中" || project.stage === "已完成";
   if (!supported) return <span className="muted-copy">—</span>;
-  const summary = project.contract_summary;
-  if (!summary?.count) {
-    return <button type="button" className="text-button contract-summary-link" onClick={(event) => { event.stopPropagation(); onOpen(); }}>暂无合同</button>;
-  }
-  return <button type="button" className="text-button contract-summary-link" onClick={(event) => { event.stopPropagation(); onOpen(); }}>{summary.contracts?.length ? summary.contracts.map((contract) => <span key={contract.id}>{contract.contract_no} · {contract.name} · {({ not_started: "未开始", performing: "履约中", completed: "已完成", terminated: "已解除", paused: "暂停" }[contract.status])}</span>) : summary.label}</button>;
-}
-
-const CONTRACT_BAR_COLORS = ["#2563a6", "#9b4d1d", "#087c78", "#7955a4", "#a04350", "#57722d"];
-const contractBarColor = (id: number) => CONTRACT_BAR_COLORS[id % CONTRACT_BAR_COLORS.length];
-
-function ContractProgressCell({ project, onOpen }: { project: Project; onOpen: (contractId: number) => void }) {
-  const contracts = project.contract_summary?.contracts ?? [];
-  if (!contracts.length) return <span className="muted-copy">—</span>;
-  return <div className="contract-progress-bars" aria-label={`${project.name}的合同进度`}>
+  const contracts = [...(project.contract_summary?.contracts ?? [])].sort((left, right) =>
+    (left.contract_no || "").localeCompare(right.contract_no || "", "zh-CN") || left.id - right.id,
+  );
+  return <div className="contract-summary-cell" aria-label={`${project.name}的合同摘要`}>
+    <button type="button" className="contract-collection-entry" title={contracts.length ? "查看项目全部合同" : "查看项目合同并添加合同"} aria-label={`${project.name}全部合同${contracts.length ? `，共${contracts.length}份` : "，暂无合同"}`} onClick={(event) => { event.stopPropagation(); onOpenCollection(); }}><List size={14} aria-hidden="true" /></button>
     {contracts.map((contract) => {
       const label = `${contract.contract_no} · ${contract.name}｜${contract.supplier || "未填写供应商"}｜合同金额 ${contract.total_amount == null ? "未记录" : `${formatCurrency(contract.total_amount)} 万`}｜${({ unpaid: "未支付", partial: "部分支付", paid: "已全部支付" }[contract.payment_status])}｜关联 ${contract.project_count} 个项目`;
-      return <button type="button" key={contract.id} title={label} aria-label={label} className={`contract-mini-bar payment-${contract.payment_status}`} style={{ "--contract-color": contractBarColor(contract.id) } as CSSProperties} onClick={(event) => { event.stopPropagation(); onOpen(contract.id); }} />;
+      return <button type="button" key={contract.id} title={label} aria-label={label} className={`contract-mini-bar payment-${contract.payment_status}`} style={{ "--contract-color": colorForContract(contract.id) } as CSSProperties} onClick={(event) => { event.stopPropagation(); onOpenContract(contract.id); }} />;
     })}
   </div>;
 }
@@ -603,6 +603,11 @@ function DashboardPage() {
   );
   const stageColumns = visibleColumnsByStage[activeGroup] ?? recommendedColumns;
   const showContractProgressColumn = !showRemoved && (activeGroup === "pool_active" || activeGroup === "completed");
+  const contractColorsById = useMemo(() => {
+    const ids = [...new Set(projects.flatMap((project) => project.contract_summary?.contracts?.map((contract) => contract.id) ?? []))].sort((left, right) => left - right);
+    return new Map(ids.map((id, index) => [id, contractBarColor(index)]));
+  }, [projects]);
+  const contractColorFor = (contractId: number) => contractColorsById.get(contractId) ?? CONTRACT_BAR_COLORS[0];
   const stageStaticColumnCount = 1
     + (activeGroup !== "pre_establish" && !showRemoved ? 1 : 0)
     + (showImplementationYearColumn ? 1 : 0)
@@ -914,7 +919,7 @@ function DashboardPage() {
     if (column === "budget") return <td key={column} className="budget-column"><div className="stacked"><span>有效 {project.effective_budget == null ? "未记录" : `${formatCurrency(project.effective_budget)} 万`}</span><small>初始 {project.budget == null ? "未记录" : `${formatCurrency(project.budget)} 万`}</small><small>{project.effective_budget_source === "budget_constraint" ? "来源：预算核定" : project.effective_budget_source === "historical_review" ? "来源：历史审核" : project.effective_budget_source === "initial_budget" ? "来源：初始预算" : "来源：未记录"}</small></div></td>;
     if (column === "summary") return <td key={column} className="summary-column">{activeGroup === "pre_establish" ? project.description || "未填写项目描述" : project.project_summary_display || "未分类"}</td>;
     if (column === "allocation") return <td key={column} className="budget-column">{project.formal_allocation_total == null ? "暂未确定" : `${formatCurrency(project.formal_allocation_total)} 万`}</td>;
-    if (column === "contract") return <td key={column} className="contract-column"><ContractCell project={project} onOpen={() => openContractPanel(project)} /></td>;
+    if (column === "contract") return <td key={column} className="contract-column"><ContractSummaryCell project={project} onOpenCollection={() => openContractPanel(project)} onOpenContract={(contractId) => openContractPanel(project, contractId)} colorForContract={contractColorFor} /></td>;
     if (column === "progress") return <td key={column} className="progress-column"><ProgressSituation project={project} onSelect={(itemId) => void openQuickItem(project.id, itemId)} onConstraintSelect={() => void openQuickConstraintList(project.id)} /></td>;
     return <td key={column} className="updated-date">{formatDate(project.latest_activity_at)}</td>;
   }
@@ -1733,7 +1738,7 @@ function DashboardPage() {
                             const columnSelected = Boolean(selected && columnBatchTarget?.kind === column.kind && columnBatchTarget.key === column.key && columnBatchTarget.instances[project.id]);
                             return <td key={`${column.kind}:${column.key}`} className={columnSelected ? "column-batch-cell" : ""}><StageItemCell project={project} column={column} highlighted={columnSelected} onWorkItemSelect={(itemId) => void openQuickItem(project.id, itemId)} onConstraintSelect={(constraintId) => void openQuickConstraint(project.id, constraintId)} onActivitySelect={(activityId) => void openWorkItemActivity(activityId, "stage")} /></td>;
                           })}
-                          {showContractProgressColumn ? <td className="contract-progress-column"><ContractProgressCell project={project} onOpen={(contractId) => openContractPanel(project, contractId)} /></td> : null}
+                          {showContractProgressColumn ? <td className="contract-progress-column"><ContractSummaryCell project={project} onOpenCollection={() => openContractPanel(project)} onOpenContract={(contractId) => openContractPanel(project, contractId)} colorForContract={contractColorFor} /></td> : null}
                           <td className="department-column">
                             <div className="stacked">
                               <span>{project.department || "未录入部门"}</span>

@@ -73,6 +73,20 @@ def test_contract_summary_exposes_compact_contract_entries(client, create_projec
     assert summary_contract["project_count"] == 1
 
 
+def test_contract_summary_lists_every_contract_in_contract_number_order(client, create_project_payload):
+    project = _advancing_project(client, create_project_payload, name="合同排序项目")
+    for number in ("HT-2027-020", "HT-2027-002", "HT-2027-011"):
+        response = client.post("/api/v1/contracts", json={
+            "name": f"{number} 合同", "contract_no": number, "project_ids": [project["id"]], "operator": "PMO",
+        })
+        assert response.status_code == 200
+
+    project_row = next(item for item in client.get("/api/v1/projects", params={"page_size": 20}).json()["items"] if item["id"] == project["id"])
+    assert [item["contract_no"] for item in project_row["contract_summary"]["contracts"]] == [
+        "HT-2027-002", "HT-2027-011", "HT-2027-020",
+    ]
+
+
 def test_contract_acceptance_history_and_project_link_correction(client, create_project_payload):
     active = _advancing_project(client, create_project_payload, name="履约项目")
     completed = client.post("/api/v1/projects", json=create_project_payload(name="完成项目", budget=100)).json()

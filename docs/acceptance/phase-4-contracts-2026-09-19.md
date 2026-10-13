@@ -35,6 +35,15 @@
 | Browser | NOT_RUN。本轮尚未以隔离浏览器库执行“付款登记/更正/删除→阶段跟踪 mini bar→刷新持久化”写入链路；API 和构建结果不能替代该证据。 |
 | 全量后端回归 | FAIL（150 passed, 1 failed）。`backend/tests/test_lifecycle_upgrade.py::test_pmo_override_and_submission_budget_return_to_library` 在旧“申报评审完成”路径的年度草案投影中读取已关闭 SQLite 连接；失败可独立复现，不涉及合同付款接口。该问题未在本轮范围内顺手修复。 |
 
+## 2026-10-13 合同摘要统一为 Mini Bar
+
+| 字段 | 内容 |
+| --- | --- |
+| 需求/验收版本 | REQ-UI-003@v14、REQ-UI-004@v10；AC-019、AC-020、REG-UI-001 |
+| API | `./.venv/Scripts/python.exe -m pytest backend/tests/test_contracts.py -q`：PASS（9 passed）。新增覆盖同项目摘要内全部合同按合同编号稳定排序。 |
+| Build | `npm.cmd --prefix frontend run build`：PASS。 |
+| Browser | NOT_RUN（部分只读验证）。已在真实浏览器观察阶段跟踪与总览均使用“集合入口 + mini bar”摘要；点击 mini bar 可直达对应合同办理并返回合同列表，集合入口具备明确可访问名称。尚未用隔离数据完成集合入口完整列表切换、空白单元格行选择、共享色/三种付款填充、窄屏换行及写入后刷新持久化，故不升级为 PASS。 |
+
 ## 已执行证据
 
 | 验证层 | 命令/步骤 | 结果 | 证据 |
