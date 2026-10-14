@@ -1677,7 +1677,7 @@ function DashboardPage() {
       <header className="hero">
         <div className="hero-copy">
           <p className="eyebrow">PMO WORKSPACE</p>
-          <h1>PMO 项目管理工作台</h1>
+          <h1>项目管理工作台</h1>
           <div className="hero-actions">
             <a className="action-button primary" href={buildExportUrl(exportQuery)} target="_blank" rel="noreferrer">
               <FileDown size={16} />

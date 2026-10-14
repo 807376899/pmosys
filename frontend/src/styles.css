@@ -256,7 +256,9 @@ textarea {
 .dashboard-notices .notice { margin-top: 0; }
 
 .workspace {
-  --workbench-height: clamp(30rem, calc(100dvh - 16rem), 38rem);
+  --project-list-height: clamp(40rem, calc(100dvh - 17rem), 62rem);
+  --status-strip-height: 164px;
+  --workbench-height: calc(var(--status-strip-height) + 24px + var(--project-list-height));
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-areas:
@@ -364,9 +366,7 @@ textarea {
 .board {
   display: flex;
   flex-direction: column;
-  block-size: var(--workbench-height);
-  min-block-size: 22rem;
-  max-block-size: 38rem;
+  block-size: var(--project-list-height);
   align-self: start;
 }
 
@@ -638,12 +638,10 @@ textarea {
 
 .control-rail {
   display: block;
-  align-self: end;
+  align-self: start;
   position: relative;
   min-width: 0;
   block-size: var(--workbench-height);
-  min-block-size: 22rem;
-  max-block-size: 38rem;
 }
 
 .operation-console { display: flex; flex-direction: column; width: 100%; max-width: 360px; height: 100%; min-height: 0; max-height: none; overflow: hidden; }
@@ -659,7 +657,7 @@ textarea {
 .rail-action-menu button { padding: 9px 10px; border: 0; background: transparent; color: var(--ink); text-align: left; cursor: pointer; white-space: nowrap; }
 .rail-action-menu button:hover { background: rgba(12,122,121,.08); }
 .rail-context-back { justify-self: start; }
-.rail-reopen { position: absolute; z-index: 6; top: calc(164px + 24px); right: 0; display: inline-flex; align-items: center; gap: 4px; padding: 8px; border: 1px solid var(--line); background: var(--paper-strong); color: var(--ink); box-shadow: 0 8px 20px rgba(31,30,26,.12); cursor: pointer; }
+.rail-reopen { position: absolute; z-index: 6; top: 0; right: 0; display: inline-flex; align-items: center; gap: 4px; padding: 8px; border: 1px solid var(--line); background: var(--paper-strong); color: var(--ink); box-shadow: 0 8px 20px rgba(31,30,26,.12); cursor: pointer; }
 .rail-reopen span { font-size: .76rem; }
 .operation-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
 .operation-tabs button { min-height: 34px; border: 1px solid var(--line); background: rgba(255,252,246,.54); color: var(--ink); font-size: .8rem; cursor: pointer; }
@@ -1527,7 +1525,7 @@ textarea {
   .control-rail {
     position: absolute;
     z-index: 20;
-    top: 188px;
+    top: 0;
     right: 0;
     width: min(360px, calc(100% - 32px));
     height: var(--workbench-height);
@@ -1556,7 +1554,8 @@ textarea {
     grid-template-columns: 1fr;
   }
 
-  .control-rail { position: absolute; z-index: 20; top: 188px; right: 0; width: min(360px, calc(100% - 20px)); height: var(--workbench-height); max-height: none; overflow: hidden; box-shadow: 0 18px 44px rgba(31,30,26,.2); }
+  .workspace { --status-strip-height: 152px; }
+  .control-rail { position: absolute; z-index: 20; top: 0; right: 0; width: min(360px, calc(100% - 20px)); height: var(--workbench-height); max-height: none; overflow: hidden; box-shadow: 0 18px 44px rgba(31,30,26,.2); }
   .detail-side { position: static; width: auto; max-height: none; }
 
   .main-stage { display: grid; }
@@ -1564,7 +1563,7 @@ textarea {
   .operation-console { position: static; width: 100%; max-width: none; max-height: none; }
   .operation-body { overflow-y: auto; }
   .rail-scrim { display: none; }
-  .rail-reopen { top: 170px; }
+  .rail-reopen { top: 0; }
 
   .hero-stats,
   .group-band {

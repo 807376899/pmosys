@@ -13,6 +13,7 @@
 - [2026-09-24 环境与启动依赖同步](environment-sync-2026-09-24.md)：记录依赖同步、启动修复与构建证据，以及导入模块两项定向测试失败。
 - [2026-10-08 Windows 应用控制策略启动修复](startup-application-control-2026-10-08.md)：记录 pandas 原生 DLL 被企业签名策略阻止后的替换、启动保护和定向验证。
 - [2026-10-14 工作台操作入口与右侧面板定向验证](workbench-operation-rail-2026-10-14.md)：记录条件式项目操作面板、基础配置上下文及菜单入口的定向证据；完整响应式矩阵仍待阶段回归。
+- [2026-10-14 工作台完整工作区与固定列表高度定向验证](workbench-layout-height-2026-10-14.md)：记录状态卡片对齐、固定列表高度与标题统一的宽屏证据；完整响应式矩阵仍待阶段回归。
 - [Phase 1历史执行](phase-1-regression.md)、[Phase 2历史执行](phase-2-external-constraint.md)、[视口历史执行](viewport-regression.md)：原事实保留，旧使用规则不再作为当前规范。
 - [本次文档整改结果](../requirements/governance-remediation-2026-09-11.md)：结构检查及只读保护证据，不是产品回归结果。
 
