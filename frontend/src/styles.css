@@ -1397,22 +1397,17 @@ textarea {
 /* Canonical workbench table and quick-handling layout.  Keep dimensions here
    so responsive corrections do not compete with older percentage widths. */
 .project-table-wrap { position: relative; width: 100%; max-width: 100%; overflow: auto; overscroll-behavior-inline: contain; }
-.project-table { width: max-content; min-width: 980px; table-layout: fixed; }
+.project-table { width: max-content; min-width: 0; table-layout: fixed; }
 .project-table th, .project-table td { overflow-wrap: normal; word-break: normal; }
 .project-table th:nth-child(1), .project-table td:nth-child(1) { width: 46px; min-width: 46px; max-width: 46px; }
-.project-table th:nth-child(2), .project-table td:nth-child(2) { width: 248px; min-width: 248px; }
-.project-table th:nth-child(3), .project-table td:nth-child(3) { width: 128px; min-width: 128px; white-space: nowrap; }
-.project-table .progress-column { width: 248px; min-width: 248px; }
-.project-table .department-column { width: 168px; min-width: 168px; }
-.project-table .budget-column { width: 150px; min-width: 150px; white-space: nowrap; }
-.project-table .contract-column { width: 128px; min-width: 128px; }
-.project-table .contract-progress-column { width: 142px; min-width: 142px; }
-.project-table .summary-column { width: 176px; min-width: 176px; }
+.project-table .budget-column, .project-table .year-column, .project-table .updated-date { white-space: nowrap; }
 .contract-add-link { padding: 0; color: var(--accent-cyan); font-weight: 700; text-align: left; }
-.project-table .year-column { width: 104px; min-width: 104px; white-space: nowrap; }
-.project-table .updated-date { width: 116px; min-width: 116px; white-space: nowrap; }
-.table-select-all { border: 0; padding: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
-.table-select-all:hover { color: var(--accent-cyan); }
+.table-select-all { display: grid; place-items: center; inline-size: 22px; block-size: 22px; padding: 0; border: 1px solid rgba(31, 30, 26, .4); border-radius: 3px; background: var(--paper-strong); color: var(--paper-strong); cursor: pointer; }
+.table-select-all span { inline-size: 11px; block-size: 6px; border-inline-start: 2px solid currentColor; border-block-end: 2px solid currentColor; transform: rotate(-45deg) translate(1px, -1px); opacity: 0; }
+.table-select-all[aria-checked="true"] { border-color: var(--accent-cyan); background: var(--accent-cyan); }
+.table-select-all[aria-checked="true"] span { opacity: 1; }
+.table-select-all:hover:not(:disabled) { border-color: var(--accent-cyan); }
+.table-select-all:disabled { cursor: not-allowed; opacity: .45; }
 .project-table th:nth-child(1), .project-table td:nth-child(1), .project-table th:nth-child(2), .project-table td:nth-child(2) { position: sticky; z-index: 3; background: var(--panel-strong); }
 .project-table thead th { position: sticky; top: 0; z-index: 5; background: var(--panel-strong); box-shadow: 0 1px 0 var(--line); }
 .project-table thead th:nth-child(1), .project-table thead th:nth-child(2) { z-index: 7; }
@@ -1422,7 +1417,10 @@ textarea {
 .project-cell { min-width: 0; }
 .project-cell strong, .project-link { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-height: 1.35; word-break: normal; overflow-wrap: break-word; }
 .project-cell span, .project-cell small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.stage-tracking-table th:not(:nth-child(-n+3)), .stage-tracking-table td:not(:nth-child(-n+3)) { min-width: 148px; width: 148px; }
+.project-table .resizable-column { position: sticky; }
+.column-resize-handle { position: absolute; inset-block: 0; inset-inline-end: -6px; z-index: 9; inline-size: 12px; cursor: col-resize; touch-action: none; user-select: none; }
+.column-resize-handle::after { position: absolute; inset-block: 20%; inset-inline-start: 5px; inline-size: 1px; background: transparent; content: ""; }
+.column-resize-handle:hover::after, .column-resize-handle:focus-visible::after { background: var(--accent-cyan); }
 .stage-column-heading { display: inline-flex; align-items: center; min-height: 34px; max-width: 100%; border: 0; padding: 4px 8px; background: transparent; color: inherit; font: inherit; font-weight: 600; line-height: 1.25; text-align: left; cursor: pointer; }
 .stage-item-header .stage-column-heading { color: var(--accent-cyan); }
 .stage-constraint-header .stage-column-heading { color: #705c8e; }

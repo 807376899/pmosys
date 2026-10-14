@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const { applySharedOrder, insertStageGroup, replaceVisibleOrder, stageLayoutForVisibleColumns } = await import("../.column-layout-test-dist/column-layout.js");
+const { applySharedOrder, clampColumnWidth, insertStageGroup, replaceVisibleOrder, resetViewColumnWidths, setViewColumnWidth, stageLayoutForVisibleColumns } = await import("../.column-layout-test-dist/column-layout.js");
 
 test("shared base order is applied without changing a view's visibility", () => {
   const order = applySharedOrder(["stage", "department", "budget", "contract"], ["budget", "contract"]);
@@ -29,4 +29,17 @@ test("reordering visible stage columns keeps hidden shared columns in place", ()
     ["stage", "contract", "department", "budget"],
   );
   assert.deepEqual(order, ["stage", "document", "contract", "department", "budget", "latest_activity"]);
+});
+
+test("column widths are isolated by view and persist by stable column key", () => {
+  const initial = { overview: {}, stage: {} };
+  const overview = setViewColumnWidth(initial, "overview", "base:budget", 236, 112);
+  const stage = setViewColumnWidth(overview, "stage", "work_item:review", 208, 148);
+  assert.deepEqual(stage, { overview: { "base:budget": 236 }, stage: { "work_item:review": 208 } });
+  assert.deepEqual(resetViewColumnWidths(stage, "overview"), { overview: {}, stage: { "work_item:review": 208 } });
+});
+
+test("column widths never shrink below their readable minimum", () => {
+  assert.equal(clampColumnWidth(76, 112), 112);
+  assert.equal(clampColumnWidth(236, 112), 236);
 });

@@ -28,3 +28,23 @@ export function stageGroupAnchorForLayout<T extends string>(layout: readonly (T 
   const index = layout.indexOf("stage_group");
   return index > 0 ? layout[index - 1] as T : null;
 }
+
+export type TableColumnWidths = Record<"overview" | "stage", Record<string, number>>;
+
+export function clampColumnWidth(width: number, minimum: number) {
+  return Math.max(minimum, Math.round(width));
+}
+
+export function setViewColumnWidth(
+  widths: TableColumnWidths,
+  view: keyof TableColumnWidths,
+  key: string,
+  width: number,
+  minimum: number,
+): TableColumnWidths {
+  return { ...widths, [view]: { ...widths[view], [key]: clampColumnWidth(width, minimum) } };
+}
+
+export function resetViewColumnWidths(widths: TableColumnWidths, view: keyof TableColumnWidths): TableColumnWidths {
+  return { ...widths, [view]: {} };
+}
