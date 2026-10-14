@@ -13,6 +13,7 @@ from backend.app.services.contracts import (
     list_project_contracts,
     record_contract_acceptance,
     search_contracts,
+    set_contract_exception,
     supplier_suggestions,
     update_contract,
     update_contract_payment_record,
@@ -48,6 +49,21 @@ def read(contract_id: int):
 @router.patch("/{contract_id}")
 def patch(contract_id: int, payload: dict = Body(...)):
     return update_contract(contract_id, payload)
+
+
+@router.post("/{contract_id}/pause")
+def pause(contract_id: int, payload: dict = Body(...)):
+    return set_contract_exception(contract_id, "pause", payload)
+
+
+@router.post("/{contract_id}/resume")
+def resume(contract_id: int, payload: dict = Body(...)):
+    return set_contract_exception(contract_id, "resume", payload)
+
+
+@router.post("/{contract_id}/terminate")
+def terminate(contract_id: int, payload: dict = Body(...)):
+    return set_contract_exception(contract_id, "terminate", payload)
 
 
 @router.put("/{contract_id}/projects")

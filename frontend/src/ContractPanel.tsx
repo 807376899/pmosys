@@ -20,9 +20,7 @@ import { formatCurrency } from "./lib/format";
 
 const today = () => new Date().toISOString().slice(0, 10);
 const contractStatus: Record<Contract["status"], string> = {
-  not_started: "未开始",
-  performing: "履约中",
-  completed: "已完成",
+  active: "正常",
   terminated: "已解除",
   paused: "暂停",
 };
@@ -37,6 +35,22 @@ const paymentStatus: Record<Contract["payment_status"], string> = {
   partial: "部分支付",
   paid: "已全部支付",
 };
+const deliveryLabel = (contract: Contract) => {
+  const schedule = contract.delivery_schedule;
+  if (schedule.kind === "delivered") return `已交付 · ${schedule.date}`;
+  if (schedule.kind === "upcoming") return `距计划交付 ${schedule.days} 天`;
+  if (schedule.kind === "due_today") return "计划今日交付";
+  if (schedule.kind === "overdue") return `逾期 ${schedule.days} 天`;
+  return "待补充签订日期与交付周期";
+};
+const deliveryCalendarLabel = (contract: Contract) => ({
+  holiday_calendar: "法定节假日日历",
+  weekday_fallback: "工作日仅排除周末",
+  calendar_days: "自然日",
+  calendar_weeks: "自然周",
+  calendar_months: "日历月",
+  calendar_years: "日历年",
+}[contract.delivery_schedule.calendar_source] || "系统日历");
 
 type FormState = {
   name: string;
@@ -45,9 +59,10 @@ type FormState = {
   total_amount: string;
   signed_on: string;
   planned_completion_on: string;
+  delivery_period_value: string;
+  delivery_period_unit: Exclude<Contract["delivery_period_unit"], null> | "";
+  actual_delivered_on: string;
   note: string;
-  status: Contract["status"];
-  reason: string;
 };
 const emptyForm = (): FormState => ({
   name: "",
@@ -56,9 +71,10 @@ const emptyForm = (): FormState => ({
   total_amount: "",
   signed_on: "",
   planned_completion_on: "",
+  delivery_period_value: "",
+  delivery_period_unit: "",
+  actual_delivered_on: "",
   note: "",
-  status: "not_started",
-  reason: "",
 });
 const toForm = (contract: Contract): FormState => ({
   name: contract.name,
@@ -68,9 +84,10 @@ const toForm = (contract: Contract): FormState => ({
     contract.total_amount == null ? "" : String(contract.total_amount),
   signed_on: contract.signed_on || "",
   planned_completion_on: contract.planned_completion_on || "",
+  delivery_period_value: contract.delivery_period_value == null ? "" : String(contract.delivery_period_value),
+  delivery_period_unit: contract.delivery_period_unit || "",
+  actual_delivered_on: contract.actual_delivered_on || "",
   note: contract.note,
-  status: contract.status,
-  reason: "",
 });
 
 export default function ContractPanel({
@@ -281,15 +298,7 @@ export default function ContractPanel({
         total_amount: form.total_amount || null,
         project_links: projectLinks(),
         history_correction: hasHistoricalSelection,
-        completion_acceptance:
-          form.status === "completed"
-            ? {
-                acceptance_status: acceptance.status,
-                acceptance_date: acceptance.date,
-                result: acceptance.result,
-                note: acceptance.note,
-              }
-            : undefined,
+        reason: historicalCreate ? relationReason : undefined,
         operator,
       });
       await refresh(created, "合同已创建。");
@@ -304,20 +313,23 @@ export default function ContractPanel({
       const updated = await apiPatch<Contract>(`/contracts/${contract.id}`, {
         ...form,
         total_amount: form.total_amount || null,
-        completion_acceptance:
-          form.status === "completed" && contract.status !== "completed"
-            ? {
-                acceptance_status: acceptance.status,
-                acceptance_date: acceptance.date,
-                result: acceptance.result,
-                note: acceptance.note,
-              }
-            : undefined,
         operator,
       });
       await refresh(updated, "合同已更新。");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "合同保存失败");
+    }
+  }
+
+  async function applyException(action: "pause" | "resume" | "terminate") {
+    if (!contract) return;
+    const reason = window.prompt(action === "pause" ? "暂停原因" : action === "terminate" ? "解除原因" : "") || "";
+    if (action !== "resume" && !reason.trim()) return;
+    try {
+      const updated = await apiPost<Contract>(`/contracts/${contract.id}/${action}`, { reason: reason.trim(), operator });
+      await refresh(updated, action === "pause" ? "合同已暂停。" : action === "resume" ? "合同已恢复。" : "合同已解除。");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "合同例外操作失败");
     }
   }
 
@@ -569,12 +581,7 @@ export default function ContractPanel({
                     {item.contract_no} · {item.name}
                   </strong>
                   <span>{item.supplier || "未填写供应商"}</span>
-                  <small>
-                    {contractStatus[item.status]} ·{" "}
-                    {item.planned_completion_on
-                      ? `计划 ${item.planned_completion_on}`
-                      : "未设置计划完成日期"}
-                  </small>
+                  <small>{item.status === "terminated" ? "已解除" : item.status === "paused" ? `已暂停 · ${deliveryLabel(item)}` : deliveryLabel(item)}</small>
                   <em>
                     {acceptanceStatus[item.acceptance_status]}
                     {item.latest_progress
@@ -652,10 +659,10 @@ export default function ContractPanel({
               <span>合同编号</span>
               <strong>{contract.contract_no}</strong>
             </div>
-            <div className="detail-field">
-              <span>合同状态</span>
+            {contract.status !== "active" ? <div className="detail-field">
+              <span>合同例外</span>
               <strong>{contractStatus[contract.status]}</strong>
-            </div>
+            </div> : null}
             <div className="detail-field">
               <span>验收状态</span>
               <strong>{acceptanceStatus[contract.acceptance_status]}</strong>
@@ -676,10 +683,9 @@ export default function ContractPanel({
                   : "待补录"}
               </strong>
             </div>
-            <div className="detail-field">
-              <span>计划完成日期</span>
-              <strong>{contract.planned_completion_on || "未设置"}</strong>
-            </div>
+            <div className="detail-field"><span>交付提示</span><strong>{deliveryLabel(contract)}</strong></div>
+            <div className="detail-field"><span>计划交付日期</span><strong>{contract.planned_delivery_on || "未设置"}</strong></div>
+            {contract.calculated_delivery_on ? <div className="detail-field"><span>计算依据</span><strong>{deliveryCalendarLabel(contract)}</strong></div> : null}
           </div>
           <p>{contract.note || "未填写说明"}</p>
           <div className="progress-list">
@@ -698,6 +704,9 @@ export default function ContractPanel({
             <button className="mini-button" onClick={() => setEditing(true)}>
               编辑合同
             </button>
+            {contract.status === "active" ? <button className="mini-button" onClick={() => void applyException("pause")}>暂停合同</button> : null}
+            {contract.status === "paused" ? <button className="mini-button" onClick={() => void applyException("resume")}>恢复合同</button> : null}
+            {contract.status !== "terminated" ? <button className="mini-button danger" onClick={() => void applyException("terminate")}>解除合同</button> : null}
             <button className="mini-button" onClick={() => void returnToList()}>
               返回合同列表
             </button>
@@ -722,7 +731,7 @@ export default function ContractPanel({
             ))}
             {!contract.payment_records?.length ? <span className="muted-copy">尚未登记付款。</span> : null}
           </div>
-          {contract.status !== "terminated" ? <div className="inline-form contract-payment-form">
+          {contract.status === "active" ? <div className="inline-form contract-payment-form">
             <input className="input" inputMode="decimal" value={payment.amount} onChange={(event) => setPayment({ ...payment, amount: event.target.value })} placeholder="付款金额（万元）" />
             <input className="input" type="date" value={payment.paid_on} onChange={(event) => setPayment({ ...payment, paid_on: event.target.value })} />
             <input className="input" value={payment.note} onChange={(event) => setPayment({ ...payment, note: event.target.value })} placeholder="说明（可选）" />
@@ -795,56 +804,59 @@ export default function ContractPanel({
               />
             </label>
             <label className="field">
-              <span>计划完成日期</span>
+              <span>实际交付日期</span>
               <input
                 className="input"
                 type="date"
-                value={form.planned_completion_on}
+                value={form.actual_delivered_on}
                 onChange={(event) =>
                   setForm({
                     ...form,
-                    planned_completion_on: event.target.value,
+                    actual_delivered_on: event.target.value,
                   })
                 }
               />
             </label>
           </div>
-          <label className="field">
-            <span>当前状态</span>
-            {form.status === "completed" ? <strong className="readonly-value">已完成（验收通过且已全部支付）</strong> :
-            <select
-              className="select"
-              value={form.status}
-              onChange={(event) => setForm({ ...form, status: event.target.value as Contract["status"] })}
-            >
-              {Object.entries(contractStatus).filter(([key]) => key !== "completed").map(([key, label]) => (
-                <option key={key} value={key}>
-                  {label}
-                </option>
-              ))}
-            </select>
-            }
-          </label>
-          {form.status === "terminated" ? (
+          <div className="field-grid">
             <label className="field">
-              <span>解除原因 *</span>
+              <span>约定交付周期</span>
               <input
                 className="input"
-                value={form.reason}
+                inputMode="numeric"
+                value={form.delivery_period_value}
                 onChange={(event) =>
-                  setForm({ ...form, reason: event.target.value })
+                  setForm({ ...form, delivery_period_value: event.target.value })
                 }
               />
             </label>
-          ) : null}
+            <label className="field">
+              <span>交付周期单位</span>
+              <select className="select" value={form.delivery_period_unit} onChange={(event) => setForm({ ...form, delivery_period_unit: event.target.value as FormState["delivery_period_unit"] })}>
+                <option value="">未设置</option>
+                <option value="calendar_days">自然日</option>
+                <option value="working_days">工作日</option>
+                <option value="weeks">周</option>
+                <option value="months">月</option>
+                <option value="years">年</option>
+              </select>
+            </label>
+          </div>
+          <label className="field">
+            <span>人工计划交付日期（可选）</span>
+            <input className="input" type="date" value={form.planned_completion_on} onChange={(event) => setForm({ ...form, planned_completion_on: event.target.value })} />
+          </label>
+          {contract?.calculated_delivery_on ? <p className={contract.delivery_plan_conflict ? "notice error" : "muted-copy"}>
+            系统计算计划交付日期：{contract.calculated_delivery_on}（{deliveryCalendarLabel(contract)}）{contract.delivery_plan_conflict ? `；当前人工日期 ${contract.planned_completion_on} 优先` : ""}
+          </p> : null}
           {historicalCreate ? (
             <label className="field">
               <span>补录历史合同原因 *</span>
               <input
                 className="input"
-                value={form.reason}
+                value={relationReason}
                 onChange={(event) =>
-                  setForm({ ...form, reason: event.target.value })
+                  setRelationReason(event.target.value)
                 }
               />
             </label>
@@ -1023,7 +1035,7 @@ export default function ContractPanel({
           ) : null}
           {mode === "detail" &&
           contract &&
-          ["performing", "completed"].includes(contract.status) ? (
+          contract.status === "active" ? (
             <div className="contract-acceptance">
               <h4>验收记录</h4>
               <small>

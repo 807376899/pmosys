@@ -74,3 +74,13 @@
 ## 汇总
 
 AC-030、AC-031 及受影响 UI 验收项的 Browser 层均为 `NOT_RUN`，因此本记录不宣称合同交互验收通过。后续浏览器验证须覆盖工作台单项目/多选创建、关联项目同步、合同进展与验收、已完成项目明确编辑纠错、各目标视口操作台布局和刷新持久化。
+
+## 2026-10-14 合同履约事实与付款提示收敛
+
+| 字段 | 内容 |
+| --- | --- |
+| 需求/验收版本 | REQ-GOV-001@v8、REQ-CONTRACT-001@v4、REQ-CONTRACT-002@v4、REQ-UI-003@v17、REQ-UI-004@v13、REQ-UI-005@v11、REQ-UI-006@v13；AC-019、AC-020、AC-021、AC-022、AC-030、AC-031、REG-UI-001 |
+| API | `./.venv/Scripts/python.exe -m pytest backend/tests/test_contracts.py -q`：PASS（13 passed）。覆盖自然日、工作日、周、月、年与闰年交付周期，人工计划覆盖、实际交付边界、工作日回退/配置日历、暂停/恢复/解除限制、付款和验收事实。 |
+| Build | `npm.cmd --prefix frontend run build`：PASS。 |
+| Browser | NOT_RUN（仅只读打开本地工作台，当前隔离库无项目，未提交任何用户数据写入）。须覆盖签订日、周期、人工计划、实际交付、暂停/解除、付款和验收后的右侧面板、列表、mini bar 与刷新持久化；API 和构建不得替代该证据。 |
+| 全量回归 | NOT_RUN。本轮仅执行合同定向测试；完整系统回归留待阶段性回归窗口。 |

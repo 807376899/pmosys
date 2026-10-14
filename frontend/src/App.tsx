@@ -38,6 +38,7 @@ import type {
   AuditEvent,
   DashboardGroup,
   DashboardSummary,
+  Contract,
   ImportCommitResponse,
   ImportPreviewResponse,
   Project,
@@ -99,6 +100,13 @@ const stageTone = (status: string, clearance?: string) => {
 
 const CONTRACT_BAR_COLORS = ["#2563a6", "#9b4d1d", "#087c78", "#7955a4", "#a04350", "#57722d"];
 const contractBarColor = (index: number) => CONTRACT_BAR_COLORS[index] ?? `hsl(${(index * 137.508) % 360} 58% 38%)`;
+const contractDeliveryLabel = (schedule: Contract["delivery_schedule"]) => {
+  if (schedule.kind === "delivered") return `已交付 · ${schedule.date}`;
+  if (schedule.kind === "upcoming") return `距计划交付 ${schedule.days} 天`;
+  if (schedule.kind === "due_today") return "计划今日交付";
+  if (schedule.kind === "overdue") return `逾期 ${schedule.days} 天`;
+  return "待补充交付信息";
+};
 
 function ContractSummaryCell({ project, onOpenCollection, onOpenContract, colorForContract }: {
   project: Project;
@@ -108,13 +116,13 @@ function ContractSummaryCell({ project, onOpenCollection, onOpenContract, colorF
 }) {
   const supported = project.stage === "项目库—推进中" || project.stage === "已完成";
   if (!supported) return <span className="muted-copy">—</span>;
-  const contracts = [...(project.contract_summary?.contracts ?? [])].sort((left, right) =>
+  const contracts = [...(project.contract_summary?.contracts ?? [])].filter((contract) => contract.status !== "terminated").sort((left, right) =>
     (left.contract_no || "").localeCompare(right.contract_no || "", "zh-CN") || left.id - right.id,
   );
   return <div className="contract-summary-cell" aria-label={`${project.name}的合同摘要`}>
     <button type="button" className="contract-collection-entry" title={contracts.length ? "查看项目全部合同" : "查看项目合同并添加合同"} aria-label={`${project.name}全部合同${contracts.length ? `，共${contracts.length}份` : "，暂无合同"}`} onClick={(event) => { event.stopPropagation(); onOpenCollection(); }}><List size={14} aria-hidden="true" /></button>
     {contracts.map((contract) => {
-      const label = `${contract.contract_no} · ${contract.name}｜${contract.supplier || "未填写供应商"}｜合同金额 ${contract.total_amount == null ? "未记录" : `${formatCurrency(contract.total_amount)} 万`}｜${({ unpaid: "未支付", partial: "部分支付", paid: "已全部支付" }[contract.payment_status])}｜关联 ${contract.project_count} 个项目`;
+      const label = `${contract.contract_no} · ${contract.name}｜${contract.supplier || "未填写供应商"}｜合同金额 ${contract.total_amount == null ? "未记录" : `${formatCurrency(contract.total_amount)} 万`}｜${contractDeliveryLabel(contract.delivery_schedule)}｜${({ unpaid: "未支付", partial: "部分支付", paid: "已全部支付" }[contract.payment_status])}｜关联 ${contract.project_count} 个项目`;
       return <button type="button" key={contract.id} title={label} aria-label={label} className={`contract-mini-bar payment-${contract.payment_status}`} style={{ "--contract-color": colorForContract(contract.id) } as CSSProperties} onClick={(event) => { event.stopPropagation(); onOpenContract(contract.id); }} />;
     })}
   </div>;

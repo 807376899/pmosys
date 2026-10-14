@@ -14,7 +14,7 @@ def _advancing_project(client, create_project_payload, *, name: str):
     return project
 
 
-def test_shared_contract_requires_facts_before_fulfillment_and_updates_project_summaries(client, create_project_payload):
+def test_shared_contract_uses_facts_not_a_manual_fulfillment_status(client, create_project_payload):
     first = _advancing_project(client, create_project_payload, name="合同项目一")
     second = _advancing_project(client, create_project_payload, name="合同项目二")
 
@@ -23,7 +23,7 @@ def test_shared_contract_requires_facts_before_fulfillment_and_updates_project_s
     })
     assert created.status_code == 200
     contract = created.json()
-    assert contract["status"] == "not_started"
+    assert contract["status"] == "active"
     assert {project["id"] for project in contract["projects"]} == {first["id"], second["id"]}
 
     blocked = client.patch(f"/api/v1/contracts/{contract['id']}", json={"status": "performing", "operator": "PMO"})
@@ -31,10 +31,10 @@ def test_shared_contract_requires_facts_before_fulfillment_and_updates_project_s
 
     updated = client.patch(f"/api/v1/contracts/{contract['id']}", json={
         "contract_no": "HT-2027-001", "supplier": "示例公司", "total_amount": 100,
-        "signed_on": "2027-03-01", "status": "performing", "operator": "PMO",
+        "signed_on": "2027-03-01", "operator": "PMO",
     })
     assert updated.status_code == 200
-    assert updated.json()["status"] == "performing"
+    assert updated.json()["status"] == "active"
 
     duplicate = client.post("/api/v1/contracts", json={
         "name": "重复编号合同", "contract_no": "HT-2027-001", "project_ids": [first["id"]], "operator": "PMO",
@@ -45,7 +45,7 @@ def test_shared_contract_requires_facts_before_fulfillment_and_updates_project_s
     for project_id in (first["id"], second["id"]):
         summary = next(item for item in listed if item["id"] == project_id)["contract_summary"]
         assert summary["count"] == 1
-        assert summary["label"] == "1份 · 1履约中"
+        assert summary["label"] == "1份"
 
 
 def test_contract_number_is_required_even_before_performance(client, create_project_payload):
@@ -96,7 +96,7 @@ def test_contract_acceptance_history_and_project_link_correction(client, create_
     ).status_code == 200
     created = client.post("/api/v1/contracts", json={
         "name": "验收合同", "contract_no": "HT-2027-002", "supplier": "示例公司", "total_amount": 100,
-        "signed_on": "2027-03-01", "status": "performing", "project_ids": [active["id"]], "operator": "PMO",
+        "signed_on": "2027-03-01", "project_ids": [active["id"]], "operator": "PMO",
     })
     assert created.status_code == 200
     contract_id = created.json()["id"]
@@ -124,7 +124,7 @@ def test_contract_acceptance_history_and_project_link_correction(client, create_
 
     paid = client.post(f"/api/v1/contracts/{contract_id}/payment-records", json={"amount": 100, "paid_on": "2027-06-20"})
     assert paid.status_code == 200
-    assert paid.json()["status"] == "completed"
+    assert paid.json()["status"] == "active"
 
     detail = client.get(f"/api/v1/contracts/{contract_id}").json()
     assert detail["acceptance_status"] == "accepted"
@@ -137,12 +137,12 @@ def test_contract_acceptance_history_and_project_link_correction(client, create_
     assert last_link.status_code == 422
 
 
-def test_contract_allocations_acceptance_and_completion_gate(client, create_project_payload):
+def test_contract_allocations_and_acceptance_do_not_change_contract_state(client, create_project_payload):
     first = _advancing_project(client, create_project_payload, name="分摊项目一")
     second = _advancing_project(client, create_project_payload, name="分摊项目二")
     created = client.post("/api/v1/contracts", json={
         "name": "分摊合同", "contract_no": "HT-2027-003", "supplier": "示例公司", "total_amount": 100,
-        "signed_on": "2027-03-01", "status": "performing",
+        "signed_on": "2027-03-01",
         "project_links": [{"project_id": first["id"], "allocated_amount": 60}, {"project_id": second["id"], "allocated_amount": 30}],
         "operator": "PMO",
     })
@@ -161,7 +161,7 @@ def test_contract_allocations_acceptance_and_completion_gate(client, create_proj
     paid = client.post(f"/api/v1/contracts/{contract['id']}/payment-records", json={"amount": 100, "paid_on": "2027-06-20"})
     assert paid.status_code == 200
     assert paid.json()["acceptance_status"] == "accepted"
-    assert paid.json()["status"] == "completed"
+    assert paid.json()["status"] == "active"
 
 
 def test_completed_project_can_create_explicit_historical_contract(client, create_project_payload):
@@ -194,11 +194,11 @@ def test_historical_contract_can_link_multiple_completed_projects(client, create
     assert {project["id"] for project in response.json()["projects"]} == {first["id"], second["id"]}
 
 
-def test_contract_payments_drive_payment_projection_and_automatic_completion(client, create_project_payload):
+def test_contract_payments_drive_payment_projection_without_automatic_completion(client, create_project_payload):
     project = _advancing_project(client, create_project_payload, name="付款合同项目")
     created = client.post("/api/v1/contracts", json={
         "name": "付款合同", "contract_no": "HT-2027-007", "supplier": "示例公司",
-        "total_amount": "12.5896", "signed_on": "2027-03-01", "status": "performing",
+        "total_amount": "12.5896", "signed_on": "2027-03-01",
         "project_ids": [project["id"]], "operator": "PMO",
     })
     assert created.status_code == 200
@@ -211,13 +211,13 @@ def test_contract_payments_drive_payment_projection_and_automatic_completion(cli
     assert partial.status_code == 200
     assert partial.json()["payment_status"] == "partial"
     assert partial.json()["paid_total"] == "2.5896"
-    assert partial.json()["status"] == "performing"
+    assert partial.json()["status"] == "active"
 
     accepted = client.post(f"/api/v1/contracts/{contract_id}/acceptance-records", json={
         "acceptance_status": "accepted", "acceptance_date": "2027-06-10", "result": "验收通过", "operator": "PMO",
     })
     assert accepted.status_code == 200
-    assert client.get(f"/api/v1/contracts/{contract_id}").json()["status"] == "performing"
+    assert client.get(f"/api/v1/contracts/{contract_id}").json()["status"] == "active"
 
     settled = client.post(f"/api/v1/contracts/{contract_id}/payment-records", json={
         "amount": "10", "paid_on": "2027-06-20",
@@ -226,7 +226,7 @@ def test_contract_payments_drive_payment_projection_and_automatic_completion(cli
     assert settled.json()["payment_status"] == "paid"
     assert settled.json()["paid_total"] == "12.5896"
     assert settled.json()["remaining_amount"] == "0"
-    assert settled.json()["status"] == "completed"
+    assert settled.json()["status"] == "active"
 
     blocked = client.post(f"/api/v1/contracts/{contract_id}/payment-records", json={
         "amount": "0.0001", "paid_on": "2027-06-21",
@@ -238,9 +238,96 @@ def test_contract_payments_drive_payment_projection_and_automatic_completion(cli
     })
     assert corrected.status_code == 200
     assert corrected.json()["payment_status"] == "partial"
-    assert corrected.json()["status"] == "performing"
+    assert corrected.json()["status"] == "active"
 
     deleted = client.delete(f"/api/v1/contracts/{contract_id}/payment-records/{partial.json()['payment_records'][0]['id']}")
     assert deleted.status_code == 200
     assert deleted.json()["payment_status"] == "partial"
     assert deleted.json()["paid_total"] == "9"
+
+
+def test_contract_delivery_schedule_is_derived_from_signed_date_and_period(client, create_project_payload):
+    project = _advancing_project(client, create_project_payload, name="交付周期合同项目")
+
+    response = client.post("/api/v1/contracts", json={
+        "name": "交付周期合同", "contract_no": "HT-2027-008", "supplier": "示例公司",
+        "total_amount": "10", "signed_on": "2027-01-31",
+        "delivery_period_value": 1, "delivery_period_unit": "months",
+        "project_ids": [project["id"]], "operator": "PMO",
+    })
+
+    assert response.status_code == 200
+    contract = response.json()
+    assert contract["calculated_delivery_on"] == "2027-02-28"
+    assert contract["planned_delivery_on"] == "2027-02-28"
+    assert contract["delivery_schedule"]["kind"] == "upcoming"
+    assert contract["status"] == "active"
+
+
+def test_manual_delivery_date_overrides_calculation_and_pause_blocks_new_facts(client, create_project_payload):
+    project = _advancing_project(client, create_project_payload, name="交付覆盖合同项目")
+    created = client.post("/api/v1/contracts", json={
+        "name": "覆盖合同", "contract_no": "HT-2027-009", "supplier": "示例公司",
+        "total_amount": "10", "signed_on": "2027-01-31", "delivery_period_value": 1,
+        "delivery_period_unit": "months", "planned_completion_on": "2027-03-05",
+        "project_ids": [project["id"]], "operator": "PMO",
+    })
+    assert created.status_code == 200
+    contract = created.json()
+    assert contract["planned_delivery_on"] == "2027-03-05"
+    assert contract["delivery_plan_conflict"] is True
+
+    paused = client.post(f"/api/v1/contracts/{contract['id']}/pause", json={"reason": "等待变更", "operator": "PMO"})
+    assert paused.status_code == 200
+    assert paused.json()["status"] == "paused"
+    assert client.post(f"/api/v1/contracts/{contract['id']}/payment-records", json={"amount": "1", "paid_on": "2027-02-01"}).status_code == 422
+    assert client.post(f"/api/v1/contracts/{contract['id']}/acceptance-records", json={
+        "acceptance_status": "accepting", "acceptance_date": "2027-02-01", "operator": "PMO",
+    }).status_code == 422
+    assert client.post(f"/api/v1/contracts/{contract['id']}/resume", json={"operator": "PMO"}).json()["status"] == "active"
+    assert client.post(f"/api/v1/contracts/{contract['id']}/terminate", json={"reason": "合同解除", "operator": "PMO"}).json()["status"] == "terminated"
+    assert client.post(f"/api/v1/contracts/{contract['id']}/progress-logs", json={"content": "不可登记", "operator": "PMO"}).status_code == 422
+    summary = next(item for item in client.get("/api/v1/projects", params={"page_size": 20}).json()["items"] if item["id"] == project["id"])["contract_summary"]
+    assert summary["contracts"][0]["status"] == "terminated"
+
+
+def test_workday_delivery_uses_configured_holiday_calendar(client, create_project_payload, tmp_path, monkeypatch):
+    calendar = tmp_path / "holidays.json"
+    calendar.write_text('{"holidays":["2027-01-04"],"workdays":["2027-01-09"]}', encoding="utf-8")
+    monkeypatch.setenv("PMO_HOLIDAY_CALENDAR_PATH", str(calendar))
+    project = _advancing_project(client, create_project_payload, name="工作日合同项目")
+
+    response = client.post("/api/v1/contracts", json={
+        "name": "工作日合同", "contract_no": "HT-2027-010", "signed_on": "2027-01-01",
+        "delivery_period_value": 2, "delivery_period_unit": "working_days",
+        "project_ids": [project["id"]], "operator": "PMO",
+    })
+
+    assert response.status_code == 200
+    contract = response.json()
+    assert contract["calculated_delivery_on"] == "2027-01-06"
+    assert contract["delivery_schedule"]["calendar_source"] == "holiday_calendar"
+
+
+def test_delivery_period_uses_calendar_units_and_rejects_impossible_actual_date(client, create_project_payload):
+    project = _advancing_project(client, create_project_payload, name="日历周期合同项目")
+    cases = [
+        ("HT-2028-001", "2028-02-28", 1, "calendar_days", "2028-02-29"),
+        ("HT-2028-002", "2028-02-28", 2, "weeks", "2028-03-13"),
+        ("HT-2028-003", "2024-02-29", 1, "years", "2025-02-28"),
+    ]
+    for number, signed_on, value, unit, expected in cases:
+        response = client.post("/api/v1/contracts", json={
+            "name": f"{number} 合同", "contract_no": number, "signed_on": signed_on,
+            "delivery_period_value": value, "delivery_period_unit": unit,
+            "project_ids": [project["id"]], "operator": "PMO",
+        })
+        assert response.status_code == 200
+        assert response.json()["calculated_delivery_on"] == expected
+
+    impossible = client.post("/api/v1/contracts", json={
+        "name": "提前交付合同", "contract_no": "HT-2028-004", "signed_on": "2028-02-28",
+        "actual_delivered_on": "2028-02-27", "project_ids": [project["id"]], "operator": "PMO",
+    })
+    assert impossible.status_code == 422
+    assert "实际交付日期" in impossible.json()["message"]

@@ -136,7 +136,7 @@ export interface ContractSummary {
   label: string;
   performing_count: number;
   pending_acceptance_count: number;
-  contracts: Array<Pick<Contract, "id" | "contract_no" | "name" | "status" | "supplier" | "total_amount" | "payment_status"> & { project_count: number }>;
+  contracts: Array<Pick<Contract, "id" | "contract_no" | "name" | "status" | "supplier" | "total_amount" | "payment_status" | "delivery_schedule"> & { project_count: number }>;
 }
 
 export interface Contract {
@@ -147,8 +147,21 @@ export interface Contract {
   total_amount: string | null;
   signed_on: string | null;
   planned_completion_on: string | null;
+  delivery_period_value: number | null;
+  delivery_period_unit: "calendar_days" | "working_days" | "weeks" | "months" | "years" | null;
+  actual_delivered_on: string | null;
+  calculated_delivery_on: string | null;
+  planned_delivery_on: string | null;
+  delivery_date_source: "manual" | "calculated" | null;
+  delivery_plan_conflict: boolean;
+  delivery_schedule: {
+    kind: "missing_schedule" | "upcoming" | "due_today" | "overdue" | "delivered";
+    date: string | null;
+    days: number | null;
+    calendar_source: string;
+  };
   note: string;
-  status: "not_started" | "performing" | "completed" | "terminated" | "paused";
+  status: "active" | "terminated" | "paused";
   acceptance_status: "not_accepted" | "accepting" | "needs_rectification" | "accepted";
   allocation_complete?: boolean;
   allocation_total?: string;

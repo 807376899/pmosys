@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
-from datetime import date, datetime
+from calendar import monthrange
+from datetime import date, datetime, timedelta
+from pathlib import Path
 
 from backend.app.core.errors import ConflictError, NotFoundError, ValidationError
 from backend.app.core.money import decimal_of, difference, legacy_number, parse_money, preferred, total
@@ -10,8 +13,8 @@ from backend.app.db.connection import get_connection
 from backend.app.repositories import projects as project_repo
 
 
-CONTRACT_STATUSES = {"not_started", "performing", "completed", "terminated", "paused"}
 ACCEPTANCE_STATUSES = {"not_accepted", "accepting", "needs_rectification", "accepted"}
+DELIVERY_PERIOD_UNITS = {"calendar_days", "working_days", "weeks", "months", "years"}
 
 
 def _now() -> str:
@@ -43,6 +46,78 @@ def _date(value: object, label: str, *, required: bool = False) -> str | None:
 
 def _amount(value: object, label: str, *, required: bool = False) -> str | None:
     return parse_money(value, label, required=required)
+
+
+def _delivery_period_value(value: object) -> int | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool) or not str(value).strip().isdigit() or int(value) <= 0:
+        raise ValidationError("约定交付周期必须为正整数")
+    return int(value)
+
+
+def _holiday_calendar() -> tuple[set[str], set[str], str]:
+    """Load an optional local calendar without adding an online dependency."""
+    raw_path = os.environ.get("PMO_HOLIDAY_CALENDAR_PATH", "").strip()
+    if not raw_path:
+        return set(), set(), "weekday_fallback"
+    try:
+        data = json.loads(Path(raw_path).read_text(encoding="utf-8"))
+        holidays = {date.fromisoformat(item).isoformat() for item in data.get("holidays", [])}
+        workdays = {date.fromisoformat(item).isoformat() for item in data.get("workdays", [])}
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return set(), set(), "weekday_fallback"
+    return holidays, workdays, "holiday_calendar"
+
+
+def _add_months(value: date, months: int) -> date:
+    target = value.month - 1 + months
+    year, month = value.year + target // 12, target % 12 + 1
+    return date(year, month, min(value.day, monthrange(year, month)[1]))
+
+
+def _calculated_delivery_on(signed_on: str | None, period_value: int | None, period_unit: str | None) -> tuple[str | None, str]:
+    if not signed_on or period_value is None or period_unit not in DELIVERY_PERIOD_UNITS:
+        return None, "weekday_fallback"
+    start = date.fromisoformat(signed_on)
+    if period_unit == "calendar_days":
+        return (start + timedelta(days=period_value)).isoformat(), "calendar_days"
+    if period_unit == "weeks":
+        return (start + timedelta(days=period_value * 7)).isoformat(), "calendar_weeks"
+    if period_unit == "months":
+        return _add_months(start, period_value).isoformat(), "calendar_months"
+    if period_unit == "years":
+        return _add_months(start, period_value * 12).isoformat(), "calendar_years"
+    holidays, workdays, source = _holiday_calendar()
+    current, remaining = start, period_value
+    while remaining:
+        current += timedelta(days=1)
+        if current.isoformat() in workdays or (current.weekday() < 5 and current.isoformat() not in holidays):
+            remaining -= 1
+    return current.isoformat(), source
+
+
+def _delivery_projection(contract: dict) -> dict:
+    period_value = contract.get("delivery_period_value")
+    calculated, calendar_source = _calculated_delivery_on(contract.get("signed_on"), period_value, contract.get("delivery_period_unit"))
+    override = contract.get("planned_completion_on")
+    planned = override or calculated
+    actual = contract.get("actual_delivered_on")
+    if actual:
+        schedule = {"kind": "delivered", "date": actual, "days": 0, "calendar_source": calendar_source}
+    elif not planned:
+        schedule = {"kind": "missing_schedule", "date": None, "days": None, "calendar_source": calendar_source}
+    else:
+        delta = (date.fromisoformat(planned) - date.today()).days
+        kind = "upcoming" if delta > 0 else "due_today" if delta == 0 else "overdue"
+        schedule = {"kind": kind, "date": planned, "days": abs(delta), "calendar_source": calendar_source}
+    return {
+        "calculated_delivery_on": calculated,
+        "planned_delivery_on": planned,
+        "delivery_date_source": "manual" if override else "calculated" if calculated else None,
+        "delivery_plan_conflict": bool(override and calculated and override != calculated),
+        "delivery_schedule": schedule,
+    }
 
 
 def _contract_row(conn: sqlite3.Connection, contract_id: int) -> dict:
@@ -155,18 +230,6 @@ def _payment_projection(conn: sqlite3.Connection, contract: dict) -> dict:
     }
 
 
-def _sync_contract_completion(conn: sqlite3.Connection, contract_id: int) -> None:
-    contract = _contract_row(conn, contract_id)
-    if contract["status"] == "terminated":
-        return
-    payment = _payment_projection(conn, contract)
-    is_complete = contract["acceptance_status"] == "accepted" and payment["payment_status"] == "paid"
-    if is_complete and contract["status"] != "completed":
-        conn.execute("UPDATE contracts SET status='completed',updated_at=? WHERE id=?", (_now(), contract_id))
-    elif not is_complete and contract["status"] == "completed":
-        conn.execute("UPDATE contracts SET status='performing',updated_at=? WHERE id=?", (_now(), contract_id))
-
-
 def _serialize_contract(conn: sqlite3.Connection, contract: dict, *, include_history: bool = False) -> dict:
     latest_progress = _latest_progress(conn, contract["id"])
     projects = _linked_projects(conn, contract["id"])
@@ -179,6 +242,7 @@ def _serialize_contract(conn: sqlite3.Connection, contract: dict, *, include_his
     payment = _payment_projection(conn, contract)
     result = {
         **contract,
+        **_delivery_projection(contract),
         "projects": projects,
         "latest_progress": latest_progress,
         "allocation_complete": allocation_complete,
@@ -200,30 +264,13 @@ def _contract_summary(conn: sqlite3.Connection, rows: list[dict]) -> dict:
     count = len(rows)
     if not count:
         return {"count": 0, "label": "暂无合同", "performing_count": 0, "pending_acceptance_count": 0, "contracts": []}
-    performing = sum(row["status"] == "performing" for row in rows)
-    pending = sum(row["status"] == "completed" and row["acceptance_status"] != "accepted" for row in rows)
-    not_started = sum(row["status"] == "not_started" for row in rows)
-    paused = sum(row["status"] == "paused" for row in rows)
-    terminated = sum(row["status"] == "terminated" for row in rows)
-    all_accepted = all(row["status"] == "completed" and row["acceptance_status"] == "accepted" for row in rows)
-    if performing:
-        label = f"{count}份 · {performing}履约中"
-    elif pending:
-        label = f"{count}份 · {pending}待验收"
-    elif not_started:
-        label = f"{count}份 · {not_started}未开始"
-    elif paused:
-        label = f"{count}份 · {paused}暂停"
-    elif terminated:
-        label = f"{count}份 · {terminated}已解除"
-    elif all_accepted:
-        label = f"{count}份 · 已全部验收"
-    else:
-        label = f"{count}份"
+    active = sum(row["status"] == "active" for row in rows)
+    pending = sum(row["acceptance_status"] in {"accepting", "needs_rectification"} for row in rows)
+    label = f"{count}份"
     return {
         "count": count,
         "label": label,
-        "performing_count": performing,
+        "performing_count": active,
         "pending_acceptance_count": pending,
         "contracts": [
             {
@@ -231,6 +278,7 @@ def _contract_summary(conn: sqlite3.Connection, rows: list[dict]) -> dict:
                 "supplier": row["supplier"], "total_amount": preferred(row, "total_amount"),
                 "payment_status": _payment_projection(conn, row)["payment_status"],
                 "project_count": len(_linked_projects(conn, row["id"])),
+                **_delivery_projection(row),
             }
             for row in rows
         ],
@@ -274,15 +322,9 @@ def create_contract(payload: dict) -> dict:
     if not name:
         raise ValidationError("合同名称不能为空")
     project_ids, allocations = _project_links(payload)
-    status = _text(payload.get("status")) or "not_started"
-    if status not in CONTRACT_STATUSES:
-        raise ValidationError("合同状态不合法")
-    if status == "completed":
-        raise ValidationError("合同完成由验收通过和付款完成自动决定")
-    data = _contract_fields(payload, status)
-    completion_acceptance = payload.get("completion_acceptance") or None
-    if status == "completed" and (not isinstance(completion_acceptance, dict) or _text(completion_acceptance.get("acceptance_status")) != "accepted"):
-        raise ValidationError("合同验收通过后才能标记为已完成")
+    if "status" in payload:
+        raise ValidationError("合同不支持手工维护履约状态")
+    data = _contract_fields(payload)
     history_correction = bool(payload.get("history_correction"))
     reason = _text(payload.get("reason"))
     if history_correction and not reason:
@@ -291,48 +333,51 @@ def create_contract(payload: dict) -> dict:
         projects = _validate_project_links(conn, project_ids, allow_completed=history_correction)
         _assert_contract_number_available(conn, data["contract_no"])
         cursor = conn.execute(
-            """INSERT INTO contracts (name,contract_no,supplier,total_amount,total_amount_decimal,signed_on,planned_completion_on,note,status,created_by,updated_by)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-            (name, data["contract_no"], data["supplier"], legacy_number(data["total_amount"]), data["total_amount"], data["signed_on"], data["planned_completion_on"], data["note"], status, operator, operator),
+            """INSERT INTO contracts (name,contract_no,supplier,total_amount,total_amount_decimal,signed_on,planned_completion_on,delivery_period_value,delivery_period_unit,actual_delivered_on,note,status,created_by,updated_by)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (name, data["contract_no"], data["supplier"], legacy_number(data["total_amount"]), data["total_amount"], data["signed_on"], data["planned_completion_on"], data["delivery_period_value"], data["delivery_period_unit"], data["actual_delivered_on"], data["note"], "active", operator, operator),
         )
         contract_id = cursor.lastrowid
         for project in projects:
             amount = allocations[project["id"]]
             conn.execute("INSERT INTO contract_projects (contract_id,project_id,linked_by,allocated_amount,allocated_amount_decimal) VALUES (?,?,?,?,?)", (contract_id, project["id"], operator, legacy_number(amount), amount))
-        if completion_acceptance:
-            _record_contract_acceptance(conn, contract_id, completion_acceptance, operator)
-            _sync_contract_completion(conn, contract_id)
         event = "CONTRACT_HISTORICAL_CREATED" if history_correction else "CONTRACT_CREATED"
         _contract_audit(conn, contract_id, event, operator, reason=reason, payload={"project_ids": [project["id"] for project in projects], "allocations": allocations})
         _project_audit(conn, [project["id"] for project in projects], event, operator, reason=reason, payload={"contract_id": contract_id})
         return _serialize_contract(conn, _contract_row(conn, contract_id), include_history=True)
 
 
-def _contract_fields(payload: dict, status: str) -> dict:
+def _contract_fields(payload: dict) -> dict:
     contract_no = _text(payload.get("contract_no"))
     supplier = _text(payload.get("supplier"))
     total_amount = _amount(payload.get("total_amount"), "合同总金额")
     signed_on = _date(payload.get("signed_on"), "签订日期")
-    planned_completion_on = _date(payload.get("planned_completion_on"), "计划完成日期")
+    planned_completion_on = _date(payload.get("planned_completion_on"), "人工计划交付日期")
+    delivery_period_value = _delivery_period_value(payload.get("delivery_period_value"))
+    delivery_period_unit = _text(payload.get("delivery_period_unit")) or None
+    if delivery_period_unit and delivery_period_unit not in DELIVERY_PERIOD_UNITS:
+        raise ValidationError("交付周期单位不合法")
+    if (delivery_period_value is None) != (delivery_period_unit is None):
+        raise ValidationError("请同时填写约定交付周期和单位")
+    actual_delivered_on = _date(payload.get("actual_delivered_on"), "实际交付日期")
     missing = []
     if not contract_no:
         missing.append("合同编号")
-    if status in {"performing", "completed"}:
-        if not supplier:
-            missing.append("供应商")
-        if total_amount is None:
-            missing.append("合同总金额")
-        if not signed_on:
-            missing.append("签订日期")
+    if delivery_period_value is not None and not signed_on:
+        missing.append("签订日期")
+    if actual_delivered_on and signed_on and actual_delivered_on < signed_on:
+        raise ValidationError("实际交付日期不得早于签订日期")
     if missing:
-        prefix = f"{status}合同必须填写：" if status in {"performing", "completed"} else "合同必须填写："
-        raise ValidationError(f"{prefix}{'、'.join(missing)}")
+        raise ValidationError(f"合同必须填写：{'、'.join(missing)}")
     return {
         "contract_no": contract_no,
         "supplier": supplier,
         "total_amount": total_amount,
         "signed_on": signed_on,
         "planned_completion_on": planned_completion_on,
+        "delivery_period_value": delivery_period_value,
+        "delivery_period_unit": delivery_period_unit,
+        "actual_delivered_on": actual_delivered_on,
         "note": _text(payload.get("note")),
     }
 
@@ -373,31 +418,43 @@ def update_contract(contract_id: int, payload: dict) -> dict:
     operator = _operator(payload)
     with get_connection() as conn:
         before = _contract_row(conn, contract_id)
-        status = _text(payload.get("status")) or before["status"]
-        if status not in CONTRACT_STATUSES:
-            raise ValidationError("合同状态不合法")
-        if status == "completed" and before["status"] != "completed":
-            raise ValidationError("合同完成由验收通过和付款完成自动决定")
-        merged = {**before, **{key: value for key, value in payload.items() if key in {"contract_no", "supplier", "total_amount", "signed_on", "planned_completion_on", "note"}}}
-        data = _contract_fields(merged, status)
+        if "status" in payload:
+            raise ValidationError("合同不支持手工维护履约状态")
+        merged = {**before, **{key: value for key, value in payload.items() if key in {"contract_no", "supplier", "total_amount", "signed_on", "planned_completion_on", "delivery_period_value", "delivery_period_unit", "actual_delivered_on", "note"}}}
+        data = _contract_fields(merged)
         _assert_contract_number_available(conn, data["contract_no"], contract_id)
-        reason = _text(payload.get("reason"))
-        if status == "terminated" and before["status"] != "terminated" and not reason:
-            raise ValidationError("解除合同必须填写原因")
         name = _text(payload.get("name")) if "name" in payload else before["name"]
         if not name:
             raise ValidationError("合同名称不能为空")
-        completion_acceptance = payload.get("completion_acceptance") or None
         conn.execute(
-            """UPDATE contracts SET name=?,contract_no=?,supplier=?,total_amount=?,total_amount_decimal=?,signed_on=?,planned_completion_on=?,note=?,status=?,updated_by=?,updated_at=? WHERE id=?""",
-            (name, data["contract_no"], data["supplier"], legacy_number(data["total_amount"]), data["total_amount"], data["signed_on"], data["planned_completion_on"], data["note"], status, operator, _now(), contract_id),
+            """UPDATE contracts SET name=?,contract_no=?,supplier=?,total_amount=?,total_amount_decimal=?,signed_on=?,planned_completion_on=?,delivery_period_value=?,delivery_period_unit=?,actual_delivered_on=?,note=?,updated_by=?,updated_at=? WHERE id=?""",
+            (name, data["contract_no"], data["supplier"], legacy_number(data["total_amount"]), data["total_amount"], data["signed_on"], data["planned_completion_on"], data["delivery_period_value"], data["delivery_period_unit"], data["actual_delivered_on"], data["note"], operator, _now(), contract_id),
         )
         projects = _linked_projects(conn, contract_id)
-        if completion_acceptance:
-            _record_contract_acceptance(conn, contract_id, completion_acceptance, operator)
-        _sync_contract_completion(conn, contract_id)
-        event = "CONTRACT_STATUS_UPDATED" if status != before["status"] else "CONTRACT_UPDATED"
-        _contract_audit(conn, contract_id, event, operator, reason=reason, payload={"before": before, "after": _contract_row(conn, contract_id)})
+        _contract_audit(conn, contract_id, "CONTRACT_UPDATED", operator, payload={"before": before, "after": _contract_row(conn, contract_id)})
+        _project_audit(conn, [project["id"] for project in projects], "CONTRACT_UPDATED", operator, payload={"contract_id": contract_id})
+        return _serialize_contract(conn, _contract_row(conn, contract_id), include_history=True)
+
+
+def set_contract_exception(contract_id: int, action: str, payload: dict) -> dict:
+    operator, reason = _operator(payload), _text(payload.get("reason"))
+    if action not in {"pause", "resume", "terminate"}:
+        raise ValidationError("合同例外动作不合法")
+    if action != "resume" and not reason:
+        raise ValidationError("暂停或解除合同必须填写原因")
+    target = {"pause": "paused", "resume": "active", "terminate": "terminated"}[action]
+    with get_connection() as conn:
+        before = _contract_row(conn, contract_id)
+        if action == "resume" and before["status"] != "paused":
+            raise ValidationError("仅暂停合同可恢复")
+        if action == "pause" and before["status"] != "active":
+            raise ValidationError("仅正常合同可暂停")
+        if action == "terminate" and before["status"] == "terminated":
+            raise ValidationError("合同已解除")
+        conn.execute("UPDATE contracts SET status=?,updated_by=?,updated_at=? WHERE id=?", (target, operator, _now(), contract_id))
+        projects = _linked_projects(conn, contract_id)
+        event = f"CONTRACT_{action.upper()}D"
+        _contract_audit(conn, contract_id, event, operator, reason=reason, payload={"before_status": before["status"], "status": target})
         _project_audit(conn, [project["id"] for project in projects], event, operator, reason=reason, payload={"contract_id": contract_id})
         return _serialize_contract(conn, _contract_row(conn, contract_id), include_history=True)
 
@@ -456,7 +513,9 @@ def create_contract_progress_log(contract_id: int, payload: dict) -> dict:
     if not content:
         raise ValidationError("进展内容不能为空")
     with get_connection() as conn:
-        _contract_row(conn, contract_id)
+        contract = _contract_row(conn, contract_id)
+        if contract["status"] in {"paused", "terminated"}:
+            raise ValidationError("暂停或已解除合同不能登记进展")
         cursor = conn.execute("INSERT INTO contract_progress_logs (contract_id,content,operator,updated_by) VALUES (?,?,?,?)", (contract_id, content, operator, operator))
         result = dict(conn.execute("SELECT * FROM contract_progress_logs WHERE id=?", (cursor.lastrowid,)).fetchone())
         project_ids = [project["id"] for project in _linked_projects(conn, contract_id)]
@@ -519,10 +578,9 @@ def record_contract_acceptance(contract_id: int, payload: dict) -> dict:
     operator = _operator(payload)
     with get_connection() as conn:
         contract = _contract_row(conn, contract_id)
-        if contract["status"] not in {"performing", "completed"}:
-            raise ValidationError("仅履约中合同可登记验收")
+        if contract["status"] in {"paused", "terminated"}:
+            raise ValidationError("暂停或已解除合同不能登记验收")
         record = _record_contract_acceptance(conn, contract_id, payload, operator)
-        _sync_contract_completion(conn, contract_id)
         return record
 
 
@@ -534,8 +592,8 @@ def _payment_input(payload: dict) -> tuple[str, str, str]:
 
 
 def _assert_payment_allowed(conn: sqlite3.Connection, contract: dict, amount: str, *, excluding_id: int | None = None) -> None:
-    if contract["status"] == "terminated":
-        raise ValidationError("已解除合同不能登记付款")
+    if contract["status"] in {"paused", "terminated"}:
+        raise ValidationError("暂停或已解除合同不能登记付款")
     total_amount = preferred(contract, "total_amount")
     if total_amount is None:
         raise ValidationError("请先填写合同总金额")
@@ -554,7 +612,6 @@ def create_contract_payment_record(contract_id: int, payload: dict) -> dict:
             "INSERT INTO contract_payment_records (contract_id,amount,amount_decimal,paid_on,note) VALUES (?,?,?,?,?)",
             (contract_id, legacy_number(amount), amount, paid_on, note),
         )
-        _sync_contract_completion(conn, contract_id)
         return _serialize_contract(conn, _contract_row(conn, contract_id), include_history=True)
 
 
@@ -573,7 +630,6 @@ def update_contract_payment_record(contract_id: int, payment_id: int, payload: d
             "UPDATE contract_payment_records SET amount=?,amount_decimal=?,paid_on=?,note=?,updated_at=? WHERE id=?",
             (legacy_number(amount), amount, paid_on, note, _now(), payment_id),
         )
-        _sync_contract_completion(conn, contract_id)
         return _serialize_contract(conn, _contract_row(conn, contract_id), include_history=True)
 
 
@@ -587,7 +643,6 @@ def delete_contract_payment_record(contract_id: int, payment_id: int) -> dict:
         if not row:
             raise NotFoundError("付款记录不存在")
         conn.execute("UPDATE contract_payment_records SET deleted_at=?,updated_at=? WHERE id=?", (_now(), _now(), payment_id))
-        _sync_contract_completion(conn, contract_id)
         return _serialize_contract(conn, _contract_row(conn, contract_id), include_history=True)
 
 

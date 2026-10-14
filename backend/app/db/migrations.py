@@ -301,8 +301,11 @@ def init_database(conn: sqlite3.Connection) -> None:
         total_amount REAL,
         signed_on TEXT,
         planned_completion_on TEXT,
+        delivery_period_value INTEGER,
+        delivery_period_unit TEXT,
+        actual_delivered_on TEXT,
         note TEXT DEFAULT '',
-        status TEXT NOT NULL DEFAULT 'not_started',
+        status TEXT NOT NULL DEFAULT 'active',
         acceptance_status TEXT NOT NULL DEFAULT 'not_accepted',
         created_by TEXT NOT NULL,
         created_at TEXT DEFAULT (datetime('now','localtime')),
@@ -780,6 +783,16 @@ def ensure_project_schema(conn: sqlite3.Connection) -> None:
         for column in columns:
             if not column_exists(conn, table, column):
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
+    for column, definition in [
+        ("delivery_period_value", "INTEGER"),
+        ("delivery_period_unit", "TEXT"),
+        ("actual_delivered_on", "TEXT"),
+    ]:
+        if not column_exists(conn, "contracts", column):
+            conn.execute(f"ALTER TABLE contracts ADD COLUMN {column} {definition}")
+    conn.execute(
+        "UPDATE contracts SET status='active' WHERE status IN ('not_started','performing','completed')"
+    )
     for column, definition in [("fund_name", "TEXT DEFAULT ''"), ("fund_manager", "TEXT DEFAULT ''")]:
         if not column_exists(conn, "funding_sources", column):
             conn.execute(f"ALTER TABLE funding_sources ADD COLUMN {column} {definition}")
