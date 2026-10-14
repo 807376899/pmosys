@@ -10,9 +10,13 @@ import {
   List,
   LoaderCircle,
   PackagePlus,
+  PanelRightOpen,
   Plus,
   RefreshCcw,
   Send,
+  Settings2,
+  MoreHorizontal,
+  ArrowRight,
 } from "lucide-react";
 import {
   type CSSProperties,
@@ -32,6 +36,7 @@ import ContractPanel from "./ContractPanel";
 import ProjectFundingPanel from "./ProjectFundingPanel";
 import { ApiError, apiDelete, apiGet, apiPatch, apiPost, apiPostForm, buildExportUrl } from "./lib/api";
 import { applySharedOrder, insertStageGroup, replaceVisibleOrder, stageGroupAnchorForLayout, stageLayoutForVisibleColumns } from "./lib/column-layout";
+import { resolveProjectRailState } from "./lib/rail-state";
 import { formatCurrency, formatDate, formatDateTime, projectTypeLabel, statusLabel, sumMoney } from "./lib/format";
 import type {
   BatchExecuteResponse,
@@ -365,8 +370,11 @@ function DashboardPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [executing, setExecuting] = useState(false);
-  const [operationMode, setOperationMode] = useState<"advance" | "stage" | "items" | "package" | "constraints" | "config" | "batch">("advance");
+  const [operationMode, setOperationMode] = useState<"idle" | "advance" | "stage" | "items" | "package" | "constraints" | "config" | "batch">("idle");
   const [railExpanded, setRailExpanded] = useState(false);
+  const [projectRailDismissed, setProjectRailDismissed] = useState(false);
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [quickItem, setQuickItem] = useState<WorkItem | null>(null);
   const [quickConstraint, setQuickConstraint] = useState<ProjectExternalConstraint | null>(null);
   const [quickConstraintList, setQuickConstraintList] = useState<ProjectExternalConstraint[] | null>(null);
@@ -544,6 +552,20 @@ function DashboardPage() {
     () => sumMoney(selectedProjects.map((project) => project.effective_budget ?? project.budget)),
     [selectedProjects],
   );
+  const hasExplicitRailContext = Boolean(contractPanel || quickItem || quickConstraint || quickConstraintList || workItemActivity || columnBatchTarget || (railExpanded && (operationMode === "config" || operationMode === "batch")));
+  const railState = resolveProjectRailState({
+    selectedCount: selectedIds.length,
+    dismissed: projectRailDismissed,
+    explicitContext: hasExplicitRailContext,
+  });
+  const railVisible = tableView !== "annual" && railState !== "closed";
+  const projectOperationVisible = railState === "project_operations";
+
+  useEffect(() => {
+    if (selectedIds.length || hasExplicitRailContext) return;
+    setProjectRailDismissed(false);
+    setRailExpanded(false);
+  }, [hasExplicitRailContext, selectedIds.length]);
   const directStageAction = useMemo<"establish" | "complete" | null>(() => {
     if (!selectedProjects.length) return null;
     if (selectedProjects.every((project) => project.stage === "未立项")) return "establish";
@@ -1033,6 +1055,9 @@ function DashboardPage() {
     if (columnBatchTarget) clearColumnBatchTarget();
     setWorkItemActivity(null);
     setRailExpanded(false);
+    setAddMenuOpen(false);
+    setMoreMenuOpen(false);
+    setProjectRailDismissed(selectedIds.length > 0);
     setQuickItem(null);
     setQuickConstraint(null);
     setQuickConstraintList(null);
@@ -1041,6 +1066,22 @@ function DashboardPage() {
     setQuickProjectId(null);
     setQuickProject(null);
     setContractPanel(null);
+  }
+
+  function returnToProjectOperations() {
+    if (columnBatchTarget) clearColumnBatchTarget();
+    setWorkItemActivity(null);
+    setRailExpanded(false);
+    setProjectRailDismissed(false);
+    setQuickItem(null);
+    setQuickConstraint(null);
+    setQuickConstraintList(null);
+    setQuickConstraintFromList(false);
+    setQuickConstraintHasBatchContext(false);
+    setQuickProjectId(null);
+    setQuickProject(null);
+    setContractPanel(null);
+    setOperationMode("idle");
   }
 
   useEffect(() => {
@@ -1646,6 +1687,10 @@ function DashboardPage() {
               <RefreshCcw size={16} />
               刷新数据
             </button>
+            <button className="action-button ghost" onClick={() => { setOperationMode("config"); setRailExpanded(true); setProjectRailDismissed(false); }}>
+              <Settings2 size={16} />
+              基础配置
+            </button>
           </div>
         </div>
         <div className="hero-metrics">
@@ -1663,7 +1708,7 @@ function DashboardPage() {
 
       {error || feedback ? <div className="dashboard-notices">{error ? <div className="notice error">{error}</div> : null}{feedback ? <div className="notice success">{feedback}</div> : null}</div> : null}
 
-      <main className="workspace">
+      <main className={`workspace ${railVisible ? "has-control-rail" : ""}`}>
         {tableView === "annual" ? <AnnualBudgetView operator={operator} projectTypes={projectTypes} onFeedback={setFeedback} onError={setError} onChanged={loadDashboard} onExit={(view, group) => { if (group) setActiveGroup(group); setTableView(view); }} renderStageSlot={(onSelect) => <section className="group-band">{groups.map((group) => <button key={group.key} className={`group-card ${activeGroup === group.key ? "active" : ""}`} style={{ "--group-accent": GROUP_ACCENTS[group.key] } as CSSProperties} onClick={() => onSelect(group.key)}><div className="group-main"><p>{group.label}</p><strong>{group.count}</strong></div><div className="group-budget"><span>预算 {formatCurrency(group.total_budget)} 万</span></div><ArrowUpRight size={18} /></button>)}</section>} /> : <>
         <section className="main-stage">
           <section className="group-band">
@@ -1751,6 +1796,7 @@ function DashboardPage() {
                 <button className={`mini-button ${tableView === "overview" ? "active" : ""}`} onClick={() => { clearColumnBatchTarget(); setTableView("overview"); setColumnPickerOpen(false); }}>总览</button>
                 <button className={`mini-button ${tableView === "stage" ? "active" : ""}`} onClick={() => setTableView("stage")}>阶段跟踪</button>
                 <button className="mini-button" onClick={() => { clearColumnBatchTarget(); setTableView("annual"); setColumnPickerOpen(false); }}>年度预算安排</button>
+                {tableView === "stage" ? <button className="mini-button" onClick={() => { setOperationMode("batch"); setRailExpanded(true); setProjectRailDismissed(false); void loadBatchHistory(); }}>办理活动记录</button> : null}
                 {tableView === "overview" ? <div className="column-picker"><button type="button" className="mini-button" aria-expanded={overviewColumnPickerOpen} onClick={() => setOverviewColumnPickerOpen((open) => !open)}>显示列</button>{overviewColumnPickerOpen ? <div className="column-picker-menu" role="dialog" aria-label="配置总览显示列">
                   <div className="column-picker-heading"><strong>显示列</strong><button type="button" className="text-button" onClick={() => setOverviewColumnPickerOpen(false)}>关闭</button></div>
                   <section><span>基础列</span><div className="column-config-list">{applySharedOrder(sharedBaseColumnOrder, overviewAllowedColumns).map((column) => <label className="column-config-row" draggable key={column} onDragStart={(event) => event.dataTransfer.setData("text/plain", `base:${column}`)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { const source = event.dataTransfer.getData("text/plain").replace("base:", ""); if (isBaseColumn(source)) moveBaseColumn(source, column); }}><span className="drag-handle" aria-hidden="true">☰</span><span>{OVERVIEW_COLUMN_LABELS[column]}</span><input type="checkbox" checked={overviewColumns.includes(column)} onChange={() => toggleBaseColumn("overview", column)} /></label>)}</div></section>
@@ -1824,12 +1870,14 @@ function DashboardPage() {
 
         </section>
 
-        <aside className="control-rail">
-          {railExpanded ? <button type="button" className="rail-scrim" aria-label="收起操作台" onClick={closeRail} /> : null}
-          <div className={`rail-card operation-console ${railExpanded ? "is-expanded" : ""}`}>
-            <button className="rail-toggle" type="button" onClick={() => railExpanded ? closeRail() : setRailExpanded(true)} aria-label={railExpanded ? "收起操作台" : "展开批量操作"}>{railExpanded ? "×" : "☰"}</button>
-            <p className="section-kicker">PMO ACTIONS</p>
-            <h3>{contractPanel || quickItem || quickConstraint || quickConstraintList ? "快速办理" : workItemActivity ? "办理活动" : columnBatchTarget ? "阶段跟踪批量办理" : "批量操作"}</h3>
+        {railVisible ? <aside className="control-rail">
+          <button type="button" className="rail-scrim" aria-label="收起操作台" onClick={closeRail} />
+          <div className="rail-card operation-console is-expanded">
+            <header className="operation-rail-header">
+              <div className="operation-rail-title">
+                <div><p className="section-kicker">PMO ACTIONS</p><h3>{contractPanel || quickItem || quickConstraint || quickConstraintList ? "快速办理" : workItemActivity ? "办理活动" : columnBatchTarget ? "阶段跟踪批量办理" : operationMode === "config" ? "基础配置" : operationMode === "batch" ? "办理活动记录" : "项目操作"}</h3></div>
+                <button className="rail-close" type="button" onClick={closeRail} aria-label="关闭右侧面板">×</button>
+              </div>
             {!contractPanel && !quickItem && !quickConstraint && !quickConstraintList ? <div className="selection-summary">
               <span>当前已选</span>
               <strong>{selectedIds.length}</strong>
@@ -1839,11 +1887,16 @@ function DashboardPage() {
                 {selectedProjects.map((project) => <article key={project.id}><div><strong>{project.name}</strong><small>{project.project_code} · 有效 {formatCurrency(project.effective_budget ?? project.budget)} 万</small></div><button type="button" className="text-button" onClick={() => toggleSelection(project)}>取消选中</button></article>)}
               </div> : null}
             </div> : null}
-            {!contractPanel && !quickItem && !quickConstraint && !quickConstraintList && !columnBatchTarget ? <div className="operation-tabs">
-              {([ ["advance", "推进管理"], ["batch", "办理活动"], ["stage", "Stage 推进"], ["items", "添加事项"], ["package", "应用工作包"], ["constraints", "外部约束"], ["config", "基础配置"] ] as const).map(([mode, label]) => <button key={mode} className={operationMode === mode ? "active" : ""} onClick={() => { setOperationMode(mode); setRailExpanded(true); if (mode === "batch") void loadBatchHistory(); }}>{label}</button>)}
+            {projectOperationVisible && !columnBatchTarget ? <div className="project-operation-toolbar" aria-label="项目操作">
+              <div className="project-operation-menu"><button type="button" className="rail-primary-action" aria-label="添加或安排" aria-expanded={addMenuOpen} onClick={() => { setAddMenuOpen((open) => !open); setMoreMenuOpen(false); }}><Plus size={18} /></button>{addMenuOpen ? <div className="rail-action-menu"><button type="button" onClick={() => { setOperationMode("items"); setAddMenuOpen(false); }}>添加事项</button><button type="button" onClick={() => { setOperationMode("package"); setAddMenuOpen(false); }}>应用工作包</button><button type="button" onClick={() => { setOperationMode("constraints"); setAddMenuOpen(false); }}>添加外部约束</button></div> : null}</div>
+              <button type="button" className="rail-primary-action" aria-label="推进 Stage" onClick={() => { setOperationMode("stage"); setAddMenuOpen(false); setMoreMenuOpen(false); }}><ArrowRight size={18} /></button>
+              <div className="project-operation-menu"><button type="button" className="rail-primary-action" aria-label="更多管理" aria-expanded={moreMenuOpen} onClick={() => { setMoreMenuOpen((open) => !open); setAddMenuOpen(false); }}><MoreHorizontal size={18} /></button>{moreMenuOpen ? <div className="rail-action-menu"><button type="button" onClick={() => { setOperationMode("advance"); setMoreMenuOpen(false); }}>年度推进管理</button></div> : null}</div>
             </div> : null}
+            {operationMode === "config" ? <button type="button" className="text-button rail-context-back" onClick={returnToProjectOperations}>← 返回项目操作</button> : null}
+            {operationMode === "batch" ? <button type="button" className="text-button rail-context-back" onClick={returnToProjectOperations}>← 返回项目操作</button> : null}
+            </header>
             <div className="operation-body">
-              {contractPanel ? <ContractPanel projectId={contractPanel.projectId} contextProject={contractPanel.contextProject} initialProjectIds={contractPanel.projectIds} initialContractId={contractPanel.contractId} operator={operator} allowCreate={contractPanel.projectIds.length > 0} defaultReadOnly={contractPanel.contextProject?.stage === "已完成"} onClose={closeRail} onChanged={refreshContractProjects} /> : workItemActivity ? <section className="column-batch-panel activity-panel">
+              {contractPanel ? <ContractPanel projectId={contractPanel.projectId} contextProject={contractPanel.contextProject} initialProjectIds={contractPanel.projectIds} initialContractId={contractPanel.contractId} operator={operator} allowCreate={contractPanel.projectIds.length > 0} defaultReadOnly={contractPanel.contextProject?.stage === "已完成"} onClose={returnToProjectOperations} onChanged={refreshContractProjects} /> : workItemActivity ? <section className="column-batch-panel activity-panel">
                 <div className="quick-panel-heading"><strong>{workItemActivity.name}</strong><button type="button" className="text-button" onClick={() => { setWorkItemActivity(null); setOperationMode(batchReturnMode === "batch" ? "batch" : "advance"); if (batchReturnMode === "stage") setTableView("stage"); }}>返回{batchReturnMode === "batch" ? "办理活动" : "阶段跟踪"}</button></div>
                 <p className="operation-lead">事项 · <strong>{workItemActivity.work_item_name}</strong>{workItemActivity.scheduled_on ? ` · ${workItemActivity.scheduled_on}` : ""}</p>
                 <p className="muted-copy">活动成员 {workItemActivity.member_count} 个，已登记结果 {workItemActivity.recorded_outcome_count} 个；当前选择只决定本次办理，不会移出活动。</p>
@@ -1864,7 +1917,7 @@ function DashboardPage() {
                 <div className="quick-panel-heading"><strong>阶段跟踪批量办理</strong><button type="button" className="text-button" onClick={clearColumnBatchTarget}>取消列选择</button></div>
                 <p className="operation-lead">{columnBatchTarget.kind === "work_item" ? "事项" : "约束"} · <strong>{columnBatchTarget.label}</strong>，已选 {selectedIds.length} 个实际存在的实例。</p>
                 {columnBatchTarget.kind === "work_item" ? <>
-                  <button type="button" className="mini-button" disabled={!selectedIds.length} onClick={() => { setBatchArrangeOpen((value) => !value); void loadActivityJoinChoices(); }}>安排办理活动</button>
+                  <button type="button" className="rail-primary-action stage-activity-trigger" aria-label="安排办理活动" title="安排办理活动" disabled={!selectedIds.length} onClick={() => { setBatchArrangeOpen((value) => !value); void loadActivityJoinChoices(); }}><Plus size={18} /></button>
                   {batchArrangeOpen ? <section className="batch-arrange-form"><strong>新建活动</strong><label className="field"><span>活动名称</span><input className="input" value={batchDraft.name} onChange={(event) => setBatchDraft((current) => ({ ...current, name: event.target.value }))} /></label><label className="field"><span>日期（可选）</span><input className="input" type="date" value={batchDraft.scheduled_on} onChange={(event) => setBatchDraft((current) => ({ ...current, scheduled_on: event.target.value }))} /></label><label className="field"><span>说明（可选）</span><textarea className="textarea" rows={2} value={batchDraft.note} onChange={(event) => setBatchDraft((current) => ({ ...current, note: event.target.value }))} /></label><button className="action-button primary full" disabled={!batchDraft.name.trim() || executing} onClick={() => void createWorkItemActivity()}>保存办理活动</button>{activityJoinChoices.length ? <section className="quick-group"><strong>加入已有活动</strong>{activityJoinChoices.map((activity) => <button type="button" key={activity.id} className="batch-member-row" disabled={executing} onClick={() => void joinWorkItemActivity(activity)}><span>{activity.name}{activity.scheduled_on ? ` · ${activity.scheduled_on}` : ""}</span><small>{activity.status === "in_progress" ? "进行中" : "待办理"} · {activity.member_count} 个项目</small></button>)}</section> : <small className="muted-copy">当前没有同事项、未结束的可加入活动。</small>}</section> : null}
                   <label className="field"><span>办理动作</span><select className="select" value={columnWorkItemAction} onChange={(event) => { setColumnWorkItemAction(event.target.value as typeof columnWorkItemAction); setColumnBatchPreview(null); }}><option value="progress">添加共同进展</option><option value="update">修改事项设置</option><option value="complete">完成事项</option></select></label>
                   {columnWorkItemAction === "progress" ? <label className="field"><span>共同进展</span><textarea className="textarea" rows={3} value={columnBatchValue.progress_content} onChange={(event) => setColumnBatchValue((current) => ({ ...current, progress_content: event.target.value }))} /></label> : null}
@@ -1978,7 +2031,7 @@ function DashboardPage() {
             </div>
           </div>
 
-        </aside>
+        </aside> : selectedIds.length ? <button type="button" className="rail-reopen" title={`展开项目操作 · 已选 ${selectedIds.length} 项`} aria-label={`展开项目操作，已选 ${selectedIds.length} 项`} onClick={() => { setProjectRailDismissed(false); setOperationMode("idle"); }}><PanelRightOpen size={17} /><span>{selectedIds.length}</span></button> : null}
         </>}
 
         <section className="import-lab">

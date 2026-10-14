@@ -256,15 +256,23 @@ textarea {
 .dashboard-notices .notice { margin-top: 0; }
 
 .workspace {
+  --workbench-height: clamp(30rem, calc(100dvh - 16rem), 38rem);
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 360px);
+  grid-template-columns: minmax(0, 1fr);
   grid-template-areas:
-    "main rail"
-    "import import";
+    "main"
+    "import";
   gap: 24px;
   margin-top: 24px;
   min-width: 0;
   align-items: start;
+}
+
+.workspace.has-control-rail {
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 360px);
+  grid-template-areas:
+    "main rail"
+    "import import";
 }
 
 .main-stage {
@@ -354,7 +362,11 @@ textarea {
 }
 
 .board {
-  min-block-size: clamp(22rem, calc(100dvh - 24rem), 40rem);
+  display: flex;
+  flex-direction: column;
+  block-size: var(--workbench-height);
+  min-block-size: 22rem;
+  max-block-size: 38rem;
   align-self: start;
 }
 
@@ -441,7 +453,9 @@ textarea {
 
 .project-table-wrap {
   overflow: auto;
-  max-height: calc(100vh - 320px);
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
 }
 
 .project-table {
@@ -464,6 +478,10 @@ textarea {
   color: var(--muted);
   font-size: 0.88rem;
   font-weight: 600;
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--paper-strong);
 }
 
 
@@ -620,14 +638,29 @@ textarea {
 
 .control-rail {
   display: block;
-  align-self: start;
-  position: sticky;
-  top: 28px;
+  align-self: end;
+  position: relative;
   min-width: 0;
-  max-height: calc(100vh - 48px);
+  block-size: var(--workbench-height);
+  min-block-size: 22rem;
+  max-block-size: 38rem;
 }
 
-.operation-console { display: flex; flex-direction: column; width: 100%; max-width: 360px; min-height: 0; max-height: calc(100vh - 48px); overflow: hidden; }
+.operation-console { display: flex; flex-direction: column; width: 100%; max-width: 360px; height: 100%; min-height: 0; max-height: none; overflow: hidden; }
+.operation-rail-header { position: sticky; top: 0; z-index: 4; display: grid; gap: 10px; padding: 2px 0 14px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.operation-rail-title { display: flex; justify-content: space-between; align-items: start; gap: 12px; }
+.operation-rail-title h3 { margin: 0; }
+.rail-close, .rail-primary-action { display: inline-grid; place-items: center; width: 36px; height: 36px; padding: 0; border: 1px solid var(--line); background: var(--paper-strong); color: var(--ink); cursor: pointer; }
+.rail-close { font-size: 1.3rem; line-height: 1; }
+.project-operation-toolbar { display: flex; align-items: center; gap: 8px; }
+.project-operation-menu { position: relative; }
+.rail-primary-action:hover, .rail-primary-action[aria-expanded="true"] { border-color: var(--accent-cyan); color: var(--accent-cyan); }
+.rail-action-menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 10; display: grid; min-width: 142px; padding: 5px; border: 1px solid var(--line); background: var(--paper-strong); box-shadow: 0 12px 28px rgba(31,30,26,.16); }
+.rail-action-menu button { padding: 9px 10px; border: 0; background: transparent; color: var(--ink); text-align: left; cursor: pointer; white-space: nowrap; }
+.rail-action-menu button:hover { background: rgba(12,122,121,.08); }
+.rail-context-back { justify-self: start; }
+.rail-reopen { position: absolute; z-index: 6; top: calc(164px + 24px); right: 0; display: inline-flex; align-items: center; gap: 4px; padding: 8px; border: 1px solid var(--line); background: var(--paper-strong); color: var(--ink); box-shadow: 0 8px 20px rgba(31,30,26,.12); cursor: pointer; }
+.rail-reopen span { font-size: .76rem; }
 .operation-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
 .operation-tabs button { min-height: 34px; border: 1px solid var(--line); background: rgba(255,252,246,.54); color: var(--ink); font-size: .8rem; cursor: pointer; }
 .operation-tabs button.active { background: var(--ink); color: var(--paper-strong); }.operation-tabs button:disabled { opacity:.5; cursor:not-allowed; }
@@ -1485,84 +1518,36 @@ textarea {
 
 @media (min-width: 1100px) and (max-width: 1439px) {
   .shell { padding: 20px; }
-  .workspace {
-    grid-template-columns: minmax(0, 1fr) 56px;
-    grid-template-areas:
-      "main rail"
-      "import import";
-    gap: 16px;
+  .workspace,
+  .workspace.has-control-rail {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "main" "import";
   }
 
   .control-rail {
-    position: sticky;
-    top: 20px;
-    width: 56px;
-    height: calc(100vh - 40px);
-    overflow: visible;
-  }
-
-  .operation-console {
     position: absolute;
-    top: 0;
+    z-index: 20;
+    top: 188px;
     right: 0;
-    width: 56px;
-    min-width: 0;
-    height: calc(100vh - 40px);
-    max-height: calc(100vh - 40px);
-    padding: 10px;
-    overflow: hidden;
-    transition: width .18s ease, box-shadow .18s ease;
-  }
-
-  .operation-console .operation-body { flex: 1 1 auto; min-height: 0; }
-
-  .operation-console.is-expanded {
-    width: 360px;
-    min-width: 320px;
-    max-width: calc(100vw - 40px);
+    width: min(360px, calc(100% - 32px));
+    height: var(--workbench-height);
     overflow: hidden;
     box-shadow: 0 18px 44px rgba(31,30,26,.2);
-    z-index: 20;
   }
 
-  .operation-console:not(.is-expanded) > :not(.rail-toggle) {
-    display: none;
-  }
-
-  .rail-toggle {
-    display: grid;
-    place-items: center;
-    width: 34px;
-    height: 34px;
-    margin-left: auto;
-    border: 1px solid var(--line);
-    background: var(--paper-strong);
-    color: var(--ink);
-    cursor: pointer;
-  }
-
-  .rail-scrim {
-    display: block;
-    position: fixed;
-    inset: 0;
-    z-index: 15;
-    border: 0;
-    background: rgba(31, 30, 26, .08);
-    cursor: default;
-  }
+  .operation-console { max-width: none; }
+  .rail-scrim { display: none; }
 
   .updated-date,
-  .project-table th:last-child {
-    display: none;
-  }
+  .project-table th:last-child { display: none; }
 }
 
 @media (max-width: 1099px) {
-  .workspace {
+  .workspace,
+  .workspace.has-control-rail {
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
       "main"
-      "rail"
       "import";
   }
 
@@ -1571,25 +1556,15 @@ textarea {
     grid-template-columns: 1fr;
   }
 
-  .control-rail,
-  .detail-side {
-    position: static;
-    width: auto;
-    max-height: none;
-  }
+  .control-rail { position: absolute; z-index: 20; top: 188px; right: 0; width: min(360px, calc(100% - 20px)); height: var(--workbench-height); max-height: none; overflow: hidden; box-shadow: 0 18px 44px rgba(31,30,26,.2); }
+  .detail-side { position: static; width: auto; max-height: none; }
 
   .main-stage { display: grid; }
 
-  .operation-console {
-    position: static;
-    width: 100%;
-    max-width: none;
-    max-height: none;
-  }
-
-  .operation-body {
-    overflow: visible;
-  }
+  .operation-console { position: static; width: 100%; max-width: none; max-height: none; }
+  .operation-body { overflow-y: auto; }
+  .rail-scrim { display: none; }
+  .rail-reopen { top: 170px; }
 
   .hero-stats,
   .group-band {

@@ -1,6 +1,7 @@
 node_modules
 dist
 .column-layout-test-dist/
+.rail-state-test-dist/
 *.tsbuildinfo
 .DS_Store
 *.swp
