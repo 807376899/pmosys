@@ -576,7 +576,6 @@ export default function ContractPanel({
                   ? "管理关联项目"
                   : "合同列表"}
           </h3>
-          {selectedNames ? <small>关联项目：{selectedNames}</small> : null}
         </div>
       </div>
       {error ? <div className="notice error">{error}</div> : null}
@@ -725,7 +724,7 @@ export default function ContractPanel({
           {contract.note ? <p className="contract-note">{contract.note}</p> : null}
 
           <section className="contract-linked-projects">
-            <div className="section-heading"><h4>关联项目</h4><span><small>共 {contract.projects.length} 项</small><button type="button" className="text-button" onClick={() => setMode("relations")}>管理</button></span></div>
+            <div className="section-heading"><h4>关联项目</h4><small>共 {contract.projects.length} 项</small></div>
             <div className="progress-list">
               {contract.projects.map((item) => <div className="progress-entry" key={item.id}><span>{item.project_code} · {item.name}</span><small>分摊 {item.allocated_amount == null ? "未登记" : `${formatCurrency(item.allocated_amount)} 万`}</small></div>)}
             </div>
@@ -763,7 +762,7 @@ export default function ContractPanel({
 
           <section className="contract-business-summary"><div className="section-heading"><h4>业务概况</h4><small>截至当前</small></div><div className="contract-fact"><span>验收</span><strong>{acceptanceStatus[contract.acceptance_status]}{contract.acceptance_records?.length ? " · 已有记录" : " · 暂无记录"}</strong></div><div className="contract-fact"><span>付款</span><strong>已付 {formatCurrency(contract.paid_total)} 万 / {contract.total_amount == null ? "未记录" : `${formatCurrency(contract.total_amount)} 万`}</strong></div></section>
           <section className="contract-recent-activity"><div className="section-heading"><h4>最近动态</h4><small>共 {recentActivity.length} 条</small></div>{recentActivity.length ? <div className="progress-list">{recentActivity.map((item) => <div className="progress-entry" key={item.id}><span>{item.occurredAt.slice(0, 10)} · {item.title}{item.note ? ` · ${item.note}` : ""}</span></div>)}</div> : <p className="muted-copy">暂无办理记录。</p>}</section>
-          <section className="contract-management"><div className="section-heading"><h4>合同管理</h4>{contract.status !== "active" ? <small>{contractStatus[contract.status]}</small> : null}</div><div className="contract-management-actions"><button className="mini-button" onClick={() => setEditing(true)}>编辑合同</button>{contract.status === "active" ? <button className="mini-button" onClick={() => void applyException("pause")}>暂停合同</button> : null}{contract.status === "paused" ? <button className="mini-button" onClick={() => void applyException("resume")}>恢复合同</button> : null}{contract.status !== "terminated" ? <button className="mini-button danger" onClick={() => void applyException("terminate")}>解除合同</button> : null}</div></section>
+          <section className="contract-management"><div className="section-heading"><h4>合同管理</h4>{contract.status !== "active" ? <small>{contractStatus[contract.status]}</small> : null}</div><div className="contract-management-actions"><button className="mini-button" onClick={() => setEditing(true)}>编辑合同</button><button className="mini-button" onClick={() => setMode("relations")}>管理关联项目</button>{contract.status === "active" ? <button className="mini-button" onClick={() => void applyException("pause")}>暂停合同</button> : null}{contract.status === "paused" ? <button className="mini-button" onClick={() => void applyException("resume")}>恢复合同</button> : null}{contract.status !== "terminated" ? <button className="mini-button danger" onClick={() => void applyException("terminate")}>解除合同</button> : null}</div></section>
         </div>
       ) : null}
       {mode === "create" || (mode === "detail" && editing) ? (
