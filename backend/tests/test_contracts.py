@@ -331,3 +331,43 @@ def test_delivery_period_uses_calendar_units_and_rejects_impossible_actual_date(
     })
     assert impossible.status_code == 422
     assert "实际交付日期" in impossible.json()["message"]
+
+
+def test_contract_progress_can_record_and_clear_actual_delivery_atomically(client, create_project_payload):
+    project = _advancing_project(client, create_project_payload, name="实际交付进展合同项目")
+    created = client.post("/api/v1/contracts", json={
+        "name": "实际交付进展合同", "contract_no": "HT-2028-005", "signed_on": "2028-03-01",
+        "project_ids": [project["id"]], "operator": "PMO",
+    })
+    assert created.status_code == 200
+    contract_id = created.json()["id"]
+
+    delivered = client.post(f"/api/v1/contracts/{contract_id}/progress-logs", json={
+        "actual_delivered_on": "2028-03-15", "operator": "PMO",
+    })
+    assert delivered.status_code == 200
+    assert delivered.json()["progress_log"] is None
+    assert delivered.json()["contract"]["actual_delivered_on"] == "2028-03-15"
+    assert client.get(f"/api/v1/contracts/{contract_id}/progress-logs").json() == []
+
+    combined = client.post(f"/api/v1/contracts/{contract_id}/progress-logs", json={
+        "content": "设备已交付并完成安装", "actual_delivered_on": "2028-03-16", "operator": "PMO",
+    })
+    assert combined.status_code == 200
+    assert combined.json()["contract"]["actual_delivered_on"] == "2028-03-16"
+    assert combined.json()["progress_log"]["content"] == "设备已交付并完成安装"
+
+    cleared = client.post(f"/api/v1/contracts/{contract_id}/progress-logs", json={
+        "clear_actual_delivered_on": True, "operator": "PMO",
+    })
+    assert cleared.status_code == 200
+    assert cleared.json()["contract"]["actual_delivered_on"] is None
+
+    empty = client.post(f"/api/v1/contracts/{contract_id}/progress-logs", json={"operator": "PMO"})
+    assert empty.status_code == 422
+
+    invalid = client.post(f"/api/v1/contracts/{contract_id}/progress-logs", json={
+        "content": "不能部分写入", "actual_delivered_on": "2028-02-29", "operator": "PMO",
+    })
+    assert invalid.status_code == 422
+    assert [log["content"] for log in client.get(f"/api/v1/contracts/{contract_id}/progress-logs").json()] == ["设备已交付并完成安装"]

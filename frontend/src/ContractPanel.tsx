@@ -13,6 +13,7 @@ import type {
   ContractAcceptanceRecord,
   ContractPaymentRecord,
   ContractProgressLog,
+  ContractProgressSubmission,
   Project,
   ProjectListResponse,
 } from "./types";
@@ -62,7 +63,6 @@ type FormState = {
   planned_completion_on: string;
   delivery_period_value: string;
   delivery_period_unit: Exclude<Contract["delivery_period_unit"], null> | "";
-  actual_delivered_on: string;
   note: string;
 };
 const emptyForm = (): FormState => ({
@@ -74,7 +74,6 @@ const emptyForm = (): FormState => ({
   planned_completion_on: "",
   delivery_period_value: "",
   delivery_period_unit: "",
-  actual_delivered_on: "",
   note: "",
 });
 const toForm = (contract: Contract): FormState => ({
@@ -87,7 +86,6 @@ const toForm = (contract: Contract): FormState => ({
   planned_completion_on: contract.planned_completion_on || "",
   delivery_period_value: contract.delivery_period_value == null ? "" : String(contract.delivery_period_value),
   delivery_period_unit: contract.delivery_period_unit || "",
-  actual_delivered_on: contract.actual_delivered_on || "",
   note: contract.note,
 });
 
@@ -128,6 +126,8 @@ export default function ContractPanel({
   const [allContracts, setAllContracts] = useState<Contract[]>([]);
   const [supplierSuggestions, setSupplierSuggestions] = useState<string[]>([]);
   const [progress, setProgress] = useState("");
+  const [progressActualDeliveredOn, setProgressActualDeliveredOn] = useState("");
+  const [clearActualDelivery, setClearActualDelivery] = useState(false);
   const [editingLog, setEditingLog] = useState<ContractProgressLog | null>(
     null,
   );
@@ -219,6 +219,8 @@ export default function ContractPanel({
       setMode("detail");
       setEditing(false);
       setActiveAction(null);
+      setProgressActualDeliveredOn("");
+      setClearActualDelivery(false);
       setError("");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "合同加载失败");
@@ -290,6 +292,8 @@ export default function ContractPanel({
     setMode(destination);
     setEditing(false);
     setActiveAction(null);
+    setProgressActualDeliveredOn("");
+    setClearActualDelivery(false);
     await onChanged(updated.projects.map((item) => item.id));
     if (projectId) await loadProjectContracts(projectId);
     setFeedback(message);
@@ -320,7 +324,7 @@ export default function ContractPanel({
         total_amount: form.total_amount || null,
         operator,
       });
-      await refresh(updated, "合同已更新。");
+      await refresh(updated, "合同已更新。", "detail");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "合同保存失败");
     }
@@ -366,19 +370,19 @@ export default function ContractPanel({
   }
 
   async function addProgress() {
-    if (!contract || !progress.trim()) return;
+    if (!contract || (!progress.trim() && !progressActualDeliveredOn && !clearActualDelivery)) return;
     try {
-      const log = await apiPost<ContractProgressLog>(
+      const result = await apiPost<ContractProgressSubmission>(
         `/contracts/${contract.id}/progress-logs`,
-        { content: progress.trim(), operator },
+        {
+          content: progress.trim() || undefined,
+          actual_delivered_on: progressActualDeliveredOn || undefined,
+          clear_actual_delivered_on: clearActualDelivery || undefined,
+          operator,
+        },
       );
-      const updated = {
-        ...contract,
-        latest_progress: log,
-        progress_logs: [...(contract.progress_logs || []), log],
-      };
       setProgress("");
-      await refresh(updated, "合同进展已记录。", "detail");
+      await refresh(result.contract, "合同进展已记录。", "detail");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "合同进展保存失败");
     }
@@ -742,6 +746,20 @@ export default function ContractPanel({
             {activeAction === "progress" ? <div className="contract-action-form">
               <div className="progress-list">{(contract.progress_logs || []).map((log) => <div key={log.id} className="progress-entry"><span>{log.created_at.slice(0, 10)} · {log.content}</span><button className="text-button" onClick={() => { setEditingLog(log); setLogValue(log.content); }}>编辑</button><button className="text-button danger" onClick={() => { setDeletingLog(log); setDeleteReason(""); }}>删除</button></div>)}</div>
               <textarea className="textarea" rows={2} value={progress} onChange={(event) => setProgress(event.target.value)} placeholder="新增进展" />
+              <div className="field-grid">
+                <label className="field">
+                  <span>实际交付日期（可选）</span>
+                  <input className="input" type="date" value={progressActualDeliveredOn} disabled={clearActualDelivery} onChange={(event) => setProgressActualDeliveredOn(event.target.value)} />
+                </label>
+                <label className="check-row">
+                  <input type="checkbox" checked={clearActualDelivery} onChange={(event) => {
+                    setClearActualDelivery(event.target.checked);
+                    if (event.target.checked) setProgressActualDeliveredOn("");
+                  }} />
+                  清空实际交付日期
+                </label>
+              </div>
+              <p className="muted-copy">当前实际交付日期：{contract.actual_delivered_on || "未登记"}</p>
               <button className="mini-button active" onClick={() => void addProgress()}>记录进展</button>
               {editingLog ? <div className="inline-form"><input className="input" value={logValue} onChange={(event) => setLogValue(event.target.value)} /><button className="mini-button" onClick={() => setEditingLog(null)}>取消</button><button className="mini-button active" onClick={() => void saveLog()}>保存修改</button></div> : null}
               {deletingLog ? <div className="inline-form"><input className="input" value={deleteReason} onChange={(event) => setDeleteReason(event.target.value)} placeholder="删除原因（必填）" /><button className="mini-button" onClick={() => setDeletingLog(null)}>取消</button><button className="mini-button danger" onClick={() => void removeLog()}>确认删除</button></div> : null}
@@ -825,20 +843,6 @@ export default function ContractPanel({
                 value={form.signed_on}
                 onChange={(event) =>
                   setForm({ ...form, signed_on: event.target.value })
-                }
-              />
-            </label>
-            <label className="field">
-              <span>实际交付日期</span>
-              <input
-                className="input"
-                type="date"
-                value={form.actual_delivered_on}
-                onChange={(event) =>
-                  setForm({
-                    ...form,
-                    actual_delivered_on: event.target.value,
-                  })
                 }
               />
             </label>
@@ -941,8 +945,16 @@ export default function ContractPanel({
             ))}
           </details> : null}
           <div className="work-item-actions">
-            <button className="mini-button" onClick={() => void returnToList()}>
-              返回合同列表
+            <button className="mini-button" onClick={() => {
+              if (mode === "create") {
+                void returnToList();
+                return;
+              }
+              setForm(toForm(contract!));
+              setEditing(false);
+              setError("");
+            }}>
+              {mode === "create" ? "返回合同列表" : "返回合同"}
             </button>
             <button
               className="action-button primary"

@@ -110,6 +110,11 @@ export interface ContractProgressLog {
   updated_at: string;
 }
 
+export interface ContractProgressSubmission {
+  contract: Contract;
+  progress_log: ContractProgressLog | null;
+}
+
 export interface ContractAcceptanceRecord {
   id: number;
   contract_id: number;

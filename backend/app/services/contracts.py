@@ -510,18 +510,46 @@ def get_contract_progress_logs(contract_id: int) -> list[dict]:
 
 def create_contract_progress_log(contract_id: int, payload: dict) -> dict:
     operator, content = _operator(payload), _text(payload.get("content"))
-    if not content:
-        raise ValidationError("进展内容不能为空")
+    clear_actual_delivery = bool(payload.get("clear_actual_delivered_on"))
+    has_actual_delivery = "actual_delivered_on" in payload and _text(payload.get("actual_delivered_on")) != ""
+    if not content and not has_actual_delivery and not clear_actual_delivery:
+        raise ValidationError("请填写进展内容、实际交付日期或选择清空实际交付日期")
+    if clear_actual_delivery and has_actual_delivery:
+        raise ValidationError("实际交付日期不能与清空操作同时提交")
     with get_connection() as conn:
         contract = _contract_row(conn, contract_id)
         if contract["status"] in {"paused", "terminated"}:
             raise ValidationError("暂停或已解除合同不能登记进展")
-        cursor = conn.execute("INSERT INTO contract_progress_logs (contract_id,content,operator,updated_by) VALUES (?,?,?,?)", (contract_id, content, operator, operator))
-        result = dict(conn.execute("SELECT * FROM contract_progress_logs WHERE id=?", (cursor.lastrowid,)).fetchone())
         project_ids = [project["id"] for project in _linked_projects(conn, contract_id)]
-        _contract_audit(conn, contract_id, "CONTRACT_PROGRESS_RECORDED", operator, payload={"progress_log_id": result["id"]})
-        _project_audit(conn, project_ids, "CONTRACT_PROGRESS_RECORDED", operator, payload={"contract_id": contract_id, "progress_log_id": result["id"]})
-        return result
+        progress_log = None
+        if has_actual_delivery or clear_actual_delivery:
+            actual_delivered_on = None if clear_actual_delivery else _date(payload.get("actual_delivered_on"), "实际交付日期", required=True)
+            if actual_delivered_on and contract["signed_on"] and actual_delivered_on < contract["signed_on"]:
+                raise ValidationError("实际交付日期不得早于签订日期")
+            conn.execute(
+                "UPDATE contracts SET actual_delivered_on=?,updated_by=?,updated_at=? WHERE id=?",
+                (actual_delivered_on, operator, _now(), contract_id),
+            )
+            _contract_audit(
+                conn,
+                contract_id,
+                "CONTRACT_ACTUAL_DELIVERY_UPDATED",
+                operator,
+                payload={"before": contract["actual_delivered_on"], "after": actual_delivered_on},
+            )
+            _project_audit(
+                conn,
+                project_ids,
+                "CONTRACT_ACTUAL_DELIVERY_UPDATED",
+                operator,
+                payload={"contract_id": contract_id, "before": contract["actual_delivered_on"], "after": actual_delivered_on},
+            )
+        if content:
+            cursor = conn.execute("INSERT INTO contract_progress_logs (contract_id,content,operator,updated_by) VALUES (?,?,?,?)", (contract_id, content, operator, operator))
+            progress_log = dict(conn.execute("SELECT * FROM contract_progress_logs WHERE id=?", (cursor.lastrowid,)).fetchone())
+            _contract_audit(conn, contract_id, "CONTRACT_PROGRESS_RECORDED", operator, payload={"progress_log_id": progress_log["id"]})
+            _project_audit(conn, project_ids, "CONTRACT_PROGRESS_RECORDED", operator, payload={"contract_id": contract_id, "progress_log_id": progress_log["id"]})
+        return {"contract": _serialize_contract(conn, _contract_row(conn, contract_id), include_history=True), "progress_log": progress_log}
 
 
 def update_contract_progress_log(contract_id: int, log_id: int, payload: dict) -> dict:
