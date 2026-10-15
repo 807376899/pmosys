@@ -16,6 +16,7 @@ import type {
   Project,
   ProjectListResponse,
 } from "./types";
+import { buildContractActivity } from "./lib/contract-activity";
 import { formatCurrency } from "./lib/format";
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -113,7 +114,7 @@ export default function ContractPanel({
 }) {
   const [contracts, setContracts] = useState<Contract[]>([]);
   const [contract, setContract] = useState<Contract | null>(null);
-  const [mode, setMode] = useState<"list" | "create" | "detail" | "link">(
+  const [mode, setMode] = useState<"list" | "create" | "detail" | "link" | "relations">(
     initialContractId ? "detail" : "list",
   );
   const [form, setForm] = useState<FormState>(emptyForm());
@@ -144,6 +145,7 @@ export default function ContractPanel({
   const [relationReason, setRelationReason] = useState("");
   const [payment, setPayment] = useState({ amount: "", paid_on: today(), note: "" });
   const [editingPayment, setEditingPayment] = useState<ContractPaymentRecord | null>(null);
+  const [activeAction, setActiveAction] = useState<"progress" | "acceptance" | "payment" | null>(null);
   const [error, setError] = useState("");
   const [feedback, setFeedback] = useState("");
   const [editing, setEditing] = useState(!defaultReadOnly);
@@ -216,6 +218,7 @@ export default function ContractPanel({
       });
       setMode("detail");
       setEditing(false);
+      setActiveAction(null);
       setError("");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "合同加载失败");
@@ -254,12 +257,13 @@ export default function ContractPanel({
   async function returnToList() {
     setContract(null);
     setEditing(false);
+    setActiveAction(null);
     setMode("list");
     setError("");
     if (projectId) await loadProjectContracts(projectId);
   }
 
-  async function refresh(updated: Contract, message: string) {
+  async function refresh(updated: Contract, message: string, destination: "list" | "detail" = isProjectContext ? "list" : "detail") {
     setContract(updated);
     setContracts((current) =>
       current.map((item) => (item.id === updated.id ? updated : item)),
@@ -283,8 +287,9 @@ export default function ContractPanel({
       result: updated.acceptance_records?.[0]?.result || "",
       note: updated.acceptance_records?.[0]?.note || "",
     });
-    setMode(isProjectContext ? "list" : "detail");
+    setMode(destination);
     setEditing(false);
+    setActiveAction(null);
     await onChanged(updated.projects.map((item) => item.id));
     if (projectId) await loadProjectContracts(projectId);
     setFeedback(message);
@@ -327,7 +332,7 @@ export default function ContractPanel({
     if (action !== "resume" && !reason.trim()) return;
     try {
       const updated = await apiPost<Contract>(`/contracts/${contract.id}/${action}`, { reason: reason.trim(), operator });
-      await refresh(updated, action === "pause" ? "合同已暂停。" : action === "resume" ? "合同已恢复。" : "合同已解除。");
+      await refresh(updated, action === "pause" ? "合同已暂停。" : action === "resume" ? "合同已恢复。" : "合同已解除。", "detail");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "合同例外操作失败");
     }
@@ -352,7 +357,7 @@ export default function ContractPanel({
         },
       );
       setRelationReason("");
-      await refresh(updated, "合同关联项目已更新。");
+      await refresh(updated, "合同关联项目已更新。", "detail");
       if (!currentIds.every((id) => selectedProjectIds.includes(id)))
         setFeedback("合同关联项目已更新。");
     } catch (err) {
@@ -373,7 +378,7 @@ export default function ContractPanel({
         progress_logs: [...(contract.progress_logs || []), log],
       };
       setProgress("");
-      await refresh(updated, "合同进展已记录。");
+      await refresh(updated, "合同进展已记录。", "detail");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "合同进展保存失败");
     }
@@ -397,6 +402,7 @@ export default function ContractPanel({
           progress_logs: logs,
         },
         "合同进展已修改。",
+        "detail",
       );
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "合同进展修改失败");
@@ -422,6 +428,7 @@ export default function ContractPanel({
           progress_logs: logs,
         },
         "合同进展已删除。",
+        "detail",
       );
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "合同进展删除失败");
@@ -444,6 +451,7 @@ export default function ContractPanel({
       await refresh(
         await apiGet<Contract>(`/contracts/${contract.id}`),
         "验收结果已登记。",
+        "detail",
       );
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "验收登记失败");
@@ -459,7 +467,7 @@ export default function ContractPanel({
         : await apiPost<Contract>(`/contracts/${contract.id}/payment-records`, payload);
       setPayment({ amount: "", paid_on: today(), note: "" });
       setEditingPayment(null);
-      await refresh(updated, editingPayment ? "付款记录已更正。" : "付款记录已登记。");
+      await refresh(updated, editingPayment ? "付款记录已更正。" : "付款记录已登记。", "detail");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "付款记录保存失败");
     }
@@ -469,7 +477,7 @@ export default function ContractPanel({
     if (!contract) return;
     try {
       const updated = await apiDelete<Contract>(`/contracts/${contract.id}/payment-records/${paymentId}`);
-      await refresh(updated, "付款记录已删除。");
+      await refresh(updated, "付款记录已删除。", "detail");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "付款记录删除失败");
     }
@@ -542,6 +550,14 @@ export default function ContractPanel({
       : []),
   ];
   const historicalCreate = Boolean(hasHistoricalSelection && mode === "create");
+  const recentActivity = contract ? buildContractActivity(contract) : [];
+
+  function activateAction(action: "progress" | "acceptance" | "payment") {
+    setActiveAction((current) => current === action ? null : action);
+    setEditingLog(null);
+    setDeletingLog(null);
+    setEditingPayment(null);
+  }
 
   return (
     <section className="contract-panel">
@@ -553,8 +569,12 @@ export default function ContractPanel({
                 ? "补录历史合同"
                 : "添加合同"
               : mode === "detail"
-                ? "合同办理"
-                : "合同列表"}
+                ? editing
+                  ? "编辑合同"
+                  : "合同办理"
+                : mode === "relations"
+                  ? "管理关联项目"
+                  : "合同列表"}
           </h3>
           {selectedNames ? <small>关联项目：{selectedNames}</small> : null}
         </div>
@@ -652,96 +672,100 @@ export default function ContractPanel({
           </button>
         </div>
       ) : null}
-      {mode === "detail" && contract && !editing ? (
-        <div className="contract-readonly">
-          <div className="detail-grid">
-            <div className="detail-field">
-              <span>合同编号</span>
-              <strong>{contract.contract_no}</strong>
-            </div>
-            {contract.status !== "active" ? <div className="detail-field">
-              <span>合同例外</span>
-              <strong>{contractStatus[contract.status]}</strong>
-            </div> : null}
-            <div className="detail-field">
-              <span>验收状态</span>
-              <strong>{acceptanceStatus[contract.acceptance_status]}</strong>
-            </div>
-            <div className="detail-field">
-              <span>合同总金额</span>
-              <strong>
-                {contract.total_amount == null
-                  ? "未记录"
-                  : `${contract.total_amount} 万`}
-              </strong>
-            </div>
-            <div className="detail-field">
-              <span>项目分摊</span>
-              <strong>
-                {contract.allocation_complete
-                  ? `${contract.allocation_total ?? 0} 万${contract.allocation_difference ? `（差额 ${contract.allocation_difference} 万）` : "（一致）"}`
-                  : "待补录"}
-              </strong>
-            </div>
-            <div className="detail-field"><span>交付提示</span><strong>{deliveryLabel(contract)}</strong></div>
-            <div className="detail-field"><span>计划交付日期</span><strong>{contract.planned_delivery_on || "未设置"}</strong></div>
-            {contract.calculated_delivery_on ? <div className="detail-field"><span>计算依据</span><strong>{deliveryCalendarLabel(contract)}</strong></div> : null}
-          </div>
-          <p>{contract.note || "未填写说明"}</p>
-          <div className="progress-list">
-            {contract.projects.map((item) => (
-              <div className="progress-entry" key={item.id}>
-                <span>
-                  {item.project_code} · {item.name} · 分摊{" "}
-                  {item.allocated_amount == null
-                    ? "未登记"
-                    : `${item.allocated_amount} 万`}
-                </span>
-              </div>
+      {mode === "relations" && contract ? (
+        <section className="contract-relation-editor">
+          <p className="muted-copy">管理关联项目及各项目涉及金额；合同基础信息和办理记录不会在此修改。</p>
+          <details className="contract-project-picker" open>
+            <summary>关联项目（{selectedProjectIds.length}）</summary>
+            <strong>推进中项目</strong>
+            {activeProjects.map((item) => (
+              <label key={item.id} className="check-row">
+                <input type="checkbox" checked={selectedProjectIds.includes(item.id)} onChange={() => toggleProject(item.id)} />
+                {item.project_code} · {item.name}
+              </label>
             ))}
-          </div>
+            <strong>已完成项目（补录/纠错）</strong>
+            {completedProjects.map((item) => (
+              <label key={item.id} className="check-row">
+                <input type="checkbox" checked={selectedProjectIds.includes(item.id)} onChange={() => toggleProject(item.id)} />
+                {item.project_code} · {item.name}
+              </label>
+            ))}
+            {linkedProjectRows.map((item) => (
+              <label className="field" key={`relation-allocation-${item.id}`}>
+                <span>{item.project_code} · {item.name} 分摊金额（万元，可选）</span>
+                <input className="input" inputMode="decimal" value={allocatedAmounts[item.id] ?? ""} onChange={(event) => setAllocatedAmounts((current) => ({ ...current, [item.id]: event.target.value }))} />
+              </label>
+            ))}
+            <label className="field">
+              <span>调整关联原因</span>
+              <input className="input" value={relationReason} onChange={(event) => setRelationReason(event.target.value)} placeholder="新增已完成项目或移除关联时必填" />
+            </label>
+          </details>
           <div className="work-item-actions">
-            <button className="mini-button" onClick={() => setEditing(true)}>
-              编辑合同
-            </button>
-            {contract.status === "active" ? <button className="mini-button" onClick={() => void applyException("pause")}>暂停合同</button> : null}
-            {contract.status === "paused" ? <button className="mini-button" onClick={() => void applyException("resume")}>恢复合同</button> : null}
-            {contract.status !== "terminated" ? <button className="mini-button danger" onClick={() => void applyException("terminate")}>解除合同</button> : null}
-            <button className="mini-button" onClick={() => void returnToList()}>
-              返回合同列表
-            </button>
+            <button className="mini-button" onClick={() => setMode("detail")}>返回合同</button>
+            <button className="action-button primary" onClick={() => void saveProjects()}>保存关联项目</button>
           </div>
-        </div>
-      ) : null}
-      {mode === "detail" && contract ? (
-        <section className="contract-payments">
-          <h4>付款记录</h4>
-          <div className="detail-grid">
-            <div className="detail-field"><span>支付状态</span><strong>{paymentStatus[contract.payment_status]}</strong></div>
-            <div className="detail-field"><span>累计付款</span><strong>{formatCurrency(contract.paid_total)} 万</strong></div>
-            <div className="detail-field"><span>待付款</span><strong>{contract.remaining_amount == null ? "待录入合同金额" : `${formatCurrency(contract.remaining_amount)} 万`}</strong></div>
-          </div>
-          <div className="progress-list">
-            {(contract.payment_records || []).map((item) => (
-              <div className="progress-entry" key={item.id}>
-                <span>{item.paid_on} · {formatCurrency(item.amount)} 万{item.note ? ` · ${item.note}` : ""}</span>
-                <button type="button" className="text-button" onClick={() => { setEditingPayment(item); setPayment({ amount: item.amount, paid_on: item.paid_on, note: item.note }); }}>更正</button>
-                <button type="button" className="text-button danger" onClick={() => void removePayment(item.id)}>删除</button>
-              </div>
-            ))}
-            {!contract.payment_records?.length ? <span className="muted-copy">尚未登记付款。</span> : null}
-          </div>
-          {contract.status === "active" ? <div className="inline-form contract-payment-form">
-            <input className="input" inputMode="decimal" value={payment.amount} onChange={(event) => setPayment({ ...payment, amount: event.target.value })} placeholder="付款金额（万元）" />
-            <input className="input" type="date" value={payment.paid_on} onChange={(event) => setPayment({ ...payment, paid_on: event.target.value })} />
-            <input className="input" value={payment.note} onChange={(event) => setPayment({ ...payment, note: event.target.value })} placeholder="说明（可选）" />
-            {editingPayment ? <button type="button" className="mini-button" onClick={() => { setEditingPayment(null); setPayment({ amount: "", paid_on: today(), note: "" }); }}>取消</button> : null}
-            <button type="button" className="mini-button active" onClick={() => void savePayment()}>{editingPayment ? "保存更正" : "登记付款"}</button>
-          </div> : null}
         </section>
       ) : null}
+      {mode === "detail" && contract && !editing ? (
+        <div className="contract-readonly contract-overview">
+          <div className="contract-fact-list">
+            <div className="contract-fact"><span>合同名称</span><strong>{contract.name}</strong></div>
+            <div className="contract-fact"><span>合同编号</span><strong>{contract.contract_no}</strong></div>
+            <div className="contract-fact"><span>供应商</span><strong>{contract.supplier || "未填写"}</strong></div>
+            <div className="contract-fact contract-amount"><span>合同总金额</span><strong>{contract.total_amount == null ? "未记录" : `${formatCurrency(contract.total_amount)} 万`}</strong></div>
+            <div className="contract-fact"><span>计划交付日期</span><strong>{contract.planned_delivery_on || "未设置"}</strong></div>
+            <div className="contract-fact"><span>验收状态</span><strong>{acceptanceStatus[contract.acceptance_status]}</strong></div>
+            <div className="contract-fact"><span>交付提示</span><strong>{deliveryLabel(contract)}</strong></div>
+            {contract.status !== "active" ? <div className="contract-fact contract-exception"><span>合同例外</span><strong>{contractStatus[contract.status]}</strong></div> : null}
+          </div>
+          {contract.note ? <p className="contract-note">{contract.note}</p> : null}
+
+          <section className="contract-linked-projects">
+            <div className="section-heading"><h4>关联项目</h4><small>共 {contract.projects.length} 项</small></div>
+            <div className="progress-list">
+              {contract.projects.map((item) => <div className="progress-entry" key={item.id}><span>{item.project_code} · {item.name}</span><small>分摊 {item.allocated_amount == null ? "未登记" : `${formatCurrency(item.allocated_amount)} 万`}</small></div>)}
+            </div>
+            <p className="contract-allocation-summary">项目分摊：{contract.allocation_complete ? `${formatCurrency(contract.allocation_total ?? 0)} 万${contract.allocation_difference ? `（差额 ${formatCurrency(contract.allocation_difference)} 万）` : "（一致）"}` : "待补录"}</p>
+          </section>
+
+          <section className="contract-handling">
+            <div className="section-heading"><h4>办理记录</h4><small>选择一项操作，填写区域才会展开</small></div>
+            <div className="contract-action-tabs">
+              <button type="button" className={`mini-button ${activeAction === "progress" ? "active" : ""}`} disabled={contract.status !== "active"} onClick={() => activateAction("progress")}>＋ 新增进展</button>
+              <button type="button" className={`mini-button ${activeAction === "acceptance" ? "active" : ""}`} disabled={contract.status !== "active"} onClick={() => activateAction("acceptance")}>＋ 登记验收</button>
+              <button type="button" className={`mini-button ${activeAction === "payment" ? "active" : ""}`} disabled={contract.status !== "active"} onClick={() => activateAction("payment")}>＋ 登记付款</button>
+            </div>
+            {contract.status !== "active" ? <p className="muted-copy">暂停或已解除合同不可新增办理记录。</p> : null}
+            {activeAction === "progress" ? <div className="contract-action-form">
+              <div className="progress-list">{(contract.progress_logs || []).map((log) => <div key={log.id} className="progress-entry"><span>{log.created_at.slice(0, 10)} · {log.content}</span><button className="text-button" onClick={() => { setEditingLog(log); setLogValue(log.content); }}>编辑</button><button className="text-button danger" onClick={() => { setDeletingLog(log); setDeleteReason(""); }}>删除</button></div>)}</div>
+              <textarea className="textarea" rows={2} value={progress} onChange={(event) => setProgress(event.target.value)} placeholder="新增进展" />
+              <button className="mini-button active" onClick={() => void addProgress()}>记录进展</button>
+              {editingLog ? <div className="inline-form"><input className="input" value={logValue} onChange={(event) => setLogValue(event.target.value)} /><button className="mini-button" onClick={() => setEditingLog(null)}>取消</button><button className="mini-button active" onClick={() => void saveLog()}>保存修改</button></div> : null}
+              {deletingLog ? <div className="inline-form"><input className="input" value={deleteReason} onChange={(event) => setDeleteReason(event.target.value)} placeholder="删除原因（必填）" /><button className="mini-button" onClick={() => setDeletingLog(null)}>取消</button><button className="mini-button danger" onClick={() => void removeLog()}>确认删除</button></div> : null}
+            </div> : null}
+            {activeAction === "acceptance" ? <div className="contract-action-form">
+              <div className="field-grid"><label className="field"><span>验收状态</span><select className="select" value={acceptance.status} onChange={(event) => setAcceptance({ ...acceptance, status: event.target.value as ContractAcceptanceRecord["acceptance_status"] })}><option value="accepting">验收中</option><option value="needs_rectification">待整改</option><option value="accepted">验收通过</option></select></label><label className="field"><span>验收日期 *</span><input className="input" type="date" value={acceptance.date} onChange={(event) => setAcceptance({ ...acceptance, date: event.target.value })} /></label></div>
+              <label className="field"><span>验收结果{acceptance.status === "accepted" ? " *" : ""}</span><input className="input" value={acceptance.result} onChange={(event) => setAcceptance({ ...acceptance, result: event.target.value })} /></label>
+              <label className="field"><span>验收说明</span><textarea className="textarea" rows={2} value={acceptance.note} onChange={(event) => setAcceptance({ ...acceptance, note: event.target.value })} /></label>
+              <button className="mini-button active" onClick={() => void recordAcceptance()}>登记验收结果</button>
+              <div className="progress-list">{(contract.acceptance_records || []).map((item) => <div className="progress-entry" key={item.id}><span>{item.acceptance_date} · {acceptanceStatus[item.acceptance_status]}{item.result ? ` · ${item.result}` : ""}</span></div>)}</div>
+            </div> : null}
+            {activeAction === "payment" ? <div className="contract-action-form">
+              <div className="progress-list">{(contract.payment_records || []).map((item) => <div className="progress-entry" key={item.id}><span>{item.paid_on} · {formatCurrency(item.amount)} 万{item.note ? ` · ${item.note}` : ""}</span><button type="button" className="text-button" onClick={() => { setEditingPayment(item); setPayment({ amount: item.amount, paid_on: item.paid_on, note: item.note }); }}>更正</button><button type="button" className="text-button danger" onClick={() => void removePayment(item.id)}>删除</button></div>)}</div>
+              {!contract.payment_records?.length ? <span className="muted-copy">尚未登记付款。</span> : null}
+              <div className="inline-form contract-payment-form"><input className="input" inputMode="decimal" value={payment.amount} onChange={(event) => setPayment({ ...payment, amount: event.target.value })} placeholder="付款金额（万元）" /><input className="input" type="date" value={payment.paid_on} onChange={(event) => setPayment({ ...payment, paid_on: event.target.value })} /><input className="input" value={payment.note} onChange={(event) => setPayment({ ...payment, note: event.target.value })} placeholder="说明（可选）" />{editingPayment ? <button type="button" className="mini-button" onClick={() => { setEditingPayment(null); setPayment({ amount: "", paid_on: today(), note: "" }); }}>取消</button> : null}<button type="button" className="mini-button active" onClick={() => void savePayment()}>{editingPayment ? "保存更正" : "登记付款"}</button></div>
+            </div> : null}
+          </section>
+
+          <section className="contract-business-summary"><div className="section-heading"><h4>业务概况</h4><small>截至当前</small></div><div className="contract-fact"><span>验收</span><strong>{acceptanceStatus[contract.acceptance_status]}{contract.acceptance_records?.length ? " · 已有记录" : " · 暂无记录"}</strong></div><div className="contract-fact"><span>付款</span><strong>已付 {formatCurrency(contract.paid_total)} 万 / {contract.total_amount == null ? "未记录" : `${formatCurrency(contract.total_amount)} 万`}</strong></div></section>
+          <section className="contract-recent-activity"><div className="section-heading"><h4>最近动态</h4><small>共 {recentActivity.length} 条</small></div>{recentActivity.length ? <div className="progress-list">{recentActivity.map((item) => <div className="progress-entry" key={item.id}><span>{item.occurredAt.slice(0, 10)} · {item.title}{item.note ? ` · ${item.note}` : ""}</span></div>)}</div> : <p className="muted-copy">暂无办理记录。</p>}</section>
+          <section className="contract-management"><div className="section-heading"><h4>合同管理</h4>{contract.status !== "active" ? <small>{contractStatus[contract.status]}</small> : null}</div><div className="work-item-actions"><button className="mini-button" onClick={() => setEditing(true)}>编辑合同</button><button className="mini-button" onClick={() => setMode("relations")}>管理关联项目</button>{contract.status === "active" ? <button className="mini-button" onClick={() => void applyException("pause")}>暂停合同</button> : null}{contract.status === "paused" ? <button className="mini-button" onClick={() => void applyException("resume")}>恢复合同</button> : null}{contract.status !== "terminated" ? <button className="mini-button danger" onClick={() => void applyException("terminate")}>解除合同</button> : null}<button className="mini-button" onClick={() => void returnToList()}>返回合同列表</button></div></section>
+        </div>
+      ) : null}
       {mode === "create" || (mode === "detail" && editing) ? (
-        <>
+        <section className="contract-edit-form">
           <div className="field-grid">
             <label className="field">
               <span>合同编号 *</span>
@@ -872,7 +896,7 @@ export default function ContractPanel({
               }
             />
           </label>
-          <details className="contract-project-picker" open={mode === "create"}>
+          {mode === "create" ? <details className="contract-project-picker" open>
             <summary>关联项目（{selectedProjectIds.length}）</summary>
             <strong>推进中项目</strong>
             {activeProjects.map((item) => (
@@ -914,26 +938,7 @@ export default function ContractPanel({
                 />
               </label>
             ))}
-            {contract ? (
-              <>
-                <label className="field">
-                  <span>调整关联原因</span>
-                  <input
-                    className="input"
-                    value={relationReason}
-                    onChange={(event) => setRelationReason(event.target.value)}
-                    placeholder="新增已完成项目或移除关联时必填"
-                  />
-                </label>
-                <button
-                  className="mini-button"
-                  onClick={() => void saveProjects()}
-                >
-                  保存关联项目
-                </button>
-              </>
-            ) : null}
-          </details>
+          </details> : null}
           <div className="work-item-actions">
             <button className="mini-button" onClick={() => void returnToList()}>
               返回合同列表
@@ -945,176 +950,7 @@ export default function ContractPanel({
               {mode === "create" ? "保存合同" : "保存合同信息"}
             </button>
           </div>
-          {mode === "detail" && contract ? (
-            <div className="contract-follow-up">
-              <h4>合同进展</h4>
-              <div className="progress-list">
-                {(contract.progress_logs || []).map((log) => (
-                  <div key={log.id} className="progress-entry">
-                    <span>
-                      {log.created_at.slice(0, 10)} · {log.content}
-                    </span>
-                    <button
-                      className="text-button"
-                      onClick={() => {
-                        setEditingLog(log);
-                        setLogValue(log.content);
-                      }}
-                    >
-                      编辑
-                    </button>
-                    <button
-                      className="text-button danger"
-                      onClick={() => {
-                        setDeletingLog(log);
-                        setDeleteReason("");
-                      }}
-                    >
-                      删除
-                    </button>
-                  </div>
-                ))}
-              </div>
-              <textarea
-                className="textarea"
-                rows={2}
-                value={progress}
-                onChange={(event) => setProgress(event.target.value)}
-                placeholder="新增进展"
-              />
-              <button
-                className="mini-button active"
-                onClick={() => void addProgress()}
-              >
-                记录进展
-              </button>
-              {editingLog ? (
-                <div className="inline-form">
-                  <input
-                    className="input"
-                    value={logValue}
-                    onChange={(event) => setLogValue(event.target.value)}
-                  />
-                  <button
-                    className="mini-button"
-                    onClick={() => setEditingLog(null)}
-                  >
-                    取消
-                  </button>
-                  <button
-                    className="mini-button active"
-                    onClick={() => void saveLog()}
-                  >
-                    保存修改
-                  </button>
-                </div>
-              ) : null}
-              {deletingLog ? (
-                <div className="inline-form">
-                  <input
-                    className="input"
-                    value={deleteReason}
-                    onChange={(event) => setDeleteReason(event.target.value)}
-                    placeholder="删除原因（必填）"
-                  />
-                  <button
-                    className="mini-button"
-                    onClick={() => setDeletingLog(null)}
-                  >
-                    取消
-                  </button>
-                  <button
-                    className="mini-button danger"
-                    onClick={() => void removeLog()}
-                  >
-                    确认删除
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-          {mode === "detail" &&
-          contract &&
-          contract.status === "active" ? (
-            <div className="contract-acceptance">
-              <h4>验收记录</h4>
-              <small>
-                当前：{acceptanceStatus[contract.acceptance_status]}
-              </small>
-              <div className="field-grid">
-                <label className="field">
-                  <span>验收状态</span>
-                  <select
-                    className="select"
-                    value={acceptance.status}
-                    onChange={(event) =>
-                      setAcceptance({
-                        ...acceptance,
-                        status: event.target
-                          .value as ContractAcceptanceRecord["acceptance_status"],
-                      })
-                    }
-                  >
-                    <option value="accepting">验收中</option>
-                    <option value="needs_rectification">待整改</option>
-                    <option value="accepted">验收通过</option>
-                  </select>
-                </label>
-                <label className="field">
-                  <span>验收日期 *</span>
-                  <input
-                    className="input"
-                    type="date"
-                    value={acceptance.date}
-                    onChange={(event) =>
-                      setAcceptance({ ...acceptance, date: event.target.value })
-                    }
-                  />
-                </label>
-              </div>
-              <label className="field">
-                <span>
-                  验收结果{acceptance.status === "accepted" ? " *" : ""}
-                </span>
-                <input
-                  className="input"
-                  value={acceptance.result}
-                  onChange={(event) =>
-                    setAcceptance({ ...acceptance, result: event.target.value })
-                  }
-                />
-              </label>
-              <label className="field">
-                <span>验收说明</span>
-                <textarea
-                  className="textarea"
-                  rows={2}
-                  value={acceptance.note}
-                  onChange={(event) =>
-                    setAcceptance({ ...acceptance, note: event.target.value })
-                  }
-                />
-              </label>
-              <button
-                className="mini-button active"
-                onClick={() => void recordAcceptance()}
-              >
-                登记验收结果
-              </button>
-              <div className="progress-list">
-                {(contract.acceptance_records || []).map((item) => (
-                  <div className="progress-entry" key={item.id}>
-                    <span>
-                      {item.acceptance_date} ·{" "}
-                      {acceptanceStatus[item.acceptance_status]}
-                      {item.result ? ` · ${item.result}` : ""}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
-        </>
+        </section>
       ) : null}
     </section>
   );

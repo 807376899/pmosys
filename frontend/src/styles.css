@@ -990,6 +990,56 @@ textarea {
 .contract-payments { padding-top:.7rem; border-top:1px solid var(--line); }
 .contract-payments h4 { margin:0; }
 .contract-payment-form { grid-template-columns:minmax(7rem,1fr) auto minmax(9rem,1.2fr) auto; align-items:end; }
+
+/* Contract panel: default to facts, and reveal one operational form at a time. */
+.contract-overview,
+.contract-relation-editor,
+.contract-edit-form { gap: 16px; }
+.contract-fact-list {
+  display: grid;
+  border-block: 1px solid var(--line);
+}
+.contract-fact {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+.contract-fact:last-child { border-bottom: 0; }
+.contract-fact > span { color: var(--muted); font-size: .86rem; }
+.contract-fact strong { min-width: 0; text-align: right; overflow-wrap: anywhere; }
+.contract-amount strong { font-size: 1.04rem; color: var(--accent-cyan); }
+.contract-exception strong { color: var(--accent-red); }
+.contract-note { margin: 0; padding: 10px 12px; border-left: 3px solid var(--accent-gold); background: rgba(205,141,27,.07); color: var(--muted); line-height: 1.55; }
+.contract-linked-projects,
+.contract-handling,
+.contract-business-summary,
+.contract-recent-activity,
+.contract-management,
+.contract-relation-editor { display: grid; gap: 10px; padding-top: 14px; border-top: 1px solid var(--line); }
+.section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.section-heading h4 { margin: 0; font-size: .96rem; }
+.section-heading small { color: var(--muted); white-space: nowrap; }
+.contract-linked-projects .progress-entry { align-items: baseline; }
+.contract-linked-projects .progress-entry small { color: var(--muted); text-align: right; }
+.contract-allocation-summary { margin: 0; color: var(--muted); font-size: .86rem; }
+.contract-action-tabs { display: flex; flex-wrap: wrap; gap: 7px; }
+.contract-action-form { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--line); background: rgba(12,122,121,.045); }
+.contract-business-summary { grid-template-columns: 1fr; }
+.contract-edit-form { display: grid; }
+.contract-edit-form .field-grid { grid-template-columns: 1fr; }
+.contract-edit-form .work-item-actions { margin-top: 2px; }
+.contract-relation-editor .contract-project-picker { max-height: min(48vh, 520px); overflow: auto; }
+.contract-payment-form { grid-template-columns: 1fr; }
+
+@media (max-width: 760px) {
+  .contract-fact { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .contract-fact strong { text-align: left; }
+  .contract-linked-projects .progress-entry { grid-template-columns: 1fr; gap: 3px; }
+  .contract-linked-projects .progress-entry small { text-align: left; }
+}
 .work-item-list { display:grid; gap:10px; }.work-item-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; align-items:start; padding:15px; border-left:4px solid var(--accent-cyan); background:rgba(255,252,246,.72); }.work-item-row.work-completed { border-left-color:var(--accent-green); opacity:.75; }.work-item-copy { display:grid; gap:5px; }.work-item-copy strong { font-size:1.05rem; }.work-item-copy small { color:var(--muted); }.work-item-copy p { margin:2px 0; line-height:1.55; }.work-item-copy em { color:var(--accent-gold); font-size:.82rem; font-style:normal; }.work-status { color:var(--accent-cyan); font-weight:600; }.work-completed .work-status { color:var(--accent-green); }.work-item-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:7px; }.work-item-edit,.reopen-row { grid-column:1/-1; display:grid; grid-template-columns:1fr 1fr auto; gap:8px; padding-top:10px; border-top:1px solid var(--line); }
 .stage-tracking-event { display:flex; flex-wrap:wrap; gap:4px 10px; align-items:baseline; padding:7px 11px; border-inline-start:3px solid var(--accent-gold); background:rgba(205,141,27,.07); font-size:.88rem; }.stage-tracking-event span { color:var(--muted); }.stage-tracking-event.stage-completed { border-inline-start-color:var(--accent-green); background:rgba(24,116,86,.06); }.stage-tracking-event.stage-abandoned { border-inline-start-color:var(--accent-red); background:rgba(170,66,49,.06); }
 .progress-log-panel { grid-column:1/-1; display:grid; gap:10px; padding:12px 0 0; border-top:1px solid var(--line); }.progress-log-compose { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:end; }.progress-log-compose .toggle { margin:0; }.progress-log-list { display:grid; gap:8px; }.progress-log-list article { padding:10px 12px; background:rgba(12,122,121,.055); border-left:2px solid var(--accent-cyan); }.progress-log-list p { margin:0 0 5px; line-height:1.5; }.progress-log-list small { color:var(--muted); }
