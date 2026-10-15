@@ -3,13 +3,17 @@ from __future__ import annotations
 import sqlite3
 
 
-def fetch_departments(conn: sqlite3.Connection, department_order: list[str] | None = None) -> list[str]:
+def fetch_departments(conn: sqlite3.Connection) -> list[str]:
     rows = conn.execute(
-        "SELECT DISTINCT department FROM projects WHERE department IS NOT NULL AND department != ''"
+        """SELECT DISTINCT p.department
+           FROM projects p
+           LEFT JOIN department_settings ds ON ds.department = p.department
+           WHERE p.department IS NOT NULL AND p.department != ''
+           ORDER BY CASE WHEN ds.sort_order IS NULL THEN 1 ELSE 0 END,
+                    ds.sort_order,
+                    p.department"""
     ).fetchall()
-    departments = [row["department"] for row in rows]
-    order_map = {department: index for index, department in enumerate(department_order or [])}
-    return sorted(departments, key=lambda item: (order_map.get(item, len(order_map)), item))
+    return [row["department"] for row in rows]
 
 
 def fetch_project_managers(conn: sqlite3.Connection) -> list[str]:

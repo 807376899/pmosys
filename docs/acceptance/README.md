@@ -16,6 +16,7 @@
 - [2026-10-14 工作台完整工作区与固定列表高度定向验证](workbench-layout-height-2026-10-14.md)：记录状态卡片对齐、固定列表高度与标题统一的宽屏证据；完整响应式矩阵仍待阶段回归。
 - [2026-10-14 项目表列宽与全选表头定向验证](project-table-column-widths-2026-10-14.md)：记录总览/阶段跟踪独立列宽、恢复默认和无文字全选表头的定向证据；完整视口矩阵仍待阶段回归。
 - [2026-10-15 合同窄栏办理收敛定向验证](contract-panel-on-demand-2026-10-15.md)：记录合同事实摘要、按需办理表单与基础信息编辑边界的构建证据；浏览器写链路仍待执行。
+- [2026-10-15 部门排序持久化定向验证](department-order-persistence-2026-10-15.md)：记录数据库部门排序在重载、列表和导出中的 API 证据；浏览器拖拽写链路仍待执行。
 - [Phase 1历史执行](phase-1-regression.md)、[Phase 2历史执行](phase-2-external-constraint.md)、[视口历史执行](viewport-regression.md)：原事实保留，旧使用规则不再作为当前规范。
 - [本次文档整改结果](../requirements/governance-remediation-2026-09-11.md)：结构检查及只读保护证据，不是产品回归结果。
 

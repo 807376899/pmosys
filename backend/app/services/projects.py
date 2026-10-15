@@ -13,9 +13,9 @@ from backend.app.core.errors import (
     StaleStateError,
     ValidationError,
 )
-from backend.app.core.config import get_settings
 from backend.app.core.money import decimal_of, legacy_number, parse_money, preferred
 from backend.app.db.connection import get_connection
+from backend.app.repositories.metadata import fetch_departments
 from backend.app.repositories import projects as project_repo
 from backend.app.repositories import workflow as workflow_repo
 from backend.app.schemas.project import PATCHABLE_PROJECT_FIELDS, ProjectUpdate
@@ -88,8 +88,8 @@ def create_project(payload: dict) -> dict:
 
 
 def list_projects(filters: dict) -> dict:
-    filters = {**filters, "department_order": list(get_settings().department_order)}
     with get_connection() as conn:
+        filters = {**filters, "department_order": fetch_departments(conn)}
         items, total = project_repo.fetch_project_page(conn, filters)
         filter_options = project_repo.fetch_project_filter_options(conn, filters)
         for project in items:

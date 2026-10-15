@@ -5,14 +5,14 @@ import io
 from openpyxl import Workbook
 
 from backend.app.db.connection import get_connection
-from backend.app.core.config import get_settings
+from backend.app.repositories.metadata import fetch_departments
 from backend.app.repositories.projects import fetch_all_projects_for_export
 from backend.app.services.projects import _hydrate_project_projection
 
 
 def export_projects(filters: dict) -> bytes:
-    filters = {**filters, "department_order": list(get_settings().department_order)}
     with get_connection() as conn:
+        filters = {**filters, "department_order": fetch_departments(conn)}
         projects = fetch_all_projects_for_export(conn, filters)
         projects = [_hydrate_project_projection(conn, project) for project in projects]
         type_names = {

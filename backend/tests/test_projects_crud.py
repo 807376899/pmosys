@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import io
+
 import pytest
+
+from backend.tests import excel_test_utils as pd
 
 
 def test_project_crud_and_patch_whitelist(client, create_project_payload):
@@ -184,8 +188,9 @@ def test_project_type_creation_generates_internal_code(client):
     assert created.json()["code"].startswith("custom_")
 
 
-def test_project_list_sorting_and_department_order(client, create_project_payload, monkeypatch):
-    monkeypatch.setenv("PMO_DEPARTMENT_ORDER", "财务部,信息中心,教务处")
+def test_project_list_sorting_and_department_order(client, create_project_payload):
+    assert client.patch("/api/v1/meta/departments/财务部/order", json={"sort_order": 1, "operator": "PMO"}).status_code == 200
+    assert client.patch("/api/v1/meta/departments/信息中心/order", json={"sort_order": 2, "operator": "PMO"}).status_code == 200
     client.post(
         "/api/v1/projects",
         json=create_project_payload(name="信息项目", department="信息中心"),
@@ -217,8 +222,23 @@ def test_project_list_sorting_and_department_order(client, create_project_payloa
     assert response.json() == ["财务部", "信息中心", "后勤处"]
 
 
-def test_project_list_department_and_year_sorts_use_stable_secondary_keys(client, create_project_payload, monkeypatch):
-    monkeypatch.setenv("PMO_DEPARTMENT_ORDER", "财务部,信息中心")
+def test_persisted_department_order_controls_metadata_list_and_export_after_reload(client, create_project_payload, monkeypatch):
+    monkeypatch.setenv("PMO_DEPARTMENT_ORDER", "Z部门,A部门,M部门")
+    for name, department in (("Z项目", "Z部门"), ("A项目", "A部门"), ("M项目", "M部门")):
+        assert client.post("/api/v1/projects", json=create_project_payload(name=name, department=department)).status_code == 200
+
+    assert client.patch("/api/v1/meta/departments/M%E9%83%A8%E9%97%A8/order", json={"sort_order": 1, "operator": "PMO"}).status_code == 200
+
+    assert client.get("/api/v1/meta/departments").json() == ["M部门", "A部门", "Z部门"]
+    assert [item["department"] for item in client.get("/api/v1/projects").json()["items"]] == ["M部门", "A部门", "Z部门"]
+
+    exported = pd.read_excel(io.BytesIO(client.get("/api/v1/exports/projects").content))
+    assert exported["项目名称"].tolist() == ["M项目", "A项目", "Z项目"]
+
+
+def test_project_list_department_and_year_sorts_use_stable_secondary_keys(client, create_project_payload):
+    assert client.patch("/api/v1/meta/departments/财务部/order", json={"sort_order": 1, "operator": "PMO"}).status_code == 200
+    assert client.patch("/api/v1/meta/departments/信息中心/order", json={"sort_order": 2, "operator": "PMO"}).status_code == 200
     projects = [
         ("财务较晚项目", "财务部", "SW20260003"),
         ("财务较早项目", "财务部", "SW20260001"),
