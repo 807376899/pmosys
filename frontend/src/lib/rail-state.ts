@@ -1,4 +1,5 @@
 export type ProjectRailState = "closed" | "project_operations" | "explicit";
+export type WorkbenchView = "overview" | "stage" | "annual";
 
 export function resolveProjectRailState({
   selectedCount,
@@ -12,4 +13,11 @@ export function resolveProjectRailState({
   if (explicitContext) return "explicit";
   if (!selectedCount || dismissed) return "closed";
   return "project_operations";
+}
+
+export function resolveWorkbenchRailVisibility(
+  view: WorkbenchView,
+  projectRailState: ProjectRailState,
+) {
+  return view === "annual" || projectRailState !== "closed";
 }

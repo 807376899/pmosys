@@ -37,7 +37,7 @@ import ContractPanel from "./ContractPanel";
 import ProjectFundingPanel from "./ProjectFundingPanel";
 import { ApiError, apiDelete, apiGet, apiPatch, apiPost, apiPostForm, buildExportUrl } from "./lib/api";
 import { applySharedOrder, insertStageGroup, replaceVisibleOrder, resetViewColumnWidths, setViewColumnWidth, stageGroupAnchorForLayout, stageLayoutForVisibleColumns, type TableColumnWidths } from "./lib/column-layout";
-import { resolveProjectRailState } from "./lib/rail-state";
+import { resolveProjectRailState, resolveWorkbenchRailVisibility } from "./lib/rail-state";
 import { formatCurrency, formatDate, formatDateTime, projectTypeLabel, statusLabel, sumMoney } from "./lib/format";
 import type {
   BatchExecuteResponse,
@@ -597,7 +597,7 @@ function DashboardPage() {
     dismissed: projectRailDismissed,
     explicitContext: hasExplicitRailContext,
   });
-  const railVisible = tableView !== "annual" && railState !== "closed";
+  const railVisible = resolveWorkbenchRailVisibility(tableView, railState);
   const projectOperationVisible = railState === "project_operations";
 
   useEffect(() => {

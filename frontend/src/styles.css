@@ -498,7 +498,7 @@ textarea {
 /* Annual budget planning shares the workbench grid: a stable scan table and
    a fixed-width planning rail, never a second full-page funding layout. */
 .annual-budget-board { min-width: 0; }
-.annual-budget-rail { align-self: start; min-width: 0; }
+.annual-budget-rail .operation-console { overflow-y: auto; }
 .annual-year { min-width: 9rem; }
 .annual-budget-table { min-width: 68rem; table-layout: auto; }
 .annual-budget-table th:first-child, .annual-budget-table td:first-child { width: 7.25rem; min-width: 7.25rem; white-space: nowrap; }
@@ -530,9 +530,6 @@ textarea {
 .file-picker { display: inline-flex; align-items: center; gap: .4rem; cursor: pointer; color: var(--accent-cyan); }
 .file-picker input { max-width: 100%; }
 
-@media (max-width: 1099px) {
-  .annual-budget-rail { grid-column: 1; width: 100%; }
-}
 @media (max-width: 640px) {
   .source-allocation-editor label { grid-template-columns: 1fr; }
 }
