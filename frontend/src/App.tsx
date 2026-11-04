@@ -1788,7 +1788,7 @@ function DashboardPage() {
       {error || feedback ? <div className="dashboard-notices">{error ? <div className="notice error">{error}</div> : null}{feedback ? <div className="notice success">{feedback}</div> : null}</div> : null}
 
       <main className={`workspace ${railVisible ? "has-control-rail" : ""}`}>
-        {tableView === "annual" ? <AnnualBudgetView operator={operator} projectTypes={projectTypes} onFeedback={setFeedback} onError={setError} onChanged={loadDashboard} onExit={(view, group) => { if (group) setActiveGroup(group); setTableView(view); }} renderStageSlot={(onSelect) => <section className="group-band">{groups.map((group) => <button key={group.key} className={`group-card ${activeGroup === group.key ? "active" : ""}`} style={{ "--group-accent": GROUP_ACCENTS[group.key] } as CSSProperties} onClick={() => onSelect(group.key)}><div className="group-main"><p>{group.label}</p><strong>{group.count}</strong></div><div className="group-budget"><span>预算 {formatCurrency(group.total_budget)} 万</span></div><ArrowUpRight size={18} /></button>)}</section>} /> : <>
+        {tableView === "annual" ? <AnnualBudgetView operator={operator} projectTypes={projectTypes} onFeedback={setFeedback} onError={setError} onChanged={loadDashboard} onExit={(view, group) => { if (group) setActiveGroup(group); setTableView(view); }} renderStageSlot={(onSelect) => <section className="group-band">{groups.map((group) => <button key={group.key} className={`group-card ${activeGroup === group.key ? "active" : ""}`} style={{ "--group-accent": GROUP_ACCENTS[group.key] } as CSSProperties} onClick={() => onSelect(group.key)}><div className="group-main"><p>{group.label}</p><strong>{group.count}</strong></div><div className="group-budget"><span>{group.key === "completed" ? "有效预算" : "预算"} {formatCurrency(group.key === "completed" ? group.total_effective_budget : group.total_budget)} 万</span></div><ArrowUpRight size={18} /></button>)}</section>} /> : <>
         <section className="main-stage">
           <section className="group-band">
             {groups.map((group) => (
@@ -1803,7 +1803,7 @@ function DashboardPage() {
                   <strong>{group.count}</strong>
                 </div>
                 <div className="group-budget">
-                  <span>预算 {formatCurrency(group.total_budget)} 万</span>
+                  <span>{group.key === "completed" ? "有效预算" : "预算"} {formatCurrency(group.key === "completed" ? group.total_effective_budget : group.total_budget)} 万</span>
                   {group.key !== "pre_establish" && group.key !== "completed" ? (
                     <span>审核 {formatCurrency(group.total_approved_budget)} 万</span>
                   ) : null}

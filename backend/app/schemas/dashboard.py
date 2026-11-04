@@ -35,5 +35,6 @@ class DashboardGroupItem(APIModel):
     statuses: list[str]
     count: int
     total_budget: str
+    total_effective_budget: str
     total_approved_budget: str
     total_contract_amount: str

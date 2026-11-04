@@ -45,6 +45,22 @@ def test_completed_group_includes_contract_amount(client, create_project_payload
     assert completed["total_contract_amount"] == "66"
 
 
+def test_completed_group_uses_effective_budget_when_initial_budget_is_unrecorded(client, create_project_payload):
+    project = client.post(
+        "/api/v1/projects",
+        json=create_project_payload(name="仅有效预算的历史完成项目", budget=None, approved_budget="45"),
+    ).json()
+    assert client.post(
+        f"/api/v1/projects/{project['id']}/pmo-override",
+        json={"to_status": "closed", "operator": "PMO办公室", "comment": "历史导入完成项目"},
+    ).status_code == 200
+
+    completed = next(item for item in client.get("/api/v1/dashboard/groups").json() if item["key"] == "completed")
+
+    assert completed["total_budget"] == "0"
+    assert completed["total_effective_budget"] == "45"
+
+
 def test_included_project_uses_advancing_stage_for_groups_and_list(client, create_project_payload):
     project = client.post("/api/v1/projects", json=create_project_payload(name="推进项目")).json()
     client.post(f"/api/v1/projects/{project['id']}/transitions", json={"to_status": "under_review", "operator": "PMO", "operator_role": "PMO", "approver": "PMO", "comment": "历史流程"})

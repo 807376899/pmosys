@@ -11,6 +11,7 @@ export interface DashboardGroup {
   statuses: string[];
   count: number;
   total_budget: string;
+  total_effective_budget: string;
   total_approved_budget: string;
   total_contract_amount: string;
 }

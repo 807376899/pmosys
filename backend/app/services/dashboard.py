@@ -100,6 +100,7 @@ def get_dashboard_groups() -> list[dict]:
                 "statuses": statuses,
                 "count": len(group),
                 "total_budget": total(item["budget"] for item in group),
+                "total_effective_budget": total(item["effective_budget"] for item in group),
                 "total_approved_budget": total(item["approved_budget"] for item in group),
                 "total_contract_amount": total(item["contract_amount"] for item in group),
             }

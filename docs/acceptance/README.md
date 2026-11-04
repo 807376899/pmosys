@@ -19,6 +19,7 @@
 - [2026-10-15 部门排序持久化定向验证](department-order-persistence-2026-10-15.md)：记录数据库部门排序在重载、列表和导出中的 API 证据；浏览器拖拽写链路仍待执行。
 - [2026-10-16 年度预算安排右侧面板对齐定向验证](annual-budget-rail-alignment-2026-10-16.md)：记录年度视图复用完整工作区轨道的定向测试、构建及宽屏浏览器证据；中窄屏矩阵仍待执行。
 - [2026-11-04 项目资料统一更正定向验证](project-data-correction-2026-11-04.md)：记录导入后资料/状态更正、推进年度同步及详情浏览器写链路的定向证据。
+- [2026-11-04 已完成状态卡有效预算定向验证](completed-card-effective-budget-2026-11-04.md)：记录初始预算缺失的历史完成项目在状态卡中的有效预算汇总证据。
 - [Phase 1历史执行](phase-1-regression.md)、[Phase 2历史执行](phase-2-external-constraint.md)、[视口历史执行](viewport-regression.md)：原事实保留，旧使用规则不再作为当前规范。
 - [本次文档整改结果](../requirements/governance-remediation-2026-09-11.md)：结构检查及只读保护证据，不是产品回归结果。
 
