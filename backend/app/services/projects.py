@@ -18,7 +18,7 @@ from backend.app.db.connection import get_connection
 from backend.app.repositories.metadata import fetch_departments
 from backend.app.repositories import projects as project_repo
 from backend.app.repositories import workflow as workflow_repo
-from backend.app.schemas.project import PATCHABLE_PROJECT_FIELDS, ProjectUpdate
+from backend.app.schemas.project import PATCHABLE_PROJECT_FIELDS, ProjectCorrection, ProjectUpdate
 from backend.app.services.project_codes import generate_project_code, validate_manual_project_code
 
 _PROJECT_TYPE_ALIASES = {"teaching_software": "software", "practical_teaching_site": "laboratory"}
@@ -385,6 +385,251 @@ def update_project(project_id: int, payload: ProjectUpdate) -> dict:
         before = {field: project.get(field) for field in updates}
         project_repo.update_project_fields(conn, project_id, updates)
         _audit(conn, project_id, "PROJECT_UPDATED", payload.operator, payload.reason, {"before": before, "after": updates})
+        updated = project_repo.fetch_project_by_id(conn, project_id)
+        assert updated is not None
+        return _hydrate_project_projection(conn, updated)
+
+
+_CORRECTION_FIELDS = PATCHABLE_PROJECT_FIELDS | {"project_code", "approved_budget", "current_status", "stage", "advancement_year", "termination_reason"}
+_CORRECTION_STAGE_TO_STATUS = {
+    "未立项": "draft",
+    "项目库—未实施": "established",
+    "项目库—推进中": "established",
+    "已完成": "closed",
+    "已废弃": "terminated",
+}
+_STATUS_TO_CORRECTION_STAGE = {
+    "draft": "未立项",
+    "under_review": "未立项",
+    "established": "项目库—未实施",
+    "closed": "已完成",
+    "terminated": "已废弃",
+}
+
+
+def _correction_stage(project: dict, updates: dict) -> str:
+    stage = updates.get("stage")
+    if stage:
+        if stage not in _CORRECTION_STAGE_TO_STATUS:
+            raise ValidationError("项目状态必须为未立项、项目库—未实施、项目库—推进中、已完成或已废弃")
+        return stage
+    status = updates.get("current_status")
+    if status:
+        if status not in _STATUS_TO_CORRECTION_STAGE:
+            raise ValidationError("不支持直接更正为该项目状态")
+        return _STATUS_TO_CORRECTION_STAGE[status]
+    return _project_stage(project)
+
+
+def _correction_year(value: object) -> int:
+    try:
+        year = int(value or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("推进年度必须为四位年份") from exc
+    if not 1900 <= year <= date.today().year:
+        raise ValidationError(f"推进年度必须在 1900 至 {date.today().year} 之间")
+    return year
+
+
+def _draft_for_year(conn: sqlite3.Connection, year: int, operator: str) -> dict:
+    row = conn.execute("SELECT * FROM annual_advancement_drafts WHERE advancement_year=?", (year,)).fetchone()
+    if row:
+        return dict(row)
+    draft_id = conn.execute(
+        "INSERT INTO annual_advancement_drafts (advancement_year,created_by) VALUES (?,?)", (year, operator)
+    ).lastrowid
+    return dict(conn.execute("SELECT * FROM annual_advancement_drafts WHERE id=?", (draft_id,)).fetchone())
+
+
+def _sync_correction_annual_membership(
+    conn: sqlite3.Connection, project_id: int, old_year: int | None, new_year: int | None,
+    operator: str, reason: str, now: str, project: dict,
+) -> dict:
+    rows = [dict(row) for row in conn.execute(
+        """SELECT m.*,d.advancement_year FROM annual_advancement_draft_members m
+           JOIN annual_advancement_drafts d ON d.id=m.draft_id
+           WHERE m.project_id=? AND m.member_status IN ('draft','confirmed')""",
+        (project_id,),
+    ).fetchall()]
+    source = next((row for row in rows if row["advancement_year"] == old_year), rows[0] if rows else None)
+    before = [{"id": row["id"], "year": row["advancement_year"], "status": row["member_status"]} for row in rows]
+    if new_year is None:
+        for row in rows:
+            conn.execute(
+                "UPDATE annual_advancement_draft_members SET member_status='removed',removed_by=?,removed_at=?,removal_reason=? WHERE id=?",
+                (operator, now, reason, row["id"]),
+            )
+        return {"before": before, "after": []}
+
+    target = _draft_for_year(conn, new_year, operator)
+    target_member = conn.execute(
+        "SELECT * FROM annual_advancement_draft_members WHERE draft_id=? AND project_id=?", (target["id"], project_id)
+    ).fetchone()
+    for row in rows:
+        if row["id"] != (target_member["id"] if target_member else None):
+            conn.execute(
+                "UPDATE annual_advancement_draft_members SET member_status='removed',removed_by=?,removed_at=?,removal_reason=? WHERE id=?",
+                (operator, now, reason, row["id"]),
+            )
+    amount = preferred(source or project, "planned_new_amount") if source else _external_constraint_projection(conn, project_id, project)["effective_budget"]
+    amount = amount if amount is not None else "0"
+    manual = int(bool(source and source.get("planned_amount_is_manual")))
+    kind = "current_year" if new_year == date.today().year else "new"
+    if target_member:
+        conn.execute(
+            """UPDATE annual_advancement_draft_members SET member_status='confirmed',planned_new_amount=?,planned_new_amount_decimal=?,
+               planned_amount_is_manual=?,member_kind=?,confirmed_by=?,confirmed_at=?,removed_by='',removed_at=NULL,removal_reason='' WHERE id=?""",
+            (legacy_number(amount), amount, manual, kind, operator, now, target_member["id"]),
+        )
+        target_member_id = target_member["id"]
+    else:
+        target_member_id = conn.execute(
+            """INSERT INTO annual_advancement_draft_members
+               (draft_id,project_id,member_status,added_by,planned_new_amount,planned_new_amount_decimal,planned_amount_is_manual,member_kind,confirmed_by,confirmed_at)
+               VALUES (?,?, 'confirmed',?,?,?,?,?,?,?)""",
+            (target["id"], project_id, operator, legacy_number(amount), amount, manual, kind, operator, now),
+        ).lastrowid
+    conn.execute(
+        """INSERT INTO annual_advancement_draft_events (draft_id,project_id,event_type,operator,reason,payload_json)
+           VALUES (?,?,?,?,?,?)""",
+        (target["id"], project_id, "ANNUAL_PLAN_MEMBER_YEAR_CORRECTED", operator, reason, json.dumps({"from_year": old_year, "to_year": new_year}, ensure_ascii=False)),
+    )
+    return {"before": before, "after": [{"id": target_member_id, "year": new_year, "status": "confirmed"}]}
+
+
+def _sync_correction_cycle(
+    conn: sqlite3.Connection, project: dict, stage: str, year: int | None,
+    operator: str, reason: str, now: str,
+) -> tuple[dict, dict]:
+    before_rows = [dict(row) for row in conn.execute(
+        "SELECT id,advancement_year,status FROM project_advancement_records WHERE project_id=? ORDER BY id", (project["id"],)
+    ).fetchall()]
+    active = conn.execute(
+        "SELECT * FROM project_advancement_records WHERE project_id=? AND status='active' ORDER BY id DESC LIMIT 1", (project["id"],)
+    ).fetchone()
+    completed = conn.execute(
+        "SELECT * FROM project_advancement_records WHERE project_id=? AND status='completed' ORDER BY id DESC LIMIT 1", (project["id"],)
+    ).fetchone()
+    if stage == "项目库—推进中":
+        assert year is not None
+        if active:
+            conn.execute("UPDATE project_advancement_records SET advancement_year=? WHERE id=?", (year, active["id"]))
+            cycle_id = active["id"]
+        else:
+            cycle_id = conn.execute(
+                "INSERT INTO project_advancement_records (project_id,advancement_year,status,included_at,included_reason,included_by) VALUES (?,?, 'active',?,?,?)",
+                (project["id"], year, now, reason, operator),
+            ).lastrowid
+    elif stage == "已完成":
+        assert year is not None
+        if active:
+            conn.execute(
+                "UPDATE project_advancement_records SET advancement_year=?,status='completed',ended_at=?,ended_reason=?,ended_by=? WHERE id=?",
+                (year, now, reason, operator, active["id"]),
+            )
+            cycle_id = active["id"]
+        elif completed:
+            conn.execute("UPDATE project_advancement_records SET advancement_year=? WHERE id=?", (year, completed["id"]))
+            cycle_id = completed["id"]
+        else:
+            cycle_id = conn.execute(
+                """INSERT INTO project_advancement_records
+                   (project_id,advancement_year,status,included_at,included_reason,included_by,ended_at,ended_reason,ended_by)
+                   VALUES (?,?, 'completed',?,?,?,?,?,?)""",
+                (project["id"], year, now, reason, operator, now, reason, operator),
+            ).lastrowid
+    else:
+        if active:
+            conn.execute(
+                "UPDATE project_advancement_records SET status='deferred',ended_at=?,ended_reason=?,ended_by=? WHERE id=?",
+                (now, reason, operator, active["id"]),
+            )
+        cycle_id = None
+    after_rows = [dict(row) for row in conn.execute(
+        "SELECT id,advancement_year,status FROM project_advancement_records WHERE project_id=? ORDER BY id", (project["id"],)
+    ).fetchall()]
+    return {"before": before_rows, "after": after_rows}, {"cycle_id": cycle_id}
+
+
+def correct_project(project_id: int, payload: ProjectCorrection) -> dict:
+    updates = payload.cleaned_updates()
+    if not updates:
+        raise ValidationError("没有可更正的字段")
+    invalid = sorted(set(updates) - _CORRECTION_FIELDS)
+    if invalid:
+        raise ValidationError(f"不允许更正的字段: {', '.join(invalid)}")
+    reason = payload.reason.strip()
+    if not reason:
+        raise ValidationError("请填写更正原因")
+    with get_connection() as conn:
+        project = project_repo.fetch_project_by_id(conn, project_id)
+        if not project:
+            raise NotFoundError(f"项目不存在: {project_id}")
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        stage = _correction_stage(project, updates)
+        target_status = _CORRECTION_STAGE_TO_STATUS[stage]
+        year = None
+        if stage in {"项目库—推进中", "已完成"}:
+            year = _correction_year(updates.get("advancement_year", project.get("advancement_year")))
+        if stage == "已完成" and not str(updates.get("actual_end_date", project.get("actual_end_date")) or "").strip():
+            raise ValidationError("已完成项目必须填写完成日期")
+        if stage == "已废弃" and not str(updates.get("termination_reason") or "").strip():
+            raise ValidationError("已废弃项目必须填写废弃原因")
+
+        next_type = _PROJECT_TYPE_ALIASES.get(updates.get("project_type", project.get("project_type")), updates.get("project_type", project.get("project_type")))
+        if "project_type" in updates:
+            updates["project_type"] = next_type
+        code = str(updates.get("project_code", project["project_code"]) or "").strip().upper()
+        if code:
+            code = validate_manual_project_code(conn, code, next_type, allow_historical_year=True)
+            duplicate = conn.execute("SELECT id FROM projects WHERE project_code=? AND id<>?", (code, project_id)).fetchone()
+            if duplicate:
+                raise DuplicateProjectCodeError(f"项目编号已存在: {code}")
+            updates["project_code"] = code
+        if next_type != "software":
+            updates["procurement_nature"] = ""
+        elif "procurement_nature" in updates and updates["procurement_nature"] and updates["procurement_nature"] not in _PROCUREMENT_NATURES:
+            raise ValidationError("采购属性必须为 goods、service 或 mixed")
+        for field, label in {"budget": "初始预算", "approved_budget": "有效预算", "contract_amount": "合同金额"}.items():
+            if field in updates:
+                amount = parse_money(updates[field], label, required=False)
+                updates[field] = legacy_number(amount)
+                updates[f"{field}_decimal"] = amount
+
+        updates.pop("stage", None)
+        updates.pop("advancement_year", None)
+        termination_reason = str(updates.pop("termination_reason", "") or "").strip()
+        requested_status = updates.pop("current_status", None)
+        old_year = project.get("advancement_year")
+        before = {field: project.get(field) for field in updates}
+        cycle_change, cycle = _sync_correction_cycle(conn, project, stage, year, payload.operator, reason, now)
+        lifecycle_updates = {
+            "current_status": target_status,
+            "library_implementation_view": "advancing" if stage == "项目库—推进中" else "unimplemented",
+            "special_advancement_active": 0,
+            "advancement_year": year,
+            "advancement_date": now if year is not None else None,
+            "status_updated_at": now,
+        }
+        updates = {**updates, **lifecycle_updates}
+        project_repo.update_project_fields(conn, project_id, updates)
+        corrected_project = project_repo.fetch_project_by_id(conn, project_id)
+        assert corrected_project is not None
+        membership = _sync_correction_annual_membership(conn, project_id, old_year, year, payload.operator, reason, now, corrected_project)
+        if requested_status is not None or "stage" in payload.model_fields_set:
+            project_repo.insert_status_history(
+                conn, project_id=project_id, from_status=project.get("current_status"), to_status=target_status,
+                action="项目状态更正", operator=payload.operator,
+                comment=termination_reason or reason,
+            )
+        _audit(conn, project_id, "PROJECT_DATA_CORRECTED", payload.operator, reason, {
+            "before": before,
+            "after": updates,
+            "stage": stage,
+            "advancement_cycle": cycle_change,
+            "annual_membership": membership,
+            "termination_reason": termination_reason,
+        })
         updated = project_repo.fetch_project_by_id(conn, project_id)
         assert updated is not None
         return _hydrate_project_projection(conn, updated)

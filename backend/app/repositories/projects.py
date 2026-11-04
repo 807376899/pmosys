@@ -211,7 +211,9 @@ def _order_clause(filters: dict) -> str:
         escaped = department.replace("'", "''")
         legacy_cases.append(f"WHEN p.department = '{escaped}' THEN {index}")
     legacy_department_cases = " ".join(legacy_cases)
-    legacy_department_rank = f"CASE {legacy_department_cases} ELSE {len(department_order)} END" if legacy_department_cases else "0"
+    # SQLite treats a bare integer in ORDER BY as a result-column position;
+    # keep the no-legacy-order fallback an expression instead.
+    legacy_department_rank = f"CASE {legacy_department_cases} ELSE {len(department_order)} END" if legacy_department_cases else "0 + 0"
     department_terms = [
         "CASE WHEN ds.sort_order IS NULL THEN 1 ELSE 0 END",
         "ds.sort_order",

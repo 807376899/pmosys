@@ -2219,7 +2219,9 @@ function ProjectDetailPage() {
   const [constraintActionReason, setConstraintActionReason] = useState("");
   const [editingProject, setEditingProject] = useState(false);
   const [projectReason, setProjectReason] = useState("");
-  const [projectEditErrors, setProjectEditErrors] = useState<{ name?: string; reason?: string }>({});
+  const [projectAdvancementYear, setProjectAdvancementYear] = useState("");
+  const [projectTerminationReason, setProjectTerminationReason] = useState("");
+  const [projectEditErrors, setProjectEditErrors] = useState<{ name?: string; reason?: string; advancementYear?: string; actualEndDate?: string; terminationReason?: string }>({});
   const projectNameRef = useRef<HTMLInputElement>(null);
   const projectReasonRef = useRef<HTMLTextAreaElement>(null);
   const [deleteProjectOpen, setDeleteProjectOpen] = useState(false);
@@ -2420,9 +2422,13 @@ function ProjectDetailPage() {
 
   async function saveProjectEdits() {
     if (!projectId || !project) return;
+    const stage = project.stage || "未立项";
     const errors = {
       ...(project.name.trim() ? {} : { name: "请填写项目名称" }),
       ...(projectReason.trim() ? {} : { reason: "请填写修改理由" }),
+      ...((stage === "项目库—推进中" || stage === "已完成") && /^\d{4}$/.test(projectAdvancementYear) ? {} : (stage === "项目库—推进中" || stage === "已完成") ? { advancementYear: "请填写四位推进年度" } : {}),
+      ...(stage === "已完成" && !project.actual_end_date?.trim() ? { actualEndDate: "请填写项目完成时间" } : {}),
+      ...(stage === "已废弃" && !projectTerminationReason.trim() ? { terminationReason: "请填写废弃原因" } : {}),
     };
     if (Object.keys(errors).length) {
       setProjectEditErrors(errors);
@@ -2432,12 +2438,23 @@ function ProjectDetailPage() {
     setProjectEditErrors({});
     setError("");
     try {
-      await apiPatch<Project>(`/projects/${projectId}`, { name: project.name, department: project.department, major: project.major, project_manager: project.project_manager, location: project.location, procurement_nature: project.procurement_nature, project_type: project.project_type, description: project.description, budget: project.budget, actual_end_date: project.actual_end_date, operator: "PMO办公室", reason: projectReason });
+      const updated = await apiPatch<Project>(`/projects/${projectId}/correction`, {
+        project_code: project.project_code, name: project.name, department: project.department,
+        category: project.category, major: project.major, project_manager: project.project_manager,
+        location: project.location, procurement_nature: project.procurement_nature, project_type: project.project_type,
+        description: project.description, special_note: project.special_note,
+        establishment_document_no: project.establishment_document_no, budget: project.budget,
+        approved_budget: project.approved_budget, actual_start_date: project.actual_start_date,
+        actual_end_date: project.actual_end_date, stage,
+        advancement_year: projectAdvancementYear ? Number(projectAdvancementYear) : null,
+        termination_reason: projectTerminationReason, operator: "PMO办公室", reason: projectReason,
+      });
+      setProject(updated);
       await refreshDetailProjection();
-      setProjectReason(""); setProjectEditErrors({}); setEditingProject(false);
-      setFeedback("项目基本信息已保存并写入审计。");
+      setProjectReason(""); setProjectAdvancementYear(""); setProjectTerminationReason(""); setProjectEditErrors({}); setEditingProject(false);
+      setFeedback("项目资料已更正并写入审计。");
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "项目基本信息未保存，页面保留当前填写内容。");
+      setError(err instanceof ApiError ? err.message : "项目资料未保存，页面保留当前填写内容。");
     }
   }
 
@@ -2530,12 +2547,19 @@ function ProjectDetailPage() {
             <section className="detail-section detail-overview">
               <div className="section-title">
                 <div><p className="section-kicker">PROJECT OVERVIEW</p><h2>项目概况</h2></div>
-                <div className="work-item-actions"><button className="mini-button" onClick={() => { setEditingProject((value) => !value); setProjectEditErrors({}); setError(""); }}>编辑基本信息</button><button className="mini-button danger" onClick={() => setDeleteProjectOpen(true)}>移除项目</button></div>
+                <div className="work-item-actions"><button className="mini-button" onClick={() => { const next = !editingProject; setEditingProject(next); if (next) { setProjectAdvancementYear(String(project.advancement?.year ?? project.implementation_year ?? "")); setProjectTerminationReason(""); } setProjectEditErrors({}); setError(""); }}>编辑项目资料</button><button className="mini-button danger" onClick={() => setDeleteProjectOpen(true)}>移除项目</button></div>
               </div>
               {editingProject ? <div className="detail-add-item project-edit-form">
+                <strong>基本资料</strong>
+                <label className="field"><span>项目编号</span><input className="input" value={project.project_code} onChange={(event) => setProject({ ...project, project_code: event.target.value.toUpperCase() })} placeholder="分类前缀 + 年份 + 四位流水号" /></label>
                 <label className="field"><span>项目名称 <b aria-hidden="true">*</b></span><input ref={projectNameRef} className={`input ${projectEditErrors.name ? "input-error" : ""}`} value={project.name} onChange={(event) => { setProject({ ...project, name: event.target.value }); setProjectEditErrors((errors) => ({ ...errors, name: undefined })); }} aria-invalid={Boolean(projectEditErrors.name)} aria-describedby={projectEditErrors.name ? "project-name-error" : undefined} /></label>
                 {projectEditErrors.name ? <small id="project-name-error" className="field-error">{projectEditErrors.name}</small> : null}
-                <div className="field-grid"><input className="input" value={project.department ?? ""} onChange={(event) => setProject({ ...project, department: event.target.value })} placeholder="部门/学院" /><input className="input" value={project.major ?? ""} onChange={(event) => setProject({ ...project, major: event.target.value })} placeholder="所属专业" /></div><div className="field-grid"><input className="input" value={project.project_manager ?? ""} onChange={(event) => setProject({ ...project, project_manager: event.target.value })} placeholder="项目负责人" />{project.project_type === "laboratory" ? <input className="input" value={project.location ?? ""} onChange={(event) => setProject({ ...project, location: event.target.value })} placeholder="地点" /> : null}</div><label className="field"><span>项目分类</span><select className="select" value={project.project_type ?? ""} onChange={(event) => setProject({ ...project, project_type: event.target.value, procurement_nature: "", location: event.target.value === "laboratory" ? project.location : "" })}>{projectTypes.some((item) => item.code === project.project_type) ? null : <option value={project.project_type ?? ""}>{detailProjectTypeLabel(project.project_type)}</option>}{projectTypes.map((item) => <option key={item.id} value={item.code}>{item.name}</option>)}</select></label>{project.project_type === "software" ? <label className="field"><span>采购属性</span><select className="select" value={project.procurement_nature ?? ""} onChange={(event) => setProject({ ...project, procurement_nature: event.target.value as Project["procurement_nature"] })}><option value="">未设置</option><option value="goods">货物</option><option value="service">服务</option><option value="mixed">混合</option></select></label> : null}<label className="field"><span>初始预算（仅导入/录入纠错）</span><input className="input" inputMode="decimal" pattern="[0-9]*[.]?[0-9]*" value={project.budget ?? ""} onChange={(event) => setProject({ ...project, budget: event.target.value === "" ? null : event.target.value })} /></label>{project.stage === "已完成" ? <label className="field"><span>项目完成时间</span><input className="input" value={project.actual_end_date ?? ""} onChange={(event) => setProject({ ...project, actual_end_date: event.target.value })} placeholder="YYYY、YYYY-MM 或 YYYY-MM-DD" /></label> : null}<textarea className="textarea" rows={2} value={project.description ?? ""} onChange={(event) => setProject({ ...project, description: event.target.value })} placeholder="项目说明" />
+                <div className="field-grid"><input className="input" value={project.department ?? ""} onChange={(event) => setProject({ ...project, department: event.target.value })} placeholder="部门/学院" /><input className="input" value={project.major ?? ""} onChange={(event) => setProject({ ...project, major: event.target.value })} placeholder="所属专业" /></div><div className="field-grid"><input className="input" value={project.project_manager ?? ""} onChange={(event) => setProject({ ...project, project_manager: event.target.value })} placeholder="项目负责人" />{project.project_type === "laboratory" ? <input className="input" value={project.location ?? ""} onChange={(event) => setProject({ ...project, location: event.target.value })} placeholder="地点" /> : null}</div><label className="field"><span>项目分类</span><select className="select" value={project.project_type ?? ""} onChange={(event) => setProject({ ...project, project_type: event.target.value, procurement_nature: "", location: event.target.value === "laboratory" ? project.location : "" })}>{projectTypes.some((item) => item.code === project.project_type) ? null : <option value={project.project_type ?? ""}>{detailProjectTypeLabel(project.project_type)}</option>}{projectTypes.map((item) => <option key={item.id} value={item.code}>{item.name}</option>)}</select></label>{project.project_type === "software" ? <label className="field"><span>采购属性</span><select className="select" value={project.procurement_nature ?? ""} onChange={(event) => setProject({ ...project, procurement_nature: event.target.value as Project["procurement_nature"] })}><option value="">未设置</option><option value="goods">货物</option><option value="service">服务</option><option value="mixed">混合</option></select></label> : null}<label className="field"><span>初始预算</span><input className="input" inputMode="decimal" pattern="[0-9]*[.]?[0-9]*" value={project.budget ?? ""} onChange={(event) => setProject({ ...project, budget: event.target.value === "" ? null : event.target.value })} /></label><label className="field"><span>历史有效预算</span><input className="input" inputMode="decimal" pattern="[0-9]*[.]?[0-9]*" value={project.approved_budget ?? ""} onChange={(event) => setProject({ ...project, approved_budget: event.target.value === "" ? null : event.target.value })} /></label><label className="field"><span>立项文件号</span><input className="input" value={project.establishment_document_no ?? ""} onChange={(event) => setProject({ ...project, establishment_document_no: event.target.value })} /></label><textarea className="textarea" rows={2} value={project.description ?? ""} onChange={(event) => setProject({ ...project, description: event.target.value })} placeholder="项目说明" /><textarea className="textarea" rows={2} value={project.special_note ?? ""} onChange={(event) => setProject({ ...project, special_note: event.target.value })} placeholder="历史备注" />
+                <strong>状态与历史事实更正</strong>
+                <label className="field"><span>项目状态</span><select className="select" value={project.stage ?? "未立项"} onChange={(event) => setProject({ ...project, stage: event.target.value })}><option value="未立项">未立项</option><option value="项目库—未实施">项目库—未实施</option><option value="项目库—推进中">项目库—推进中</option><option value="已完成">已完成</option><option value="已废弃">已废弃</option></select></label>
+                {(project.stage === "项目库—推进中" || project.stage === "已完成") ? <label className="field"><span>推进年度 <b aria-hidden="true">*</b></span><input className={`input ${projectEditErrors.advancementYear ? "input-error" : ""}`} inputMode="numeric" pattern="[0-9]{4}" value={projectAdvancementYear} onChange={(event) => { setProjectAdvancementYear(event.target.value); setProjectEditErrors((errors) => ({ ...errors, advancementYear: undefined })); }} placeholder="例如 2025" />{projectEditErrors.advancementYear ? <small className="field-error">{projectEditErrors.advancementYear}</small> : null}</label> : null}
+                {project.stage === "已完成" ? <label className="field"><span>项目完成时间 <b aria-hidden="true">*</b></span><input className={`input ${projectEditErrors.actualEndDate ? "input-error" : ""}`} value={project.actual_end_date ?? ""} onChange={(event) => { setProject({ ...project, actual_end_date: event.target.value }); setProjectEditErrors((errors) => ({ ...errors, actualEndDate: undefined })); }} placeholder="YYYY、YYYY-MM 或 YYYY-MM-DD" />{projectEditErrors.actualEndDate ? <small className="field-error">{projectEditErrors.actualEndDate}</small> : null}</label> : null}
+                {project.stage === "已废弃" ? <label className="field"><span>废弃原因 <b aria-hidden="true">*</b></span><textarea className={`textarea ${projectEditErrors.terminationReason ? "input-error" : ""}`} rows={2} value={projectTerminationReason} onChange={(event) => { setProjectTerminationReason(event.target.value); setProjectEditErrors((errors) => ({ ...errors, terminationReason: undefined })); }} />{projectEditErrors.terminationReason ? <small className="field-error">{projectEditErrors.terminationReason}</small> : null}</label> : null}
                 <label className="field"><span>修改理由 <b aria-hidden="true">*</b></span><textarea ref={projectReasonRef} className={`textarea ${projectEditErrors.reason ? "input-error" : ""}`} rows={2} value={projectReason} onChange={(event) => { setProjectReason(event.target.value); setProjectEditErrors((errors) => ({ ...errors, reason: undefined })); }} aria-invalid={Boolean(projectEditErrors.reason)} aria-describedby={projectEditErrors.reason ? "project-reason-error" : undefined} /></label>
                 {projectEditErrors.reason ? <small id="project-reason-error" className="field-error">{projectEditErrors.reason}</small> : null}
                 <button className="action-button primary" onClick={() => void saveProjectEdits()}>保存</button>

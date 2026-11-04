@@ -106,6 +106,17 @@ class ProjectUpdate(APIModel):
         }
 
 
+class ProjectCorrection(ProjectUpdate):
+    """A controlled correction of project facts, including imported history."""
+
+    project_code: str | None = None
+    approved_budget: MoneyValue | None = None
+    current_status: str | None = None
+    stage: str | None = None
+    advancement_year: int | None = None
+    termination_reason: str | None = None
+
+
 class ProjectDeleteRequest(APIModel):
     operator: str = Field(min_length=1)
     reason: str = Field(min_length=1)
