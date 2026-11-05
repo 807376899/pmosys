@@ -7,6 +7,7 @@ from datetime import datetime
 from backend.app.core.errors import NotFoundError, ValidationError
 from backend.app.db.connection import get_connection
 from backend.app.repositories import projects as project_repo
+from backend.app.services.projects import complete_work_item_in_connection
 
 
 _ACTIONABLE = {"not_started", "in_progress"}
@@ -134,12 +135,23 @@ def record_work_item_activity_results(activity_id: int, payload: dict) -> dict:
         members = [dict(row) for row in conn.execute(f"SELECT * FROM work_item_activity_members WHERE activity_id=? AND id IN ({marks})", [activity_id, *member_ids]).fetchall()]
         if len(members) != len(set(member_ids)) or any(member["member_status"] != "active" for member in members): raise ValidationError("选择中包含不可办理活动成员")
         now = _now(); outcome = {"result": str(payload.get("result") or ""), "note": str(payload.get("note") or ""), "result_on": str(payload.get("result_on") or now[:10])}
+        complete_current_items = bool(payload.get("complete_current_items"))
+        if complete_current_items:
+            for member in members:
+                complete_work_item_in_connection(conn, member["project_id"], member["work_item_id"], {
+                    "operator": operator,
+                    "completed_on": outcome["result_on"],
+                    "result": outcome["result"],
+                    "note": outcome["note"],
+                })
         for member in members:
             conn.execute("UPDATE work_item_activity_members SET outcome_status='recorded',outcome_json=?,outcome_recorded_at=?,outcome_recorded_by=?,processed_at=?,processed_by=? WHERE id=?", (json.dumps(outcome, ensure_ascii=False), now, operator, now, operator, member["id"]))
             _audit(conn, member["project_id"], "WORK_ITEM_ACTIVITY_RESULT_RECORDED", operator, {"activity_id": activity_id, "work_item_id": member["work_item_id"], "outcome": outcome})
         conn.execute("UPDATE work_item_activities SET status=CASE WHEN status='not_started' THEN 'in_progress' ELSE status END,updated_by=?,updated_at=? WHERE id=?", (operator, now, activity_id))
-        _event(conn, activity_id, "WORK_ITEM_ACTIVITY_RESULTS_RECORDED", operator, {"member_ids": member_ids, "outcome": outcome})
-        return _serialize(conn, activity_id)
+        _event(conn, activity_id, "WORK_ITEM_ACTIVITY_RESULTS_RECORDED", operator, {"member_ids": member_ids, "outcome": outcome, "completed_current_items": complete_current_items})
+        result = _serialize(conn, activity_id)
+        result["next_groups"] = _next_groups_for_members(conn, activity_id, member_ids) if complete_current_items else []
+        return result
 
 
 def create_work_item_activity_progress_log(activity_id: int, payload: dict) -> dict:
@@ -271,6 +283,44 @@ def remove_work_item_activity_members(activity_id: int, payload: dict) -> dict:
         return _serialize(conn, activity_id)
 
 
+def sync_work_item_activity_members(activity_id: int, payload: dict) -> dict:
+    operator, targets = str(payload.get("operator") or "").strip(), payload.get("targets") or []
+    if not operator or not isinstance(targets, list) or not targets:
+        raise ValidationError("办理活动至少保留一个关联项目")
+    with get_connection() as conn:
+        activity = _activity(conn, activity_id, editable=True)
+        existing = [dict(row) for row in conn.execute("SELECT * FROM work_item_activity_members WHERE activity_id=?", (activity_id,)).fetchall()]
+        by_item = {row["work_item_id"]: row for row in existing}
+        desired, seen = [], set()
+        for target in targets:
+            item_id = int(target.get("work_item_id") or 0)
+            if not item_id or item_id in seen:
+                raise ValidationError("同一事项不能重复加入活动")
+            seen.add(item_id)
+            current = by_item.get(item_id)
+            if current and current["member_status"] == "active":
+                desired.append((current["project_id"], item_id, current))
+                continue
+            project, item = _target(conn, target, activity["work_item_name"])
+            desired.append((project["id"], item["id"], current))
+        desired_ids = {item_id for _, item_id, _ in desired}
+        removed = [row for row in existing if row["member_status"] == "active" and row["work_item_id"] not in desired_ids]
+        added = [entry for entry in desired if not entry[2] or entry[2]["member_status"] != "active"]
+        now = _now()
+        for row in removed:
+            conn.execute("UPDATE work_item_activity_members SET member_status='removed',removed_at=?,removed_by=?,removed_reason='' WHERE id=?", (now, operator, row["id"]))
+            _audit(conn, row["project_id"], "WORK_ITEM_ACTIVITY_MEMBER_REMOVED", operator, {"activity_id": activity_id, "work_item_id": row["work_item_id"], "source": "member_sync"})
+        for project_id, item_id, current in added:
+            if current:
+                conn.execute("UPDATE work_item_activity_members SET member_status='active',removed_at=NULL,removed_by='',removed_reason='',outcome_status='unrecorded',outcome_json='{}',outcome_recorded_at=NULL,outcome_recorded_by='',added_by=?,added_at=? WHERE id=?", (operator, now, current["id"]))
+            else:
+                conn.execute("INSERT INTO work_item_activity_members (activity_id,project_id,work_item_id,added_by) VALUES (?,?,?,?)", (activity_id, project_id, item_id, operator))
+            _audit(conn, project_id, "WORK_ITEM_ACTIVITY_MEMBER_ADDED", operator, {"activity_id": activity_id, "work_item_id": item_id, "source": "member_sync"})
+        if removed or added:
+            _event(conn, activity_id, "WORK_ITEM_ACTIVITY_MEMBERS_SYNCED", operator, {"added_work_item_ids": [item_id for _, item_id, _ in added], "removed_member_ids": [row["id"] for row in removed]})
+        return _serialize(conn, activity_id)
+
+
 def void_work_item_activity(activity_id: int, payload: dict) -> dict:
     operator, reason = str(payload.get("operator") or "").strip(), str(payload.get("reason") or "").strip()
     if not operator or not reason:
@@ -293,35 +343,39 @@ def end_work_item_activity(activity_id: int, payload: dict) -> dict:
         return _serialize(conn, activity_id)
 
 
+def _next_groups_for_members(conn: sqlite3.Connection, activity_id: int, member_ids: list[int]) -> list[dict]:
+    marks = ",".join("?" for _ in member_ids)
+    members = [dict(row) for row in conn.execute(
+        f"""SELECT m.*,wi.sequence_rank,wi.status AS work_item_status FROM work_item_activity_members m
+            JOIN project_work_items wi ON wi.id=m.work_item_id
+            WHERE m.activity_id=? AND m.id IN ({marks})""",
+        [activity_id, *member_ids],
+    ).fetchall()]
+    if len(members) != len(set(member_ids)) or any(member["member_status"] != "active" for member in members):
+        raise ValidationError("选择中包含不可用活动成员")
+    groups: dict[str, list[int]] = {}
+    for member in members:
+        if member["work_item_status"] != "completed":
+            continue
+        next_item = conn.execute(
+            """SELECT id,name FROM project_work_items
+               WHERE project_id=? AND sequence_rank>? AND status NOT IN ('completed','not_applicable')
+                 AND cancelled_at IS NULL AND skipped_at IS NULL
+               ORDER BY sequence_rank,id LIMIT 1""",
+            (member["project_id"], member["sequence_rank"]),
+        ).fetchone()
+        if next_item:
+            groups.setdefault(next_item["name"], []).append(member["project_id"])
+    return [{"name": name, "count": len(project_ids), "project_ids": project_ids} for name, project_ids in groups.items()]
+
+
 def next_work_item_activity_groups(activity_id: int, payload: dict) -> dict:
     operator, member_ids = str(payload.get("operator") or "").strip(), payload.get("member_ids") or []
     if not operator or not member_ids:
         raise ValidationError("请选择成员并填写操作人")
     with get_connection() as conn:
         _activity(conn, activity_id)
-        marks = ",".join("?" for _ in member_ids)
-        members = [dict(row) for row in conn.execute(
-            f"""SELECT m.*,wi.sequence_rank,wi.status AS work_item_status FROM work_item_activity_members m
-                JOIN project_work_items wi ON wi.id=m.work_item_id
-                WHERE m.activity_id=? AND m.id IN ({marks})""",
-            [activity_id, *member_ids],
-        ).fetchall()]
-        if len(members) != len(set(member_ids)) or any(member["member_status"] != "active" for member in members):
-            raise ValidationError("选择中包含不可用活动成员")
-        groups: dict[str, list[int]] = {}
-        for member in members:
-            if member["work_item_status"] != "completed":
-                continue
-            next_item = conn.execute(
-                """SELECT id,name FROM project_work_items
-                   WHERE project_id=? AND sequence_rank>? AND status NOT IN ('completed','not_applicable')
-                     AND cancelled_at IS NULL AND skipped_at IS NULL
-                   ORDER BY sequence_rank,id LIMIT 1""",
-                (member["project_id"], member["sequence_rank"]),
-            ).fetchone()
-            if next_item:
-                groups.setdefault(next_item["name"], []).append(member["project_id"])
-        return {"groups": [{"name": name, "count": len(project_ids), "project_ids": project_ids} for name, project_ids in groups.items()]}
+        return {"groups": _next_groups_for_members(conn, activity_id, member_ids)}
 
 
 def record_work_item_activity_follow_up(activity_id: int, payload: dict) -> dict:

@@ -1726,14 +1726,47 @@ def execute_batch_work_item_action(payload: dict) -> dict:
                 conn.execute(f"UPDATE project_work_items SET {', '.join(f'{key}=?' for key in updates)} WHERE id=?", [*updates.values(), item_id])
                 _audit(conn, project_id, "WORK_ITEM_UPDATED", operator, payload={"work_item_id": item_id, "fields": list(updates), "batch_audit_id": batch_audit_id})
             else:
-                item = dict(conn.execute("SELECT * FROM project_work_items WHERE id=?", (item_id,)).fetchone())
-                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                completed_on = str(values.get("completed_on") or now[:10])
-                record = {"result": values.get("result", ""), "operator": operator, "completed_at": now, "completed_on": completed_on, "note": values.get("note", ""), "create_milestone": False}
-                conn.execute("UPDATE project_work_items SET status='completed',completion_record_json=?,updated_at=? WHERE id=?", (json.dumps(record, ensure_ascii=False), now, item_id))
-                _audit(conn, project_id, "WORK_ITEM_COMPLETED", operator, payload={"work_item_id": item_id, "record": record, "batch_audit_id": batch_audit_id})
+                complete_work_item_in_connection(conn, project_id, item_id, {**values, "operator": operator}, batch_audit_id=batch_audit_id)
             processed_targets.append({"project_id": project_id, "work_item_id": item_id})
         return {"success": True, "processed_count": len(processed_targets), "processed_targets": processed_targets, "batch_audit_id": batch_audit_id}
+
+
+def complete_work_item_in_connection(
+    conn: sqlite3.Connection,
+    project_id: int,
+    item_id: int,
+    payload: dict,
+    *,
+    batch_audit_id: int | None = None,
+) -> dict:
+    """Complete one actionable item while sharing the caller's transaction."""
+    operator = str(payload.get("operator") or "").strip()
+    if not operator:
+        raise ValidationError("操作人不能为空")
+    row = conn.execute("SELECT * FROM project_work_items WHERE id=? AND project_id=?", (item_id, project_id)).fetchone()
+    if not row:
+        raise NotFoundError("事项不存在")
+    item = dict(row)
+    if item.get("cancelled_at") or item.get("skipped_at") or item["status"] in {"completed", "not_applicable"}:
+        raise ValidationError("事项当前不可完成")
+    rule = _serialize_work_item(item).get("completion_rule_snapshot") or {}
+    if (rule.get("effects") or {}).get("require_result") and not str(payload.get("result") or "").strip():
+        raise ValidationError("该事项完成时必须填写结果")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    record = {
+        "result": payload.get("result", ""), "operator": operator, "completed_at": now,
+        "completed_on": str(payload.get("completed_on") or now[:10]),
+        "note": payload.get("note", ""), "create_milestone": False,
+    }
+    conn.execute(
+        "UPDATE project_work_items SET status='completed',completion_record_json=?,updated_at=? WHERE id=?",
+        (json.dumps(record, ensure_ascii=False), now, item_id),
+    )
+    audit_payload = {"work_item_id": item_id, "record": record}
+    if batch_audit_id is not None:
+        audit_payload["batch_audit_id"] = batch_audit_id
+    _audit(conn, project_id, "WORK_ITEM_COMPLETED", operator, payload=audit_payload)
+    return _serialize_work_item(dict(conn.execute("SELECT * FROM project_work_items WHERE id=?", (item_id,)).fetchone()))
 
 
 def _save_work_item_template(conn: sqlite3.Connection, payload: dict) -> dict:

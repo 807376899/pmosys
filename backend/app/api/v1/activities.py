@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Body
 
-from backend.app.services.activities import add_work_item_activity_members, create_work_item_activity, create_work_item_activity_progress_log, delete_work_item_activity_progress_log, end_work_item_activity, get_work_item_activity, list_work_item_activities, next_work_item_activity_groups, record_work_item_activity_follow_up, record_work_item_activity_results, remove_work_item_activity_members, start_work_item_activity, update_work_item_activity, update_work_item_activity_progress_log, void_work_item_activity
+from backend.app.services.activities import add_work_item_activity_members, create_work_item_activity, create_work_item_activity_progress_log, delete_work_item_activity_progress_log, end_work_item_activity, get_work_item_activity, list_work_item_activities, next_work_item_activity_groups, record_work_item_activity_follow_up, record_work_item_activity_results, remove_work_item_activity_members, start_work_item_activity, sync_work_item_activity_members, update_work_item_activity, update_work_item_activity_progress_log, void_work_item_activity
 
 router = APIRouter(prefix="/work-item-activities", tags=["work-item-activities"])
 
@@ -31,6 +31,9 @@ def post_members(activity_id: int, payload: dict = Body(...)): return add_work_i
 
 @router.post("/{activity_id}/members/remove")
 def post_remove_members(activity_id: int, payload: dict = Body(...)): return remove_work_item_activity_members(activity_id, payload)
+
+@router.put("/{activity_id}/members")
+def put_members(activity_id: int, payload: dict = Body(...)): return sync_work_item_activity_members(activity_id, payload)
 
 @router.post("/{activity_id}/results")
 def post_results(activity_id: int, payload: dict = Body(...)): return record_work_item_activity_results(activity_id, payload)

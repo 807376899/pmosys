@@ -121,6 +121,77 @@ def test_activity_can_add_and_remove_members_without_creating_or_changing_work_i
     assert client.get(f"/api/v1/projects/{second['id']}/work-items").json()[0]["status"] == "not_started"
 
 
+def test_activity_member_sync_applies_additions_and_removals_atomically_without_reason(client, create_project_payload):
+    first, first_item = _project_item(client, create_project_payload, "同步成员甲")
+    second, second_item = _project_item(client, create_project_payload, "同步成员乙")
+    third, third_item = _project_item(client, create_project_payload, "同步成员丙")
+    activity = client.post("/api/v1/work-item-activities", json={
+        "name": "成员草稿活动", "work_item_name": "专家评审", "operator": "PMO",
+        "targets": [
+            {"project_id": first["id"], "work_item_id": first_item["id"]},
+            {"project_id": second["id"], "work_item_id": second_item["id"]},
+        ],
+    }).json()
+
+    synced = client.put(f"/api/v1/work-item-activities/{activity['id']}/members", json={
+        "operator": "PMO",
+        "targets": [
+            {"project_id": second["id"], "work_item_id": second_item["id"]},
+            {"project_id": third["id"], "work_item_id": third_item["id"]},
+        ],
+    })
+
+    assert synced.status_code == 200
+    members = {member["project_id"]: member for member in synced.json()["members"]}
+    assert members[first["id"]]["member_status"] == "removed"
+    assert members[second["id"]]["member_status"] == "active"
+    assert members[third["id"]]["member_status"] == "active"
+    assert synced.json()["member_count"] == 2
+    assert client.get(f"/api/v1/projects/{first['id']}/work-items").json()[0]["status"] == "not_started"
+
+
+def test_activity_result_can_atomically_complete_items_and_return_next_groups(client, create_project_payload):
+    project, review = _project_item(client, create_project_payload, "结果完成项目")
+    next_item = client.post(f"/api/v1/projects/{project['id']}/work-items", json={
+        "name": "委员会会议", "operator": "PMO", "status": "not_started", "insert_mode": "append",
+    }).json()
+    activity = client.post("/api/v1/work-item-activities", json={
+        "name": "结果完成活动", "work_item_name": review["name"], "operator": "PMO",
+        "targets": [{"project_id": project["id"], "work_item_id": review["id"]}],
+    }).json()
+
+    recorded = client.post(f"/api/v1/work-item-activities/{activity['id']}/results", json={
+        "operator": "PMO", "member_ids": [activity["members"][0]["id"]],
+        "result_on": "2026-09-25", "result": "通过", "note": "通过后进入委员会",
+        "complete_current_items": True,
+    })
+
+    assert recorded.status_code == 200
+    body = recorded.json()
+    assert body["members"][0]["outcome_status"] == "recorded"
+    assert client.get(f"/api/v1/projects/{project['id']}/work-items").json()[0]["status"] == "completed"
+    assert body["next_groups"] == [{"name": next_item["name"], "count": 1, "project_ids": [project["id"]]}]
+
+
+def test_activity_result_and_item_completion_roll_back_together_when_item_is_no_longer_completable(client, create_project_payload):
+    project, item = _project_item(client, create_project_payload, "结果原子回滚项目")
+    activity = client.post("/api/v1/work-item-activities", json={
+        "name": "结果原子回滚活动", "work_item_name": item["name"], "operator": "PMO",
+        "targets": [{"project_id": project["id"], "work_item_id": item["id"]}],
+    }).json()
+    assert client.post(f"/api/v1/projects/{project['id']}/work-items/{item['id']}/complete", json={"operator": "PMO"}).status_code == 200
+
+    rejected = client.post(f"/api/v1/work-item-activities/{activity['id']}/results", json={
+        "operator": "PMO", "member_ids": [activity["members"][0]["id"]], "result": "通过",
+        "complete_current_items": True,
+    })
+
+    assert rejected.status_code == 422
+    after = client.get(f"/api/v1/work-item-activities/{activity['id']}").json()
+    assert after["members"][0]["outcome_status"] == "unrecorded"
+    assert after["recorded_outcome_count"] == 0
+
+
 def test_activity_follow_up_groups_next_items_without_auto_advancing(client, create_project_payload):
     project, review = _project_item(client, create_project_payload, "活动后续项目")
     next_item = client.post(f"/api/v1/projects/{project['id']}/work-items", json={

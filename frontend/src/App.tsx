@@ -35,7 +35,7 @@ import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import AnnualBudgetView from "./AnnualBudgetView";
 import ContractPanel from "./ContractPanel";
 import ProjectFundingPanel from "./ProjectFundingPanel";
-import { ApiError, apiDelete, apiGet, apiPatch, apiPost, apiPostForm, buildExportUrl } from "./lib/api";
+import { ApiError, apiDelete, apiGet, apiPatch, apiPost, apiPostForm, apiPut, buildExportUrl } from "./lib/api";
 import { applySharedOrder, insertStageGroup, replaceVisibleOrder, resetViewColumnWidths, setViewColumnWidth, stageGroupAnchorForLayout, stageLayoutForVisibleColumns, type TableColumnWidths } from "./lib/column-layout";
 import { resolveProjectRailState, resolveWorkbenchRailVisibility } from "./lib/rail-state";
 import { formatCurrency, formatDate, formatDateTime, projectTypeLabel, statusLabel, sumMoney } from "./lib/format";
@@ -477,12 +477,20 @@ function DashboardPage() {
   const [batchArrangeOpen, setBatchArrangeOpen] = useState(false);
   const [batchDraft, setBatchDraft] = useState({ name: "", scheduled_on: "", note: "" });
   const [activityJoinChoices, setActivityJoinChoices] = useState<WorkItemActivity[]>([]);
-  const [activityResult, setActivityResult] = useState({ result_on: today(), result: "", note: "" });
+  const [activityResult, setActivityResult] = useState({ result_on: today(), result: "", note: "", complete_current_items: false });
   const [activityProgress, setActivityProgress] = useState("");
   const [activityEditingProgressId, setActivityEditingProgressId] = useState<number | null>(null);
   const [activityMemberManaging, setActivityMemberManaging] = useState(false);
   const [activityMembersOnly, setActivityMembersOnly] = useState(true);
   const [activityMemberReason, setActivityMemberReason] = useState("");
+  const [activityMemberDraftIds, setActivityMemberDraftIds] = useState<number[]>([]);
+  const [activitySelectionBeforeManaging, setActivitySelectionBeforeManaging] = useState<number[]>([]);
+  const [activityPanelForm, setActivityPanelForm] = useState<"none" | "activity-progress" | "item-progress" | "result" | "settings" | "edit" | "void" | "delete-progress">("none");
+  const [activityMoreOpen, setActivityMoreOpen] = useState(false);
+  const [activityProgressMenuId, setActivityProgressMenuId] = useState<number | null>(null);
+  const [activityDeletingProgressId, setActivityDeletingProgressId] = useState<number | null>(null);
+  const [activityDeleteReason, setActivityDeleteReason] = useState("");
+  const [activityPostResult, setActivityPostResult] = useState<{ projectIds: number[]; completed: boolean } | null>(null);
   const [activityEditOpen, setActivityEditOpen] = useState(false);
   const [activityEditDraft, setActivityEditDraft] = useState({ name: "", scheduled_on: "", note: "" });
   const [activityNextGroups, setActivityNextGroups] = useState<Array<{ name: string; count: number; project_ids: number[] }>>([]);
@@ -684,6 +692,13 @@ function DashboardPage() {
   }
 
   function toggleSelection(project: Project) {
+    if (workItemActivity && activityMemberManaging) {
+      const member = workItemActivity.members.find((candidate) => candidate.project_id === project.id && candidate.member_status === "active");
+      const candidate = project.work_item_column_states?.find((item) => item.name === workItemActivity.work_item_name && item.actionable);
+      if (!member && !candidate) return;
+      setActivityMemberDraftIds((current) => current.includes(project.id) ? current.filter((id) => id !== project.id) : [...current, project.id]);
+      return;
+    }
     if (columnBatchTarget && !columnBatchTarget.instances[project.id]) return;
     setSelectedIds((current) => current.includes(project.id) ? current.filter((id) => id !== project.id) : [...current, project.id]);
     setSelectedProjectSnapshots((current) => {
@@ -702,6 +717,14 @@ function DashboardPage() {
   }
 
   function toggleAllVisible() {
+    if (workItemActivity && activityMemberManaging) {
+      const visible = projects.filter((project) => {
+        const member = workItemActivity.members.some((candidate) => candidate.project_id === project.id && candidate.member_status === "active");
+        return member || Boolean(project.work_item_column_states?.some((item) => item.name === workItemActivity.work_item_name && item.actionable));
+      }).map((project) => project.id);
+      setActivityMemberDraftIds((current) => visible.every((id) => current.includes(id)) ? current.filter((id) => !visible.includes(id)) : [...new Set([...current, ...visible])]);
+      return;
+    }
     const selectableProjects = columnBatchTarget ? projects.filter((project) => Boolean(columnBatchTarget.instances[project.id])) : projects;
     const visibleIds = new Set(selectableProjects.map((project) => project.id));
     if (selectableProjects.length > 0 && selectableProjects.every((project) => selectedIds.includes(project.id))) {
@@ -932,7 +955,7 @@ function DashboardPage() {
       const activity = await apiGet<WorkItemActivity>(`/work-item-activities/${activityId}`);
       setBatchReturnMode(returnMode);
       setWorkItemActivity(activity);
-      setActivityMembersOnly(true); setActivityMemberManaging(false); setActivityMemberReason(""); setActivityProgress(""); setActivityEditingProgressId(null); setActivityEditOpen(false); setActivityNextGroups([]); setActivityVoidOpen(false);
+      setActivityMembersOnly(true); setActivityMemberManaging(false); setActivityMemberReason(""); setActivityProgress(""); setActivityEditingProgressId(null); setActivityEditOpen(false); setActivityNextGroups([]); setActivityVoidOpen(false); setActivityPanelForm("none"); setActivityMoreOpen(false); setActivityProgressMenuId(null); setActivityDeletingProgressId(null); setActivityDeleteReason(""); setActivityPostResult(null); setActivityMemberDraftIds(activity.members.filter((member) => member.member_status === "active").map((member) => member.project_id));
       setTableView("stage");
       setSelectedIds(activity.members.filter((member) => member.member_status === "active" && ["not_started", "in_progress"].includes(member.work_item_status)).map((member) => member.project_id));
       setRailExpanded(true);
@@ -969,9 +992,11 @@ function DashboardPage() {
     } catch (err) { setError(err instanceof ApiError ? err.message : "所选事项未加入办理活动。请检查是否已加入、已完成或不可办理。"); }
   }
 
-  function activityMemberTargets() {
+  function activityMemberTargets(projectIds = selectedIds) {
     if (!workItemActivity) return [];
-    return selectedIds.map((projectId) => {
+    return projectIds.map((projectId) => {
+      const existing = workItemActivity.members.find((member) => member.project_id === projectId && member.member_status === "active");
+      if (existing) return { project_id: projectId, work_item_id: existing.work_item_id };
       const item = projects.find((project) => project.id === projectId)?.work_item_column_states?.find((candidate) => candidate.name === workItemActivity.work_item_name && candidate.actionable);
       return item ? { project_id: projectId, work_item_id: item.id } : null;
     }).filter((target): target is { project_id: number; work_item_id: number } => Boolean(target));
@@ -986,15 +1011,15 @@ function DashboardPage() {
       const activity = activityEditingProgressId == null
         ? await apiPost<WorkItemActivity>(path, { operator, content: activityProgress.trim() })
         : await apiPatch<WorkItemActivity>(path, { operator, content: activityProgress.trim() });
-      setWorkItemActivity(activity); setActivityProgress(""); setActivityEditingProgressId(null); setFeedback("活动进展已保存。");
+      setWorkItemActivity(activity); setActivityProgress(""); setActivityEditingProgressId(null); setActivityPanelForm("none"); setFeedback("活动进展已保存。");
     } catch (err) { setError(err instanceof ApiError ? err.message : "活动进展未保存。"); }
   }
 
   async function deleteActivityProgress(logId: number) {
-    if (!workItemActivity || !activityMemberReason.trim()) { setError("删除活动进展必须填写原因。"); return; }
+    if (!workItemActivity || !activityDeleteReason.trim()) { setError("删除活动进展必须填写原因。"); return; }
     try {
-      const activity = await apiDelete<WorkItemActivity>(`/work-item-activities/${workItemActivity.id}/progress-logs/${logId}`, { operator, reason: activityMemberReason.trim() });
-      setWorkItemActivity(activity); setActivityMemberReason(""); setFeedback("活动进展已删除，原记录仍保留在审计中。");
+      const activity = await apiDelete<WorkItemActivity>(`/work-item-activities/${workItemActivity.id}/progress-logs/${logId}`, { operator, reason: activityDeleteReason.trim() });
+      setWorkItemActivity(activity); setActivityDeleteReason(""); setActivityDeletingProgressId(null); setActivityPanelForm("none"); setFeedback("活动进展已删除，原记录仍保留在审计中。");
     } catch (err) { setError(err instanceof ApiError ? err.message : "活动进展未删除。"); }
   }
 
@@ -1002,22 +1027,34 @@ function DashboardPage() {
     if (!workItemActivity || !activityEditDraft.name.trim()) { setError("请填写活动名称。"); return; }
     try {
       const activity = await apiPatch<WorkItemActivity>(`/work-item-activities/${workItemActivity.id}`, { operator, ...activityEditDraft, name: activityEditDraft.name.trim() });
-      setWorkItemActivity(activity); setActivityEditOpen(false); setFeedback("活动信息已更新。");
+      setWorkItemActivity(activity); setActivityEditOpen(false); setActivityPanelForm("none"); setFeedback("活动信息已更新。");
     } catch (err) { setError(err instanceof ApiError ? err.message : "活动信息未更新。"); }
   }
 
-  async function updateActivityMembers(action: "add" | "remove") {
+  function openActivityMemberManagement() {
     if (!workItemActivity) return;
-    const memberIds = workItemActivity.members.filter((member) => selectedIds.includes(member.project_id) && member.member_status === "active").map((member) => member.id);
-    const targets = activityMemberTargets();
-    if (action === "add" && !targets.length) { setError("所选项目没有可加入的同名待办理事项。"); return; }
-    if (action === "remove" && (!memberIds.length || !activityMemberReason.trim())) { setError("请选择活动成员并填写移出原因。"); return; }
+    setActivitySelectionBeforeManaging(selectedIds);
+    setActivityMemberDraftIds(workItemActivity.members.filter((member) => member.member_status === "active").map((member) => member.project_id));
+    setActivityMemberManaging(true); setActivityMembersOnly(false); setActivityPanelForm("none"); setActivityPostResult(null);
+  }
+
+  function cancelActivityMemberManagement() {
+    setActivityMemberManaging(false); setActivityMembersOnly(true); setSelectedIds(activitySelectionBeforeManaging); setActivityMemberDraftIds([]);
+  }
+
+  async function saveActivityMembers() {
+    if (!workItemActivity) return;
+    const targets = activityMemberTargets(activityMemberDraftIds);
+    if (!targets.length || targets.length !== activityMemberDraftIds.length) { setError("所选项目中存在不可加入当前活动的事项。"); return; }
     try {
-      const activity = action === "add"
-        ? await apiPost<WorkItemActivity>(`/work-item-activities/${workItemActivity.id}/members`, { operator, targets })
-        : await apiPost<WorkItemActivity>(`/work-item-activities/${workItemActivity.id}/members/remove`, { operator, member_ids: memberIds, reason: activityMemberReason.trim() });
-      setWorkItemActivity(activity); setActivityMemberReason(""); setSelectedIds(activity.members.filter((member) => member.member_status === "active").map((member) => member.project_id)); setFeedback(action === "add" ? "已加入活动成员。" : "已移出活动成员，原因已记录。"); await loadDashboard();
+      const activity = await apiPut<WorkItemActivity>(`/work-item-activities/${workItemActivity.id}/members`, { operator, targets });
+      const activeIds = new Set(activity.members.filter((member) => member.member_status === "active").map((member) => member.project_id));
+      setWorkItemActivity(activity); setSelectedIds(activitySelectionBeforeManaging.filter((projectId) => activeIds.has(projectId))); setActivityMemberManaging(false); setActivityMembersOnly(true); setActivityMemberDraftIds([]); setFeedback("活动成员已保存。"); await loadDashboard();
     } catch (err) { setError(err instanceof ApiError ? err.message : "成员管理未保存，活动保持原状。"); }
+  }
+
+  async function updateActivityMembers(_action: "add" | "remove") {
+    await saveActivityMembers();
   }
 
   async function executeActivityWorkItemAction() {
@@ -1064,9 +1101,10 @@ function DashboardPage() {
   async function recordCurrentActivityResults() {
     if (!workItemActivity) return;
     const memberIds = workItemActivity.members.filter((member) => selectedIds.includes(member.project_id) && member.member_status === "active").map((member) => member.id);
+    if (!memberIds.length) { setError("请选择活动中可办理的项目。"); return; }
     try {
       const activity = await apiPost<WorkItemActivity>(`/work-item-activities/${workItemActivity.id}/results`, { operator, member_ids: memberIds, ...activityResult });
-      setWorkItemActivity(activity); setFeedback("已记录所选项目本次办理结果；事项状态未改变。"); await loadDashboard();
+      setWorkItemActivity(activity); setActivityNextGroups(activity.next_groups ?? []); setActivityPostResult({ projectIds: selectedIds, completed: activityResult.complete_current_items }); setActivityPanelForm("none"); setActivityResult({ result_on: today(), result: "", note: "", complete_current_items: false }); setFeedback(activityResult.complete_current_items ? "已记录结果并完成当前事项。" : "已记录所选项目本次办理结果；事项状态未改变。"); await loadDashboard();
     } catch (err) { setError(err instanceof ApiError ? err.message : "活动结果登记失败，未写入任何事项。"); }
   }
 
@@ -1821,6 +1859,12 @@ function DashboardPage() {
               <div>
                 <p className="section-kicker">PROJECTS</p>
                 <h2>项目列表</h2>
+                {workItemActivity ? <div className="activity-list-context">
+                  {activityMemberManaging ? <strong>正在管理活动项目</strong> : <>
+                    <button type="button" className={activityMembersOnly ? "text-button active" : "text-button"} onClick={() => setActivityMembersOnly(true)}>本活动项目</button>
+                    <button type="button" className={!activityMembersOnly ? "text-button active" : "text-button"} onClick={() => setActivityMembersOnly(false)}>全部项目</button>
+                  </>}
+                </div> : null}
               </div>
               <div className="filter-row">
                 <input
@@ -1917,7 +1961,9 @@ function DashboardPage() {
                   </thead>
                   <tbody>
                     {(workItemActivity && activityMembersOnly ? projects.filter((project) => workItemActivity.members.some((member) => member.member_status === "active" && member.project_id === project.id)) : projects).map((project) => {
-                      const selected = selectedIds.includes(project.id);
+                      const activeActivityMember = workItemActivity?.members.some((member) => member.member_status === "active" && member.project_id === project.id) ?? false;
+                      const canJoinActivity = Boolean(project.work_item_column_states?.some((item) => item.name === workItemActivity?.work_item_name && item.actionable));
+                      const selected = activityMemberManaging ? activityMemberDraftIds.includes(project.id) : selectedIds.includes(project.id);
                       return (
                         <tr key={project.id} className={selected && !columnBatchTarget ? "selected" : ""} onClick={(event) => handleProjectRowClick(event, project)}>
                           <td>
@@ -1925,7 +1971,7 @@ function DashboardPage() {
                               <input
                                 type="checkbox"
                                 checked={selected}
-                                disabled={Boolean(columnBatchTarget && !columnBatchTarget.instances[project.id])}
+                                disabled={Boolean((columnBatchTarget && !columnBatchTarget.instances[project.id]) || (activityMemberManaging && !activeActivityMember && !canJoinActivity))}
                                 onChange={() => toggleSelection(project)}
                               />
                               <span />
@@ -1936,6 +1982,7 @@ function DashboardPage() {
                               {showRemoved ? <strong title={project.name}>{project.name}</strong> : <Link className="project-link" title={project.name} to={`/projects/${project.id}`}>{project.name}</Link>}
                               <span>{project.project_code}</span>
                               <small>{project.project_summary_display || "未分类"}</small>
+                              {activityMemberManaging ? <small className={`activity-member-status ${activeActivityMember ? "joined" : canJoinActivity ? "eligible" : "ineligible"}`}>{activeActivityMember ? "已加入当前活动" : canJoinActivity ? "可加入当前活动" : "不能加入：没有可办理的同名事项"}</small> : null}
                               {showRemoved ? <button className="text-button" onClick={() => setRestoreTarget(project)}>恢复项目</button> : null}
                             </div>
                           </td>
@@ -1960,7 +2007,7 @@ function DashboardPage() {
                 <div><p className="section-kicker">PMO ACTIONS</p><h3>{contractPanel || quickItem || quickConstraint || quickConstraintList ? "快速办理" : workItemActivity ? "办理活动" : columnBatchTarget ? "阶段跟踪批量办理" : operationMode === "config" ? "基础配置" : operationMode === "batch" ? "办理活动记录" : "项目操作"}</h3></div>
                 <button className="rail-close" type="button" onClick={closeRail} aria-label="关闭右侧面板">×</button>
               </div>
-            {!contractPanel && !quickItem && !quickConstraint && !quickConstraintList ? <div className="selection-summary">
+            {!contractPanel && !quickItem && !quickConstraint && !quickConstraintList && !workItemActivity ? <div className="selection-summary">
               <span>当前已选</span>
               <strong>{selectedIds.length}</strong>
               <small>有效预算合计 {formatCurrency(selectedEffectiveBudget)} 万</small>
@@ -1978,7 +2025,25 @@ function DashboardPage() {
             {operationMode === "batch" ? <button type="button" className="text-button rail-context-back" onClick={returnToProjectOperations}>← 返回项目操作</button> : null}
             </header>
             <div className="operation-body">
-              {contractPanel ? <ContractPanel projectId={contractPanel.projectId} contextProject={contractPanel.contextProject} initialProjectIds={contractPanel.projectIds} initialContractId={contractPanel.contractId} operator={operator} allowCreate={contractPanel.projectIds.length > 0} defaultReadOnly={contractPanel.contextProject?.stage === "已完成"} onClose={returnToProjectOperations} onChanged={refreshContractProjects} /> : workItemActivity ? <section className="column-batch-panel activity-panel">
+              {contractPanel ? <ContractPanel projectId={contractPanel.projectId} contextProject={contractPanel.contextProject} initialProjectIds={contractPanel.projectIds} initialContractId={contractPanel.contractId} operator={operator} allowCreate={contractPanel.projectIds.length > 0} defaultReadOnly={contractPanel.contextProject?.stage === "已完成"} onClose={returnToProjectOperations} onChanged={refreshContractProjects} /> : Boolean(workItemActivity) ? (workItemActivity ? <section className="column-batch-panel activity-panel activity-panel-refined">
+                {activityMemberManaging ? <>
+                  <div className="quick-panel-heading"><strong>管理活动项目</strong><button type="button" className="text-button" onClick={cancelActivityMemberManagement}>← 返回活动办理</button></div>
+                  <p className="operation-lead">正在管理活动项目</p>
+                  <p className="muted-copy">当前成员 {workItemActivity.member_count} 个 · 新增 {activityMemberDraftIds.filter((id) => !workItemActivity.members.some((member) => member.member_status === "active" && member.project_id === id)).length} 个 · 移除 {workItemActivity.members.filter((member) => member.member_status === "active" && !activityMemberDraftIds.includes(member.project_id)).length} 个</p>
+                  <p className="muted-copy">左侧已切换为当前工作台全部项目；勾选表示该项目是否属于本活动。不可加入项目会置灰。</p>
+                  <div className="activity-form-actions"><button type="button" className="mini-button" onClick={cancelActivityMemberManagement}>取消</button><button type="button" className="action-button primary" disabled={executing} onClick={() => void saveActivityMembers()}>保存</button></div>
+                </> : <>
+                  <div className="activity-summary">
+                    <button type="button" className="text-button" onClick={() => { setWorkItemActivity(null); setOperationMode(batchReturnMode === "batch" ? "batch" : "advance"); if (batchReturnMode === "stage") setTableView("stage"); }}>← 返回{batchReturnMode === "batch" ? "办理活动" : "阶段跟踪"}</button>
+                    <div><strong>{workItemActivity.name}</strong><span>{workItemActivity.work_item_name}{workItemActivity.scheduled_on ? ` · ${workItemActivity.scheduled_on}` : ""}</span><small>{workItemActivity.member_count} 个项目 · 已选 {selectedIds.length} 个 · 已登记结果 {workItemActivity.recorded_outcome_count} 个</small></div>
+                  </div>
+                  {!["ended", "voided"].includes(workItemActivity.status) ? <div className="activity-summary-actions"><button type="button" className="mini-button" onClick={openActivityMemberManagement}>管理活动项目</button><div className="project-operation-menu"><button type="button" className="mini-button" aria-expanded={activityMoreOpen} onClick={() => setActivityMoreOpen((open) => !open)}>更多</button>{activityMoreOpen ? <div className="rail-action-menu"><button type="button" onClick={() => { setActivityEditDraft({ name: workItemActivity.name, scheduled_on: workItemActivity.scheduled_on || "", note: workItemActivity.note || "" }); setActivityPanelForm("edit"); setActivityMoreOpen(false); }}>编辑活动</button><button type="button" onClick={() => { setActivityPanelForm("none"); setActivityMoreOpen(false); void apiPost<WorkItemActivity>(`/work-item-activities/${workItemActivity.id}/end`, { operator }).then((activity) => { setWorkItemActivity(activity); setFeedback("办理活动已结束；未登记成员结果已保留。"); }); }}>结束活动</button><button type="button" className="danger" onClick={() => { setActivityPanelForm("void"); setActivityMoreOpen(false); }}>作废活动</button></div> : null}</div></div> : null}
+                  {activityPanelForm === "edit" ? <section className="activity-section"><strong>编辑活动</strong><label className="field"><span>活动名称</span><input className="input" value={activityEditDraft.name} onChange={(event) => setActivityEditDraft((current) => ({ ...current, name: event.target.value }))} /></label><label className="field"><span>日期（可选）</span><input className="input" type="date" value={activityEditDraft.scheduled_on} onChange={(event) => setActivityEditDraft((current) => ({ ...current, scheduled_on: event.target.value }))} /></label><label className="field"><span>说明（可选）</span><textarea className="textarea" rows={2} value={activityEditDraft.note} onChange={(event) => setActivityEditDraft((current) => ({ ...current, note: event.target.value }))} /></label><div className="activity-form-actions"><button className="mini-button" onClick={() => setActivityPanelForm("none")}>取消</button><button className="action-button primary" onClick={() => void saveActivityEdit()}>保存活动</button></div></section> : null}
+                  {activityPanelForm === "void" ? <section className="activity-section"><strong>作废办理活动</strong><label className="field"><span>作废原因</span><textarea className="textarea" rows={2} value={activityMemberReason} onChange={(event) => setActivityMemberReason(event.target.value)} /></label><div className="activity-form-actions"><button className="mini-button" onClick={() => setActivityPanelForm("none")}>取消</button><button className="mini-button danger" onClick={() => void voidCurrentActivity()}>确认作废</button></div></section> : null}
+                  <section className="activity-section"><div className="activity-section-heading"><strong>活动进展</strong>{workItemActivity.progress_logs.length > 3 ? <small>最近 3 条</small> : null}</div>{workItemActivity.progress_logs.slice(-3).map((log) => <article key={log.id} className="activity-log-row"><span><small>{formatDate(log.created_at)}</small>{log.content}</span><div className="project-operation-menu"><button type="button" className="text-button" aria-label="活动进展更多操作" onClick={() => setActivityProgressMenuId((id) => id === log.id ? null : log.id)}>⋯</button>{activityProgressMenuId === log.id ? <div className="rail-action-menu"><button type="button" onClick={() => { setActivityEditingProgressId(log.id); setActivityProgress(log.content); setActivityProgressMenuId(null); setActivityPanelForm("activity-progress"); }}>编辑</button><button type="button" className="danger" onClick={() => { setActivityDeletingProgressId(log.id); setActivityDeleteReason(""); setActivityProgressMenuId(null); setActivityPanelForm("delete-progress"); }}>删除</button></div> : null}</div></article>)}{workItemActivity.progress_logs.length > 3 ? <details className="activity-log-history"><summary>查看全部进展</summary>{workItemActivity.progress_logs.slice(0, -3).map((log) => <p key={log.id}><small>{formatDate(log.created_at)} · </small>{log.content}</p>)}</details> : null}{activityPanelForm === "activity-progress" ? <div className="activity-inline-form"><textarea className="textarea" rows={2} value={activityProgress} onChange={(event) => setActivityProgress(event.target.value)} placeholder={activityEditingProgressId == null ? "本次活动进展" : "修改活动进展"} /><div className="activity-form-actions"><button className="mini-button" onClick={() => { setActivityProgress(""); setActivityEditingProgressId(null); setActivityPanelForm("none"); }}>取消</button><button className="action-button primary" onClick={() => void saveActivityProgress()}>{activityEditingProgressId == null ? "保存" : "保存修改"}</button></div></div> : activityPanelForm === "delete-progress" && activityDeletingProgressId != null ? <div className="activity-inline-form"><label className="field"><span>删除原因</span><input className="input" value={activityDeleteReason} onChange={(event) => setActivityDeleteReason(event.target.value)} /></label><div className="activity-form-actions"><button className="mini-button" onClick={() => setActivityPanelForm("none")}>取消</button><button className="mini-button danger" onClick={() => void deleteActivityProgress(activityDeletingProgressId)}>确认删除</button></div></div> : <button type="button" className="text-button activity-add" onClick={() => { setActivityEditingProgressId(null); setActivityPanelForm("activity-progress"); }}>＋ 记录进展</button>}</section>
+                  {["not_started", "in_progress"].includes(workItemActivity.status) ? <section className="activity-section"><div className="activity-section-heading"><strong>对已选 {selectedIds.length} 个项目办理</strong><div className="project-operation-menu"><button type="button" className="text-button" onClick={() => setActivityPanelForm((form) => form === "settings" ? "none" : "settings")}>办理更多</button></div></div><div className="activity-primary-actions"><button type="button" className={activityPanelForm === "item-progress" ? "mini-button active" : "mini-button"} onClick={() => { setColumnWorkItemAction("progress"); setActivityPanelForm("item-progress"); }}>添加事项进展</button><button type="button" className={activityPanelForm === "result" ? "mini-button active" : "mini-button"} onClick={() => setActivityPanelForm("result")}>记录办理结果</button></div>{activityPanelForm === "item-progress" ? <div className="activity-inline-form"><textarea className="textarea" rows={2} value={columnBatchValue.progress_content} onChange={(event) => setColumnBatchValue((current) => ({ ...current, progress_content: event.target.value }))} placeholder="共同事项进展" /><div className="activity-form-actions"><button className="mini-button" onClick={() => setActivityPanelForm("none")}>取消</button><button className="action-button primary" disabled={!selectedIds.length || executing} onClick={() => void executeActivityWorkItemAction()}>保存事项办理</button></div></div> : null}{activityPanelForm === "settings" ? <div className="activity-inline-form"><div className="field-grid"><label className="field"><span>当前状态</span><select className="select" value={columnBatchValue.status} onChange={(event) => setColumnBatchValue((current) => ({ ...current, status: event.target.value }))}><option value="">不修改</option><option value="not_started">待办理</option><option value="in_progress">进行中</option><option value="paused">暂停</option></select></label><label className="field"><span>计划完成日期</span><input className="input" type="date" value={columnBatchValue.planned_date} onChange={(event) => setColumnBatchValue((current) => ({ ...current, planned_date: event.target.value }))} /></label></div><div className="activity-form-actions"><button className="mini-button" onClick={() => setActivityPanelForm("none")}>取消</button><button className="action-button primary" disabled={!selectedIds.length || executing} onClick={() => { setColumnWorkItemAction("update"); void executeActivityWorkItemAction(); }}>保存设置</button></div></div> : null}{activityPanelForm === "result" ? <div className="activity-inline-form"><label className="field"><span>结果日期</span><input className="input" type="date" value={activityResult.result_on} onChange={(event) => setActivityResult((current) => ({ ...current, result_on: event.target.value }))} /></label><label className="field"><span>本次结果（可选）</span><input className="input" value={activityResult.result} onChange={(event) => setActivityResult((current) => ({ ...current, result: event.target.value }))} /></label><label className="field"><span>说明（可选）</span><textarea className="textarea" rows={2} value={activityResult.note} onChange={(event) => setActivityResult((current) => ({ ...current, note: event.target.value }))} /></label><label className="toggle"><input type="checkbox" checked={activityResult.complete_current_items} onChange={(event) => setActivityResult((current) => ({ ...current, complete_current_items: event.target.checked }))} />是否同时完成当前事项</label><div className="activity-form-actions"><button className="mini-button" onClick={() => setActivityPanelForm("none")}>取消</button><button className="action-button primary" disabled={!selectedIds.length || executing} onClick={() => void recordCurrentActivityResults()}>记录结果</button></div></div> : null}{activityPostResult ? <div className="activity-follow-up"><strong>当前处理项目下一步</strong>{activityPostResult.completed ? <>{activityNextGroups.map((group) => <div key={group.name} className="batch-member-row"><span>{group.name} · {group.count} 个项目</span><button className="text-button" onClick={() => void recordActivityFollowUp("next", group.project_ids)}>继续下一事项</button></div>)}{!activityNextGroups.length ? <small>暂无下一事项。</small> : null}</> : null}<div className="quick-actions"><button className="mini-button" onClick={() => void recordActivityFollowUp("rehandle", activityPostResult.projectIds)}>重新办理当前事项</button><button className="mini-button" onClick={() => void recordActivityFollowUp("hold", activityPostResult.projectIds)}>暂不安排</button></div></div> : null}</section> : <p className="success-copy">该办理活动已{workItemActivity.status === "voided" ? "作废" : "结束"}，可查看保留的成员、结果与活动进展。</p>}
+                </>}
+              </section> : null) : workItemActivity ? <section className="column-batch-panel activity-panel">
                 <div className="quick-panel-heading"><strong>{workItemActivity.name}</strong><button type="button" className="text-button" onClick={() => { setWorkItemActivity(null); setOperationMode(batchReturnMode === "batch" ? "batch" : "advance"); if (batchReturnMode === "stage") setTableView("stage"); }}>返回{batchReturnMode === "batch" ? "办理活动" : "阶段跟踪"}</button></div>
                 <p className="operation-lead">事项 · <strong>{workItemActivity.work_item_name}</strong>{workItemActivity.scheduled_on ? ` · ${workItemActivity.scheduled_on}` : ""}</p>
                 <p className="muted-copy">活动成员 {workItemActivity.member_count} 个，已登记结果 {workItemActivity.recorded_outcome_count} 个；当前选择只决定本次办理，不会移出活动。</p>
