@@ -1916,7 +1916,7 @@ function DashboardPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {(workItemActivity && activityMembersOnly ? projects.filter((project) => workItemActivity.members.some((member) => member.project_id === project.id)) : projects).map((project) => {
+                    {(workItemActivity && activityMembersOnly ? projects.filter((project) => workItemActivity.members.some((member) => member.member_status === "active" && member.project_id === project.id)) : projects).map((project) => {
                       const selected = selectedIds.includes(project.id);
                       return (
                         <tr key={project.id} className={selected && !columnBatchTarget ? "selected" : ""} onClick={(event) => handleProjectRowClick(event, project)}>

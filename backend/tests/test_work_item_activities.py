@@ -112,7 +112,12 @@ def test_activity_can_add_and_remove_members_without_creating_or_changing_work_i
         "operator": "PMO", "member_ids": [second_member["id"]], "reason": "本次不参加",
     })
     assert removed.status_code == 200
-    assert next(member for member in removed.json()["members"] if member["id"] == second_member["id"])["member_status"] == "removed"
+    removed_activity = removed.json()
+    assert next(member for member in removed_activity["members"] if member["id"] == second_member["id"])["member_status"] == "removed"
+    assert removed_activity["member_count"] == 1
+    assert removed_activity["recorded_outcome_count"] == 0
+    second_project_items = client.get(f"/api/v1/projects/{second['id']}/work-items").json()
+    assert second_project_items[0]["activity_summaries"] == []
     assert client.get(f"/api/v1/projects/{second['id']}/work-items").json()[0]["status"] == "not_started"
 
 

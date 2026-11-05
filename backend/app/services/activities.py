@@ -70,8 +70,9 @@ def _serialize(conn: sqlite3.Connection, activity_id: int) -> dict:
     for member in members:
         member["outcome"] = json.loads(member.pop("outcome_json") or "{}")
     activity["members"] = members
-    activity["member_count"] = len(members)
-    activity["recorded_outcome_count"] = sum(member["outcome_status"] == "recorded" for member in members)
+    active_members = [member for member in members if member["member_status"] == "active"]
+    activity["member_count"] = len(active_members)
+    activity["recorded_outcome_count"] = sum(member["outcome_status"] == "recorded" for member in active_members)
     activity["progress_logs"] = [dict(row) for row in conn.execute("SELECT * FROM work_item_activity_progress_logs WHERE activity_id=? AND deleted_at IS NULL ORDER BY created_at,id", (activity_id,)).fetchall()]
     return activity
 
