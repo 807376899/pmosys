@@ -37,7 +37,7 @@ import ContractPanel from "./ContractPanel";
 import ProjectFundingPanel from "./ProjectFundingPanel";
 import { ApiError, apiDelete, apiGet, apiPatch, apiPost, apiPostForm, apiPut, buildExportUrl } from "./lib/api";
 import { applySharedOrder, insertStageGroup, replaceVisibleOrder, resetViewColumnWidths, setViewColumnWidth, stageGroupAnchorForLayout, stageLayoutForVisibleColumns, type TableColumnWidths } from "./lib/column-layout";
-import { resolveProjectRailState, resolveWorkbenchRailVisibility } from "./lib/rail-state";
+import { resolveProjectRailState, resolveWorkbenchRailVisibility, shouldApplyDashboardLoad, shouldClearProjectSelection } from "./lib/rail-state";
 import { formatCurrency, formatDate, formatDateTime, projectTypeLabel, statusLabel, sumMoney } from "./lib/format";
 import type {
   BatchExecuteResponse,
@@ -515,6 +515,7 @@ function DashboardPage() {
   const [columnWidths, setColumnWidths] = useState<TableColumnWidths>(columnPreferencesRef.current.widths);
   const [baseOrderCustomized, setBaseOrderCustomized] = useState(columnPreferencesRef.current.orderCustomized);
   const columnHeaderClickTimer = useRef<number | null>(null);
+  const dashboardLoadSequence = useRef(0);
 
   useEffect(() => {
     localStorage.setItem("pmo-project-table-columns-v1", JSON.stringify({ order: sharedBaseColumnOrder, visibility: baseColumnVisibility, stageGroupAnchors, widths: columnWidths, orderCustomized: baseOrderCustomized }));
@@ -547,6 +548,7 @@ function DashboardPage() {
   ]);
 
   async function loadDashboard() {
+    const requestSequence = ++dashboardLoadSequence.current;
     setLoading(true);
     setError("");
     try {
@@ -561,6 +563,7 @@ function DashboardPage() {
         apiGet<ProjectTypeDefinition[]>("/project-types?include_inactive=true"),
         apiGet<DepartmentSetting[]>("/meta/department-settings"),
       ]);
+      if (!shouldApplyDashboardLoad(requestSequence, dashboardLoadSequence.current)) return;
       setGroups(groupData);
       setSummary(summaryData);
       setDepartments(departmentData);
@@ -575,9 +578,10 @@ function DashboardPage() {
       setNewProject((current) => current.project_type || !activeTypes.length ? current : { ...current, project_type: activeTypes[0].code });
       setDepartmentSettings(departmentSettingData);
     } catch (err) {
+      if (!shouldApplyDashboardLoad(requestSequence, dashboardLoadSequence.current)) return;
       setError(err instanceof ApiError ? err.message : "工作台加载失败");
     } finally {
-      setLoading(false);
+      if (shouldApplyDashboardLoad(requestSequence, dashboardLoadSequence.current)) setLoading(false);
     }
   }
 
@@ -585,11 +589,17 @@ function DashboardPage() {
     void loadDashboard();
   }, [exportQuery]);
 
+  const resultSetFilterKey = useMemo(
+    () => JSON.stringify({ activeGroup, selectedProjectType, selectedDepartment, selectedExternalConditions, selectedImplementationYear, deferredKeyword, showRemoved }),
+    [activeGroup, selectedProjectType, selectedDepartment, selectedExternalConditions, selectedImplementationYear, deferredKeyword, showRemoved],
+  );
+  const previousResultSetFilterKey = useRef(resultSetFilterKey);
+
   useEffect(() => {
-    startTransition(() => {
-      setSelectedTarget("");
-    });
-  }, [activeGroup, selectedProjectType, selectedDepartment, selectedExternalConditions, selectedImplementationYear, sortBy, sortDir, deferredKeyword]);
+    if (!shouldClearProjectSelection(previousResultSetFilterKey.current, resultSetFilterKey)) return;
+    previousResultSetFilterKey.current = resultSetFilterKey;
+    clearSelectionForResultSetChange();
+  }, [resultSetFilterKey]);
 
   const selectedProjects = useMemo(
     () => selectedIds.map((id) => selectedProjectSnapshots[id]).filter((project): project is Project => Boolean(project)),
@@ -836,6 +846,15 @@ function DashboardPage() {
     setColumnBatchPreview(null);
     setSelectedIds([]);
     setSelectedProjectSnapshots({});
+  }
+
+  function clearSelectionForResultSetChange() {
+    setSelectedIds([]);
+    setSelectedProjectSnapshots({});
+    setSelectedListOpen(false);
+    setSelectedTarget("");
+    setColumnBatchTarget(null);
+    setColumnBatchPreview(null);
   }
 
   const currentProjectColumns = useMemo<StageColumn[]>(
@@ -1684,7 +1703,8 @@ function DashboardPage() {
         operator,
         establishment_document_no: action === "establish" ? establishmentDocumentNo.trim() : "",
       });
-      await refreshSelectedProjects(result.projects.map((project) => project.id));
+      clearSelectionForResultSetChange();
+      await loadDashboard();
       setFeedback(action === "establish" ? `已登记 ${result.success} 个项目的立项文件并进入项目库。` : `已完成 ${result.success} 个项目。`);
       if (action === "establish") setEstablishmentDocumentNo("");
     } catch (err) {
@@ -1826,7 +1846,7 @@ function DashboardPage() {
       {error || feedback ? <div className="dashboard-notices">{error ? <div className="notice error">{error}</div> : null}{feedback ? <div className="notice success">{feedback}</div> : null}</div> : null}
 
       <main className={`workspace ${railVisible ? "has-control-rail" : ""}`}>
-        {tableView === "annual" ? <AnnualBudgetView operator={operator} projectTypes={projectTypes} onFeedback={setFeedback} onError={setError} onChanged={loadDashboard} onExit={(view, group) => { if (group) setActiveGroup(group); setTableView(view); }} renderStageSlot={(onSelect) => <section className="group-band">{groups.map((group) => <button key={group.key} className={`group-card ${activeGroup === group.key ? "active" : ""}`} style={{ "--group-accent": GROUP_ACCENTS[group.key] } as CSSProperties} onClick={() => onSelect(group.key)}><div className="group-main"><p>{group.label}</p><strong>{group.count}</strong></div><div className="group-budget"><span>{group.key === "completed" ? "有效预算" : "预算"} {formatCurrency(group.key === "completed" ? group.total_effective_budget : group.total_budget)} 万</span></div><ArrowUpRight size={18} /></button>)}</section>} /> : <>
+        {tableView === "annual" ? <AnnualBudgetView operator={operator} projectTypes={projectTypes} onFeedback={setFeedback} onError={setError} onChanged={loadDashboard} onExit={(view, group) => { clearSelectionForResultSetChange(); if (group) setActiveGroup(group); setTableView(view); }} renderStageSlot={(onSelect) => <section className="group-band">{groups.map((group) => <button key={group.key} className={`group-card ${activeGroup === group.key ? "active" : ""}`} style={{ "--group-accent": GROUP_ACCENTS[group.key] } as CSSProperties} onClick={() => onSelect(group.key)}><div className="group-main"><p>{group.label}</p><strong>{group.count}</strong></div><div className="group-budget"><span>{group.key === "completed" ? "有效预算" : "预算"} {formatCurrency(group.key === "completed" ? group.total_effective_budget : group.total_budget)} 万</span></div><ArrowUpRight size={18} /></button>)}</section>} /> : <>
         <section className="main-stage">
           <section className="group-band">
             {groups.map((group) => (

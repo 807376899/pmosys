@@ -21,3 +21,15 @@ export function resolveWorkbenchRailVisibility(
 ) {
   return view === "annual" || projectRailState !== "closed";
 }
+
+/**
+ * A dashboard reload can overlap with an earlier filter reload.  Only the
+ * response that belongs to the newest request is allowed to update the table.
+ */
+export function shouldApplyDashboardLoad(requestSequence: number, latestSequence: number) {
+  return requestSequence === latestSequence;
+}
+
+export function shouldClearProjectSelection(previousResultSet: string, nextResultSet: string) {
+  return previousResultSet !== nextResultSet;
+}
