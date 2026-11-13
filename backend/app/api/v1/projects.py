@@ -14,6 +14,7 @@ from backend.app.schemas.project import (
     BatchTransitionPreviewResponse,
     ProjectCreate,
     ProjectCorrection,
+    ProjectDescriptionUpdate,
     ProjectDeleteRequest,
     ProjectDetail,
     ProjectListResponse,
@@ -34,6 +35,7 @@ from backend.app.services.projects import (
     preview_batch_transition,
     transition_project_by_id,
     update_project,
+    update_project_description,
     correct_project,
     pmo_override_project,
     complete_submission_review,
@@ -187,6 +189,11 @@ def get_project_detail(project_id: int):
 @router.patch("/{project_id}", response_model=ProjectDetail)
 def patch_project(project_id: int, payload: ProjectUpdate):
     return update_project(project_id, payload)
+
+
+@router.patch("/{project_id}/description", response_model=ProjectDetail)
+def patch_project_description(project_id: int, payload: ProjectDescriptionUpdate):
+    return update_project_description(project_id, payload)
 
 
 @router.patch("/{project_id}/correction", response_model=ProjectDetail)

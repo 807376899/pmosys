@@ -718,6 +718,10 @@ textarea {
   opacity: 0.56;
 }
 
+.system-dialog .field > span b {
+  color: var(--accent-red);
+}
+
 .toggle {
   grid-template-columns: 18px 1fr;
   align-items: center;
@@ -1515,6 +1519,11 @@ textarea {
 .column-batch-cell .stage-business-cell, .stage-business-cell.column-batch-highlight { background: transparent; box-shadow: none; }
 .stage-business-cell.tone-complete strong { color: #173b5f; }
 .contract-summary-cell { display:flex; flex-wrap:wrap; gap:5px; min-height:20px; align-items:center; }
+.project-summary-entry { display:block; width:100%; min-height:2.2rem; border:0; padding:0; background:transparent; color:inherit; font:inherit; line-height:1.45; text-align:left; overflow-wrap:anywhere; cursor:pointer; }
+.project-summary-entry:hover, .project-summary-entry:focus-visible { color:var(--accent-cyan); text-decoration:underline; text-underline-offset:3px; outline:none; }
+.project-summary-panel .quick-panel-heading { align-items:baseline; }
+.project-summary-panel .quick-panel-heading > div { display:grid; gap:3px; min-width:0; }
+.project-summary-panel .quick-panel-heading span { color:var(--muted); font-size:.8rem; }
 .contract-collection-entry { inline-size:22px; block-size:18px; display:grid; place-items:center; padding:0; border:1px solid var(--ink); border-radius:999px; background:rgba(255,252,246,.78); color:var(--ink); cursor:pointer; }
 .contract-mini-bar { --contract-color:#2563a6; inline-size:34px; block-size:12px; border:2px solid var(--contract-color); border-radius:2px; padding:0; background:transparent; cursor:pointer; }
 .contract-mini-bar.payment-partial { background:repeating-linear-gradient(135deg, color-mix(in srgb, var(--contract-color) 72%, transparent) 0 4px, transparent 4px 8px); }

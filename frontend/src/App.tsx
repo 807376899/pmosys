@@ -221,7 +221,7 @@ const overviewColumnsForStage = (stage: string): OverviewColumn[] => {
 
 const stageBaseColumnsForStage = (stage: string): BaseColumn[] => {
   if (stage === "removed") return ["stage", "department", "budget", "latest_activity"];
-  if (stage === "pre_establish") return ["stage", "department", "budget", "latest_activity"];
+  if (stage === "pre_establish") return ["stage", "department", "budget", "summary", "latest_activity"];
   if (stage === "pool_pending") return ["stage", "document", "department", "budget", "latest_activity"];
   if (stage === "pool_active") return ["stage", "document", "implementation_year", "department", "budget", "allocation", "contract", "latest_activity"];
   if (stage === "completed") return ["stage", "document", "contract", "department", "budget", "allocation", "implementation_year", "completion_year"];
@@ -408,7 +408,7 @@ function DashboardPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [executing, setExecuting] = useState(false);
-  const [operationMode, setOperationMode] = useState<"idle" | "advance" | "stage" | "items" | "package" | "constraints" | "config" | "batch">("idle");
+  const [operationMode, setOperationMode] = useState<"idle" | "advance" | "stage" | "items" | "package" | "constraints" | "config" | "batch" | "summary">("idle");
   const [railExpanded, setRailExpanded] = useState(false);
   const [projectRailDismissed, setProjectRailDismissed] = useState(false);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
@@ -420,6 +420,8 @@ function DashboardPage() {
   const [quickConstraintHasBatchContext, setQuickConstraintHasBatchContext] = useState(false);
   const [quickProjectId, setQuickProjectId] = useState<number | null>(null);
   const [quickProject, setQuickProject] = useState<Project | null>(null);
+  const [summaryProject, setSummaryProject] = useState<Project | null>(null);
+  const [summaryDescription, setSummaryDescription] = useState("");
   const [quickLogs, setQuickLogs] = useState<WorkItemProgressLog[]>([]);
   const [quickConstraintLogs, setQuickConstraintLogs] = useState<ExternalConstraintProgressLog[]>([]);
   const [quickConstraintAction, setQuickConstraintAction] = useState<"clear" | "mark_not_applicable" | "invalidate" | null>(null);
@@ -609,7 +611,7 @@ function DashboardPage() {
     () => sumMoney(selectedProjects.map((project) => project.effective_budget ?? project.budget)),
     [selectedProjects],
   );
-  const hasExplicitRailContext = Boolean(contractPanel || quickItem || quickConstraint || quickConstraintList || workItemActivity || columnBatchTarget || (railExpanded && (operationMode === "config" || operationMode === "batch")));
+  const hasExplicitRailContext = Boolean(contractPanel || quickItem || quickConstraint || quickConstraintList || summaryProject || workItemActivity || columnBatchTarget || (railExpanded && (operationMode === "config" || operationMode === "batch")));
   const railState = resolveProjectRailState({
     selectedCount: selectedIds.length,
     dismissed: projectRailDismissed,
@@ -650,9 +652,8 @@ function DashboardPage() {
   const showProgressColumn = tableView === "overview" && !showCompletionYearColumn;
   const overviewPreferenceStage = showRemoved ? "removed" : activeGroup;
   const overviewAllowedColumns = useMemo<OverviewColumn[]>(() => {
-    const allowed = new Set<OverviewColumn>(["stage", "department", "budget", "latest_activity"]);
+    const allowed = new Set<OverviewColumn>(["stage", "department", "budget", "summary", "latest_activity"]);
     if (!showRemoved && activeGroup !== "pre_establish") allowed.add("document");
-    if (!showRemoved && activeGroup === "pre_establish") allowed.add("summary");
     if (showImplementationYearColumn) allowed.add("implementation_year");
     if (showCompletionYearColumn) allowed.add("completion_year");
     if (!showRemoved && activeGroup !== "pre_establish" && activeGroup !== "pool_pending") allowed.add("allocation");
@@ -662,7 +663,7 @@ function DashboardPage() {
     return DEFAULT_OVERVIEW_COLUMNS.filter((column) => allowed.has(column));
   }, [activeGroup, showCompletionYearColumn, showImplementationYearColumn, showProgressColumn, showRemoved]);
   const stageAllowedColumns = useMemo<BaseColumn[]>(() => {
-    const allowed = new Set(stageBaseColumnsForStage(showRemoved ? "removed" : activeGroup));
+    const allowed = new Set([...stageBaseColumnsForStage(showRemoved ? "removed" : activeGroup), "summary"]);
     return allBaseColumns.filter((column) => allowed.has(column));
   }, [activeGroup, showRemoved]);
   const visibleBaseColumns = (view: ConfigurableTableView, stage: string, allowedColumns: BaseColumn[]) => {
@@ -1165,7 +1166,7 @@ function DashboardPage() {
     if (column === "completion_year") return <td key={column} className="year-column">{project.actual_end_date?.slice(0, 4) || "未记录"}</td>;
     if (column === "department") return <td key={column} className="department-column"><div className="stacked"><span>{project.department || "未录入部门"}</span><small>{project.project_manager || "未录入负责人"}</small></div></td>;
     if (column === "budget") return <td key={column} className="budget-column"><div className="stacked"><span>有效 {project.effective_budget == null ? "未记录" : `${formatCurrency(project.effective_budget)} 万`}</span><small>初始 {project.budget == null ? "未记录" : `${formatCurrency(project.budget)} 万`}</small><small>{project.effective_budget_source === "budget_constraint" ? "来源：预算核定" : project.effective_budget_source === "historical_review" ? "来源：历史审核" : project.effective_budget_source === "initial_budget" ? "来源：初始预算" : "来源：未记录"}</small></div></td>;
-    if (column === "summary") return <td key={column} className="summary-column">{activeGroup === "pre_establish" ? project.description || "未填写项目描述" : project.project_summary_display || "未分类"}</td>;
+    if (column === "summary") return <td key={column} className="summary-column"><button type="button" className="project-summary-entry" data-interactive onClick={() => openProjectSummary(project)} aria-label={`修改${project.name}的项目概括`}>{project.description || "未填写项目描述"}</button></td>;
     if (column === "allocation") return <td key={column} className="budget-column">{project.formal_allocation_total == null ? "暂未确定" : `${formatCurrency(project.formal_allocation_total)} 万`}</td>;
     if (column === "contract") return <td key={column} className="contract-column"><ContractSummaryCell project={project} onOpenCollection={() => openContractPanel(project)} onOpenContract={(contractId) => openContractPanel(project, contractId)} colorForContract={contractColorFor} /></td>;
     if (column === "progress") return <td key={column} className="progress-column"><ProgressSituation project={project} onSelect={(itemId) => void openQuickItem(project.id, itemId)} onConstraintSelect={() => void openQuickConstraintList(project.id)} /></td>;
@@ -1201,6 +1202,8 @@ function DashboardPage() {
     setQuickConstraintHasBatchContext(false);
     setQuickProjectId(null);
     setQuickProject(null);
+    setSummaryProject(null);
+    setSummaryDescription("");
     setContractPanel(null);
   }
 
@@ -1216,6 +1219,8 @@ function DashboardPage() {
     setQuickConstraintHasBatchContext(false);
     setQuickProjectId(null);
     setQuickProject(null);
+    setSummaryProject(null);
+    setSummaryDescription("");
     setContractPanel(null);
     setOperationMode("idle");
   }
@@ -1299,6 +1304,32 @@ function DashboardPage() {
     setProjects((current) => current.map((entry) => entry.id === projectId ? { ...entry, ...project } : entry));
     setSelectedProjectSnapshots((current) => current[projectId] ? { ...current, [projectId]: project } : current);
     setQuickProject(project);
+  }
+
+  function openProjectSummary(project: Project) {
+    setSummaryProject(project);
+    setSummaryDescription(project.description ?? "");
+    setOperationMode("summary");
+    setProjectRailDismissed(false);
+    setRailExpanded(true);
+    setError("");
+  }
+
+  async function saveProjectSummary() {
+    if (!summaryProject) return;
+    setExecuting(true);
+    try {
+      const updated = await apiPatch<Project>(`/projects/${summaryProject.id}/description`, {
+        description: summaryDescription,
+        operator,
+      });
+      setProjects((current) => current.map((project) => project.id === updated.id ? { ...project, ...updated } : project));
+      setSelectedProjectSnapshots((current) => current[updated.id] ? { ...current, [updated.id]: updated } : current);
+      setFeedback("项目概括已保存。");
+      returnToProjectOperations();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "项目概括未保存，已保留当前填写内容。");
+    } finally { setExecuting(false); }
   }
 
   async function refreshContractProjects(projectIds: number[]) {
@@ -2024,10 +2055,10 @@ function DashboardPage() {
           <div className="rail-card operation-console is-expanded">
             <header className="operation-rail-header">
               <div className="operation-rail-title">
-                <div><p className="section-kicker">PMO ACTIONS</p><h3>{contractPanel || quickItem || quickConstraint || quickConstraintList ? "快速办理" : workItemActivity ? "办理活动" : columnBatchTarget ? "阶段跟踪批量办理" : operationMode === "config" ? "基础配置" : operationMode === "batch" ? "办理活动记录" : "项目操作"}</h3></div>
+                <div><p className="section-kicker">PMO ACTIONS</p><h3>{summaryProject ? "修改项目概括" : contractPanel || quickItem || quickConstraint || quickConstraintList ? "快速办理" : workItemActivity ? "办理活动" : columnBatchTarget ? "阶段跟踪批量办理" : operationMode === "config" ? "基础配置" : operationMode === "batch" ? "办理活动记录" : "项目操作"}</h3></div>
                 <button className="rail-close" type="button" onClick={closeRail} aria-label="关闭右侧面板">×</button>
               </div>
-            {!contractPanel && !quickItem && !quickConstraint && !quickConstraintList && !workItemActivity ? <div className="selection-summary">
+            {!summaryProject && !contractPanel && !quickItem && !quickConstraint && !quickConstraintList && !workItemActivity ? <div className="selection-summary">
               <span>当前已选</span>
               <strong>{selectedIds.length}</strong>
               <small>有效预算合计 {formatCurrency(selectedEffectiveBudget)} 万</small>
@@ -2045,7 +2076,7 @@ function DashboardPage() {
             {operationMode === "batch" ? <button type="button" className="text-button rail-context-back" onClick={returnToProjectOperations}>← 返回项目操作</button> : null}
             </header>
             <div className="operation-body">
-              {contractPanel ? <ContractPanel projectId={contractPanel.projectId} contextProject={contractPanel.contextProject} initialProjectIds={contractPanel.projectIds} initialContractId={contractPanel.contractId} operator={operator} allowCreate={contractPanel.projectIds.length > 0} defaultReadOnly={contractPanel.contextProject?.stage === "已完成"} onClose={returnToProjectOperations} onChanged={refreshContractProjects} /> : Boolean(workItemActivity) ? (workItemActivity ? <section className="column-batch-panel activity-panel activity-panel-refined">
+              {summaryProject ? <section className="quick-panel project-summary-panel"><div className="quick-panel-heading"><div><strong>{summaryProject.name}</strong><span>{summaryProject.project_code}</span></div><button type="button" className="text-button" onClick={returnToProjectOperations}>取消</button></div><label className="field"><span>项目概括</span><textarea className="textarea" rows={4} autoFocus value={summaryDescription} onChange={(event) => setSummaryDescription(event.target.value)} placeholder="填写项目描述" /></label><button type="button" className="action-button primary full" disabled={executing} onClick={() => void saveProjectSummary()}>保存项目概括</button></section> : contractPanel ? <ContractPanel projectId={contractPanel.projectId} contextProject={contractPanel.contextProject} initialProjectIds={contractPanel.projectIds} initialContractId={contractPanel.contractId} operator={operator} allowCreate={contractPanel.projectIds.length > 0} defaultReadOnly={contractPanel.contextProject?.stage === "已完成"} onClose={returnToProjectOperations} onChanged={refreshContractProjects} /> : Boolean(workItemActivity) ? (workItemActivity ? <section className="column-batch-panel activity-panel activity-panel-refined">
                 {activityMemberManaging ? <>
                   <div className="quick-panel-heading"><strong>管理活动项目</strong><button type="button" className="text-button" onClick={cancelActivityMemberManagement}>← 返回活动办理</button></div>
                   <p className="operation-lead">正在管理活动项目</p>
@@ -2256,12 +2287,12 @@ function DashboardPage() {
       {newProjectOpen ? <div className="system-dialog-backdrop" role="presentation" onMouseDown={() => setNewProjectOpen(false)}>
         <section className="system-dialog" role="dialog" aria-modal="true" aria-label="新增项目" onMouseDown={(event) => event.stopPropagation()}>
           <p className="section-kicker">PMO ACTION</p><h3>新增项目</h3>
-          <input className="input" autoFocus value={newProject.name} onChange={(event) => setNewProject({ ...newProject, name: event.target.value })} placeholder="项目名称（必填）" />
-          <div className="field-grid"><label className="field"><span>学院</span><input className="input" list="department-suggestions" value={newProject.department} onChange={(event) => setNewProject({ ...newProject, department: event.target.value })} placeholder="选择或填写学院" /><datalist id="department-suggestions">{departments.map((department) => <option key={department} value={department} />)}</datalist></label><input className="input" value={newProject.project_manager} onChange={(event) => setNewProject({ ...newProject, project_manager: event.target.value })} placeholder="负责人" /></div>
-          <div className="field-grid"><select className="select" value={newProject.project_type} onChange={(event) => setNewProject({ ...newProject, project_type: event.target.value, procurement_nature: "", location: "" })}><option value="">选择项目分类</option>{projectTypes.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.code}>{item.name}</option>)}</select><input className="input" inputMode="decimal" value={newProject.budget} onChange={(event) => setNewProject({ ...newProject, budget: event.target.value })} placeholder="初始预算（万元）" /></div>
+          <label className="field"><span>项目名称 <b aria-hidden="true">*</b></span><input className="input" autoFocus value={newProject.name} onChange={(event) => setNewProject({ ...newProject, name: event.target.value })} placeholder="填写项目名称" /></label>
+          <div className="field-grid"><label className="field"><span>学院</span><input className="input" list="department-suggestions" value={newProject.department} onChange={(event) => setNewProject({ ...newProject, department: event.target.value })} placeholder="选择或填写学院" /><datalist id="department-suggestions">{departments.map((department) => <option key={department} value={department} />)}</datalist></label><label className="field"><span>项目负责人</span><input className="input" value={newProject.project_manager} onChange={(event) => setNewProject({ ...newProject, project_manager: event.target.value })} placeholder="填写项目负责人" /></label></div>
+          <div className="field-grid"><label className="field"><span>项目分类 <b aria-hidden="true">*</b></span><select className="select" value={newProject.project_type} onChange={(event) => setNewProject({ ...newProject, project_type: event.target.value, procurement_nature: "", location: "" })}><option value="">选择项目分类</option>{projectTypes.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.code}>{item.name}</option>)}</select></label><label className="field"><span>初始预算（万元）</span><input className="input" inputMode="decimal" value={newProject.budget} onChange={(event) => setNewProject({ ...newProject, budget: event.target.value })} placeholder="选填" /></label></div>
           {newProject.project_type === "software" ? <label className="field"><span>采购属性</span><select className="select" value={newProject.procurement_nature} onChange={(event) => setNewProject({ ...newProject, procurement_nature: event.target.value })}><option value="">未设置</option><option value="goods">货物</option><option value="service">服务</option><option value="mixed">混合</option></select></label> : null}
-          {newProject.project_type === "laboratory" ? <input className="input" value={newProject.location} onChange={(event) => setNewProject({ ...newProject, location: event.target.value })} placeholder="地点（可选）" /> : null}
-          <textarea className="textarea" rows={2} value={newProject.description} onChange={(event) => setNewProject({ ...newProject, description: event.target.value })} placeholder="项目说明（可选）" />
+          {newProject.project_type === "laboratory" ? <label className="field"><span>地点</span><input className="input" value={newProject.location} onChange={(event) => setNewProject({ ...newProject, location: event.target.value })} placeholder="选填" /></label> : null}
+          <label className="field"><span>项目说明</span><textarea className="textarea" rows={4} value={newProject.description} onChange={(event) => setNewProject({ ...newProject, description: event.target.value })} placeholder="选填" /></label>
           <div className="dialog-actions"><button className="mini-button" onClick={() => setNewProjectOpen(false)}>取消</button><button className="action-button primary" disabled={!newProject.name.trim() || !newProject.project_type} onClick={() => void createManualProject()}>确认新增</button></div>
         </section>
       </div> : null}

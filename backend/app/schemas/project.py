@@ -106,6 +106,13 @@ class ProjectUpdate(APIModel):
         }
 
 
+class ProjectDescriptionUpdate(APIModel):
+    """A lightweight project-description update from the workbench."""
+
+    description: str = ""
+    operator: str = Field(min_length=1)
+
+
 class ProjectCorrection(ProjectUpdate):
     """A controlled correction of project facts, including imported history."""
 

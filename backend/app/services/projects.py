@@ -18,7 +18,7 @@ from backend.app.db.connection import get_connection
 from backend.app.repositories.metadata import fetch_departments
 from backend.app.repositories import projects as project_repo
 from backend.app.repositories import workflow as workflow_repo
-from backend.app.schemas.project import PATCHABLE_PROJECT_FIELDS, ProjectCorrection, ProjectUpdate
+from backend.app.schemas.project import PATCHABLE_PROJECT_FIELDS, ProjectCorrection, ProjectDescriptionUpdate, ProjectUpdate
 from backend.app.services.project_codes import generate_project_code, validate_manual_project_code
 
 _PROJECT_TYPE_ALIASES = {"teaching_software": "software", "practical_teaching_site": "laboratory"}
@@ -385,6 +385,27 @@ def update_project(project_id: int, payload: ProjectUpdate) -> dict:
         before = {field: project.get(field) for field in updates}
         project_repo.update_project_fields(conn, project_id, updates)
         _audit(conn, project_id, "PROJECT_UPDATED", payload.operator, payload.reason, {"before": before, "after": updates})
+        updated = project_repo.fetch_project_by_id(conn, project_id)
+        assert updated is not None
+        return _hydrate_project_projection(conn, updated)
+
+
+def update_project_description(project_id: int, payload: ProjectDescriptionUpdate) -> dict:
+    """Update the workbench summary without opening the full correction flow."""
+    with get_connection() as conn:
+        project = project_repo.fetch_project_by_id(conn, project_id)
+        if not project:
+            raise NotFoundError(f"项目不存在: {project_id}")
+        before = str(project.get("description") or "")
+        after = payload.description.strip()
+        project_repo.update_project_fields(conn, project_id, {"description": after})
+        _audit(
+            conn,
+            project_id,
+            "PROJECT_DESCRIPTION_UPDATED",
+            payload.operator,
+            payload={"before": before, "after": after},
+        )
         updated = project_repo.fetch_project_by_id(conn, project_id)
         assert updated is not None
         return _hydrate_project_projection(conn, updated)

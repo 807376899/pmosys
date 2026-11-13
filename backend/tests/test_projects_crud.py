@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 
 import pytest
 
@@ -93,6 +94,36 @@ def test_project_edit_can_clear_unrecorded_budget_and_keep_completion_date(clien
     assert updated.status_code == 200
     assert updated.json()["budget"] is None
     assert updated.json()["actual_end_date"] == "2026-02"
+
+
+def test_project_description_quick_update_needs_no_reason_and_keeps_other_facts(client, create_project_payload):
+    project = client.post(
+        "/api/v1/projects",
+        json=create_project_payload(description="原项目描述", budget="12.5896"),
+    ).json()
+
+    updated = client.patch(
+        f"/api/v1/projects/{project['id']}/description",
+        json={"description": "更新后的项目描述", "operator": "PMO办公室"},
+    )
+
+    assert updated.status_code == 200
+    assert updated.json()["description"] == "更新后的项目描述"
+    assert updated.json()["budget"] == "12.5896"
+    assert updated.json()["stage"] == "未立项"
+    assert updated.json()["latest_activity_at"] is None
+    audit = client.get(f"/api/v1/projects/{project['id']}/audit-events").json()
+    assert audit[0]["event_type"] == "PROJECT_DESCRIPTION_UPDATED"
+    assert audit[0]["reason"] == ""
+    assert json.loads(audit[0]["payload_json"])["before"] == "原项目描述"
+    assert json.loads(audit[0]["payload_json"])["after"] == "更新后的项目描述"
+
+    cleared = client.patch(
+        f"/api/v1/projects/{project['id']}/description",
+        json={"description": "", "operator": "PMO办公室"},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["description"] == ""
 
 
 @pytest.mark.parametrize("keyword", ["检索项目", "SW20260001", "检索说明", "检索发起人", "检索备注"])

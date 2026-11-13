@@ -23,6 +23,7 @@
 - [2026-11-05 办理活动移出成员筛选定向验证](activity-removed-member-filter-2026-11-05.md)：记录移出成员后的活动上下文、统计与历史保留证据。
 - [2026-11-05 办理活动快速办理面板实施记录](activity-quick-panel-2026-11-05.md)：记录成员草稿同步、结果与事项完成原子写入及面板收敛证据。
 - [2026-11-09 普通 Stage 推进刷新与选择状态定向验证](stage-advance-refresh-2026-11-09.md)：记录普通推进完整刷新、旧请求保护、选择清理及真实完成/刷新路径。
+- [2026-11-13 新增项目与项目概括快速办理定向验证](project-summary-quick-edit-2026-11-13.md)：记录新增项目统一字段、项目概括快捷编辑、自动审计及浏览器刷新回显。
 - [Phase 1历史执行](phase-1-regression.md)、[Phase 2历史执行](phase-2-external-constraint.md)、[视口历史执行](viewport-regression.md)：原事实保留，旧使用规则不再作为当前规范。
 - [本次文档整改结果](../requirements/governance-remediation-2026-09-11.md)：结构检查及只读保护证据，不是产品回归结果。
 
