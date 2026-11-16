@@ -66,16 +66,6 @@ type Props = {
 function amount(value: string | number | null | undefined) {
   return value == null ? "未记录" : `${formatCurrency(value)} 万`;
 }
-function planLabel(member: AnnualBudgetPlanMember) {
-  if (member.plan_kind === "carryover") return "续建";
-  if (member.plan_kind === "new_confirmed") return "本年新增 · 已确认";
-  if (member.plan_kind === "current_year_unplanned")
-    return "本年已推进 · 待纳入计划";
-  if (member.plan_kind === "current_year_planned")
-    return "本年已推进 · 已纳入计划";
-  return "新增候选";
-}
-
 export default function AnnualBudgetView({
   operator,
   projectTypes,
@@ -536,55 +526,33 @@ export default function AnnualBudgetView({
       setCancelReason("");
       await load(year);
       await onChanged();
-      onFeedback("已取消本次推进，并从年度计划中移出项目。");
+      onFeedback("项目已退回项目库—未实施，并从年度计划中移出。");
     } catch (error) {
       onError(
         error instanceof ApiError
           ? error.message
-          : "取消推进失败，项目保持原状态。",
+          : "退回项目库失败，项目保持原状态。",
       );
     }
   }
 
   const memberGroups = useMemo(() => {
     const members = plan?.members ?? [];
-    const fixedKinds = [
-      "carryover",
-      "new_confirmed",
-      "current_year_planned",
-      "current_year_unplanned",
-    ];
     return [
       [
         "续建项目",
         members.filter((member) => member.plan_kind === "carryover"),
       ],
       [
-        "本年新增（已确认）",
-        members.filter((member) => member.plan_kind === "new_confirmed"),
-      ],
-      [
-        "本年已推进",
+        "年度计划项目",
         members.filter(
           (member) =>
-            member.plan_kind === "current_year_planned" ||
-            member.plan_kind === "current_year_unplanned",
+            member.plan_kind !== "carryover" && member.selected,
         ),
       ],
       [
-        "项目库—未实施",
-        members.filter(
-          (member) =>
-            !fixedKinds.includes(member.plan_kind) &&
-            member.stage === "项目库—未实施",
-        ),
-      ],
-      [
-        "未立项",
-        members.filter(
-          (member) =>
-            !fixedKinds.includes(member.plan_kind) && member.stage === "未立项",
-        ),
+        "可选项目",
+        members.filter((member) => !member.selected),
       ],
     ] as Array<[string, AnnualBudgetPlanMember[]]>;
   }, [plan]);
@@ -659,14 +627,13 @@ export default function AnnualBudgetView({
               <table className="project-table annual-budget-table">
                 <thead>
                   <tr>
-                    <th>纳入计划</th>
+                    <th>计划状态 / 操作</th>
                     <th>项目</th>
                     <th>分类</th>
                     <th>学院</th>
                     <th>Stage</th>
                     <th>有效预算</th>
                     <th>本年新增安排</th>
-                    <th>计划类别</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -674,7 +641,7 @@ export default function AnnualBudgetView({
                     members.length ? (
                       <Fragment key={label}>
                         <tr className="annual-plan-group">
-                          <td colSpan={8}>{label}</td>
+                          <td colSpan={7}>{label}</td>
                         </tr>
                         {members.map((member) => {
                           const state = draft[member.project_id];
@@ -702,22 +669,22 @@ export default function AnnualBudgetView({
                                 toggleMember(member);
                               }}
                             >
-                              <td>
+                              <td className="annual-plan-status-cell">
                                 {member.plan_kind === "carryover" ? (
                                   <span className="plan-tag">续建</span>
-                                ) : member.plan_kind === "new_confirmed" ? (
-                                  <>
-                                    <span className="plan-tag">计划中</span>
+                                ) : member.can_cancel ? (
+                                  <div className="annual-plan-status">
+                                    <span className="plan-tag">{member.plan_status}</span>
                                     <button
                                       type="button"
                                       className="text-button danger"
                                       onClick={() => setCancelMember(member)}
                                     >
-                                      取消推进
+                                      退回项目库
                                     </button>
-                                  </>
-                                ) : member.plan_kind === "current_year_planned" ? (
-                                  <span className="plan-tag">已纳入计划</span>
+                                  </div>
+                                ) : selected ? (
+                                  <span className="plan-tag">{member.plan_status}</span>
                                 ) : member.can_select ? (
                                   <label className="check-pill">
                                     <input
@@ -729,7 +696,7 @@ export default function AnnualBudgetView({
                                     纳入计划
                                   </label>
                                 ) : (
-                                  <span className="plan-tag">已推进</span>
+                                  <span className="plan-tag">{member.plan_status}</span>
                                 )}
                               </td>
                               <td>
@@ -757,7 +724,6 @@ export default function AnnualBudgetView({
                                   }
                                 />
                               </td>
-                              <td>{planLabel(member)}</td>
                             </tr>
                           );
                         })}
@@ -766,7 +732,7 @@ export default function AnnualBudgetView({
                   )}
                   {!plan?.members.length ? (
                     <tr>
-                      <td colSpan={8} className="project-table-empty">
+                      <td colSpan={7} className="project-table-empty">
                         当前没有可纳入年度计划的项目
                       </td>
                     </tr>
@@ -1131,15 +1097,15 @@ export default function AnnualBudgetView({
           className="plan-leave-dialog"
           role="dialog"
           aria-modal="true"
-          aria-label="取消推进"
+          aria-label="退回项目库"
         >
           <div>
-            <h3>取消推进</h3>
+            <h3>退回项目库</h3>
             <p>
-              将撤回“{cancelMember.name}”本年度确认的推进，并从年度计划中移出。
+              将撤回“{cancelMember.name}”本年度确认的推进，退回项目库—未实施并从年度计划中移出。
             </p>
             <label className="field">
-              <span>取消原因</span>
+              <span>调整原因</span>
               <textarea
                 className="textarea"
                 value={cancelReason}
@@ -1152,7 +1118,7 @@ export default function AnnualBudgetView({
                 className="mini-button danger"
                 onClick={() => void cancelConfirmedMember()}
               >
-                确认取消推进
+                确认退回项目库
               </button>
               <button
                 className="text-button"

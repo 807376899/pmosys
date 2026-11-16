@@ -88,6 +88,41 @@ def test_current_year_confirmed_member_stays_new_and_zero_carryover_is_excluded_
     assert plan["planned_new_amount_total"] == "40"
 
 
+def test_current_year_planned_project_can_return_to_unimplemented_pool(client, create_project_payload):
+    project = client.post("/api/v1/projects", json=create_project_payload(name="补录后退回项目", budget=40)).json()
+    _active(client, project["id"], 2027)
+
+    saved = client.put("/api/v1/projects/annual-budget-plans/2027", json={"operator": "PMO", "members": [
+        {"project_id": project["id"], "planned_new_amount": 40},
+    ]})
+    assert saved.status_code == 200
+    member = next(item for item in saved.json()["members"] if item["project_id"] == project["id"])
+    assert member["plan_kind"] == "current_year_planned"
+    assert member["can_cancel"] is True
+    assert member["plan_status"] == "计划中"
+
+    cancelled = client.post("/api/v1/projects/annual-budget-plans/2027/exception-actions", json={
+        "action": "cancel", "operator": "PMO", "reason": "年度计划调整", "project_ids": [project["id"]],
+    })
+    assert cancelled.status_code == 200
+    assert client.get(f"/api/v1/projects/{project['id']}").json()["stage"] == "项目库—未实施"
+    returned = next(item for item in cancelled.json()["members"] if item["project_id"] == project["id"])
+    assert returned["plan_kind"] == "candidate"
+    assert returned["selected"] is False
+
+
+def test_supplemented_project_is_marked_as_added_in_annual_plan(client, create_project_payload):
+    project = client.post("/api/v1/projects", json=create_project_payload(name="后期新增项目", budget=35)).json()
+    _establish(client, project["id"])
+
+    supplemented = client.post("/api/v1/projects/annual-budget-plans/2027/supplement", json={
+        "operator": "PMO", "project_ids": [project["id"]], "reason": "后续补充",
+    })
+    assert supplemented.status_code == 200
+    member = next(item for item in supplemented.json()["members"] if item["project_id"] == project["id"])
+    assert member["plan_status"] == "新增"
+
+
 def test_same_year_confirmation_stays_in_its_plan_and_future_year_becomes_carryover(client, create_project_payload):
     project = client.post("/api/v1/projects", json=create_project_payload(name="当年纳入", budget=40)).json()
     _establish(client, project["id"])

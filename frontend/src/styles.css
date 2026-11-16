@@ -500,10 +500,12 @@ textarea {
 .annual-budget-board { min-width: 0; }
 .annual-budget-rail .operation-console { overflow-y: auto; }
 .annual-year { min-width: 9rem; }
-.annual-budget-table { min-width: 68rem; table-layout: auto; }
-.annual-budget-table th:first-child, .annual-budget-table td:first-child { width: 7.25rem; min-width: 7.25rem; white-space: nowrap; }
+.annual-budget-table { min-width: 61rem; table-layout: auto; }
+.annual-budget-table th:first-child, .annual-budget-table td:first-child { width: 11rem; min-width: 11rem; white-space: normal; }
 .annual-budget-table .amount-input { min-width: 9rem; }
 .plan-tag { color: var(--accent-cyan); font-weight: 700; white-space: nowrap; }
+.annual-plan-status { display: grid; justify-items: start; gap: .3rem; }
+.annual-plan-status .text-button { white-space: nowrap; }
 .annual-summary, .annual-arrangements, .formal-source-form { display: grid; gap: .65rem; }
 .annual-summary { margin-bottom: 1rem; padding-bottom: 1rem; border-bottom: 1px solid var(--line); }
 .annual-summary > strong { font-size: 1rem; }
@@ -1488,6 +1490,13 @@ textarea {
 .project-table { width: max-content; min-width: 0; table-layout: fixed; }
 .project-table th, .project-table td { overflow-wrap: normal; word-break: normal; }
 .project-table th:nth-child(1), .project-table td:nth-child(1) { width: 46px; min-width: 46px; max-width: 46px; }
+/* 年度计划没有选择列；首列是状态与操作，不能沿用项目表的 46px 选择列宽度。 */
+.project-table.annual-budget-table th:nth-child(1), .project-table.annual-budget-table td:nth-child(1) {
+  width: 11rem;
+  min-width: 11rem;
+  max-width: none;
+  white-space: normal;
+}
 .project-table .budget-column, .project-table .year-column, .project-table .updated-date { white-space: nowrap; }
 .contract-add-link { padding: 0; color: var(--accent-cyan); font-weight: 700; text-align: left; }
 .table-select-all { display: grid; place-items: center; inline-size: 22px; block-size: 22px; padding: 0; border: 1px solid rgba(31, 30, 26, .4); border-radius: 3px; background: var(--paper-strong); color: var(--paper-strong); cursor: pointer; }

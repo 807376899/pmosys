@@ -123,6 +123,12 @@ def _annual_plan_member(conn, project: dict, row: dict | None, year: int) -> dic
         amount = projected["effective_budget"] or "0"
     if kind == "current_year_unplanned" and amount is None:
         amount = projected["effective_budget"] or "0"
+    if kind == "carryover":
+        plan_status = "续建"
+    elif row and row["member_status"] != "removed":
+        plan_status = "新增" if row.get("member_kind") == "supplement" else "计划中"
+    else:
+        plan_status = "待纳入"
     return {
         "id": row["id"] if row else None,
         "project_id": projected["id"],
@@ -137,7 +143,11 @@ def _annual_plan_member(conn, project: dict, row: dict | None, year: int) -> dic
         "selected": selected,
         "member_status": row["member_status"] if row else None,
         "can_select": kind in {"candidate", "current_year_unplanned"},
-        "can_cancel": kind == "new_confirmed",
+        # Both a normally confirmed member and a same-year reconciled member
+        # represent the same current-year advancement fact.  Either normal
+        # project may be returned to the unimplemented project pool.
+        "can_cancel": kind in {"new_confirmed", "current_year_planned"} and projected["stage"] == "项目库—推进中",
+        "plan_status": plan_status,
         "counts_toward_stats": selected and decimal_of(amount) > 0,
         "planned_new_amount": amount,
         "planned_amount_is_manual": manual_amount,
@@ -304,9 +314,9 @@ def supplement_annual_budget_plan(year_value: object, payload: dict) -> dict:
             project_repo.update_project_status(conn, project["id"], {"library_implementation_view": "advancing", "advancement_year": year, "advancement_date": now, "updated_at": now})
             _audit(conn, project["id"], "PROJECT_INCLUDED_IN_ADVANCEMENT", operator, reason, {"year": year, "source": "annual_plan_supplement"})
             if member:
-                conn.execute("UPDATE annual_advancement_draft_members SET member_status='confirmed',planned_new_amount=?,planned_new_amount_decimal=?,confirmed_by=?,confirmed_at=? WHERE id=?", (legacy_number(planned_amount), planned_amount, operator, now, member["id"]))
+                conn.execute("UPDATE annual_advancement_draft_members SET member_status='confirmed',member_kind='supplement',planned_new_amount=?,planned_new_amount_decimal=?,confirmed_by=?,confirmed_at=? WHERE id=?", (legacy_number(planned_amount), planned_amount, operator, now, member["id"]))
             else:
-                conn.execute("INSERT INTO annual_advancement_draft_members (draft_id,project_id,member_status,added_by,planned_new_amount,planned_new_amount_decimal,member_kind,confirmed_by,confirmed_at) VALUES (?,?, 'confirmed',?,?,?,?,?,?)", (draft["id"], project["id"], operator, legacy_number(planned_amount), planned_amount, "new", operator, now))
+                conn.execute("INSERT INTO annual_advancement_draft_members (draft_id,project_id,member_status,added_by,planned_new_amount,planned_new_amount_decimal,member_kind,confirmed_by,confirmed_at) VALUES (?,?, 'confirmed',?,?,?,?,?,?)", (draft["id"], project["id"], operator, legacy_number(planned_amount), planned_amount, "supplement", operator, now))
             _event(conn, draft["id"], "ANNUAL_BUDGET_PLAN_SUPPLEMENTED", operator, project["id"], reason, {"year": year, "planned_new_amount": planned_amount})
         conn.execute("UPDATE annual_advancement_drafts SET updated_at=? WHERE id=?", (now, draft["id"]))
     return get_annual_budget_plan(year)
@@ -344,8 +354,8 @@ def annual_plan_exception_action(year_value: object, payload: dict) -> dict:
             elif action == "resume":
                 if not member or member["member_status"] != "confirmed" or not cycle or cycle["status"] != "deferred": errors.append(f"{project['name']}：仅已暂缓的年度计划项目可恢复推进")
             elif action == "cancel":
-                if not member or member["member_status"] != "confirmed" or member.get("member_kind") != "new" or not cycle or int(cycle["advancement_year"]) != year:
-                    errors.append(f"{project['name']}：仅本年度已确认推进项目可取消推进")
+                if not member or member["member_status"] != "confirmed" or _project_stage(project) != "项目库—推进中" or not cycle or cycle["status"] != "active" or int(cycle["advancement_year"]) != year:
+                    errors.append(f"{project['name']}：仅本年度计划中的正常推进项目可退回项目库")
         if errors:
             raise ValidationError("；".join(errors))
         now = _now()
@@ -366,10 +376,12 @@ def annual_plan_exception_action(year_value: object, payload: dict) -> dict:
                 _audit(conn, project_id, event, operator, reason, {"year": year, "source": "annual_plan_exception", "action": action})
                 if member:
                     planned_amount = preferred(dict(member), "planned_new_amount") or (_hydrate_project_projection(conn, project)["effective_budget"] or "0")
-                    conn.execute("UPDATE annual_advancement_draft_members SET member_status='confirmed',member_kind='new',planned_new_amount=?,planned_new_amount_decimal=?,confirmed_by=?,confirmed_at=?,removed_by='',removed_at=NULL,removal_reason='' WHERE id=?", (legacy_number(planned_amount), planned_amount, operator, now, member["id"]))
+                    member_kind = "supplement" if action == "supplement" else ("new" if action == "special" else member.get("member_kind") or "new")
+                    conn.execute("UPDATE annual_advancement_draft_members SET member_status='confirmed',member_kind=?,planned_new_amount=?,planned_new_amount_decimal=?,confirmed_by=?,confirmed_at=?,removed_by='',removed_at=NULL,removal_reason='' WHERE id=?", (member_kind, legacy_number(planned_amount), planned_amount, operator, now, member["id"]))
                 else:
                     planned_amount = _hydrate_project_projection(conn, project)["effective_budget"] or "0"
-                    conn.execute("INSERT INTO annual_advancement_draft_members (draft_id,project_id,member_status,added_by,planned_new_amount,planned_new_amount_decimal,member_kind,confirmed_by,confirmed_at) VALUES (?,?, 'confirmed',?,?,?,?,?,?)", (draft["id"], project_id, operator, legacy_number(planned_amount), planned_amount, "new", operator, now))
+                    member_kind = "supplement" if action == "supplement" else "new"
+                    conn.execute("INSERT INTO annual_advancement_draft_members (draft_id,project_id,member_status,added_by,planned_new_amount,planned_new_amount_decimal,member_kind,confirmed_by,confirmed_at) VALUES (?,?, 'confirmed',?,?,?,?,?,?)", (draft["id"], project_id, operator, legacy_number(planned_amount), planned_amount, member_kind, operator, now))
             elif action == "defer":
                 active = _latest_cycle(conn, project_id, ("active",))
                 assert active is not None

@@ -274,6 +274,7 @@ export interface AnnualBudgetPlanMember {
     | "candidate";
   selected: boolean;
   member_status?: "draft" | "confirmed" | "removed" | null;
+  plan_status: "续建" | "计划中" | "新增" | "待纳入";
   planned_new_amount: string | null;
   default_planned_new_amount: string;
   next_action: string;
