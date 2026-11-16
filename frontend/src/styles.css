@@ -258,7 +258,7 @@ textarea {
 .workspace {
   --project-list-height: clamp(40rem, calc(100dvh - 17rem), 62rem);
   --status-strip-height: 164px;
-  --workbench-height: calc(var(--status-strip-height) + 24px + var(--project-list-height));
+  --workbench-height: calc(var(--status-strip-height) + var(--project-list-height));
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-areas:
@@ -1356,7 +1356,8 @@ textarea {
   gap: 12px;
   overflow-x: auto;
   overflow-y: hidden;
-  padding: 0 0 6px;
+  height: var(--status-strip-height);
+  padding: 0;
 }
 
 .group-card {
@@ -1368,24 +1369,13 @@ textarea {
   gap: 8px;
 }
 
-/* The selected stage acts as the tab for the project board below it.  The
-   extension fills the intentionally reserved strip height without changing
-   scrolling or the dimensions of the other cards. */
 .group-card.active {
-  overflow: visible;
+  min-height: var(--status-strip-height);
+  height: var(--status-strip-height);
+  margin-bottom: 0;
+  transform: none;
+  box-shadow: 0 1px 0 var(--panel);
 }
-.group-card.active::after {
-  content: "";
-  position: absolute;
-  z-index: 1;
-  inset-inline: -1px;
-  top: 100%;
-  height: 24px;
-  border-inline: 1px solid var(--line);
-  background: var(--panel);
-  pointer-events: none;
-}
-.group-card.active > * { position: relative; z-index: 2; }
 
 .group-card p,
 .group-budget span {
