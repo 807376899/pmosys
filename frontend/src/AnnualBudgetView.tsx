@@ -2,6 +2,7 @@ import { FileDown, FileUp, Plus, Save, Send } from "lucide-react";
 import {
   ChangeEvent,
   Fragment,
+  PointerEvent as ReactPointerEvent,
   ReactNode,
   useEffect,
   useMemo,
@@ -19,10 +20,10 @@ import {
 import {
   compareMoney,
   formatCurrency,
-  projectTypeLabel,
   subtractMoney,
   sumMoney,
 } from "./lib/format";
+import { annualPlanCategoryLabel } from "./lib/annual-plan-display";
 import type {
   AnnualBudgetPlan,
   AnnualBudgetPlanMember,
@@ -49,6 +50,29 @@ const sourceBlank = (year: number) => ({
   scope_note: "",
   note: "",
 });
+const ANNUAL_COLUMN_WIDTHS_KEY = "pmo-annual-budget-table-widths-v1";
+const annualColumnDefaults = {
+  status: 190,
+  project: 270,
+  category: 190,
+  department: 140,
+  stage: 150,
+  effectiveBudget: 135,
+  plannedAmount: 160,
+} as const;
+type AnnualColumnKey = keyof typeof annualColumnDefaults;
+
+function readAnnualColumnWidths(): Partial<Record<AnnualColumnKey, number>> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(ANNUAL_COLUMN_WIDTHS_KEY) || "{}");
+    return Object.fromEntries(
+      Object.entries(raw && typeof raw === "object" ? raw : {})
+        .filter(([key, value]) => key in annualColumnDefaults && typeof value === "number" && Number.isFinite(value) && value >= 96),
+    ) as Partial<Record<AnnualColumnKey, number>>;
+  } catch {
+    return {};
+  }
+}
 type View = "overview" | "stage";
 type PendingNavigation =
   { kind: "year"; year: number } | { kind: "view"; view: View; group?: string };
@@ -108,6 +132,38 @@ export default function AnnualBudgetView({
   const [cancelMember, setCancelMember] =
     useState<AnnualBudgetPlanMember | null>(null);
   const [cancelReason, setCancelReason] = useState("");
+  const [columnWidths, setColumnWidths] = useState(readAnnualColumnWidths);
+
+  useEffect(() => {
+    localStorage.setItem(ANNUAL_COLUMN_WIDTHS_KEY, JSON.stringify(columnWidths));
+  }, [columnWidths]);
+
+  function annualColumnWidth(key: AnnualColumnKey) {
+    return columnWidths[key] ?? annualColumnDefaults[key];
+  }
+
+  function startColumnResize(key: AnnualColumnKey, event: ReactPointerEvent<HTMLSpanElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startWidth = annualColumnWidth(key);
+    const onMove = (moveEvent: PointerEvent) => {
+      setColumnWidths((current) => ({
+        ...current,
+        [key]: Math.max(96, Math.round(startWidth + moveEvent.clientX - startX)),
+      }));
+    };
+    const onStop = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onStop);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onStop, { once: true });
+  }
+
+  function annualResizeHandle(key: AnnualColumnKey) {
+    return <span className="column-resize-handle" role="separator" aria-label="拖动调整列宽" title="拖动调整列宽" onPointerDown={(event) => startColumnResize(key, event)} />;
+  }
 
   async function load(nextYear = year) {
     setLoading(true);
@@ -618,22 +674,35 @@ export default function AnnualBudgetView({
                 <Save size={15} />
                 保存年度计划草案
               </button>
+              <button
+                className="mini-button"
+                type="button"
+                onClick={() => setColumnWidths({})}
+              >
+                恢复默认列宽
+              </button>
             </div>
           </div>
           <div className="project-table-wrap">
             {loading ? (
               <div className="loading-panel">正在载入年度计划</div>
             ) : (
-              <table className="project-table annual-budget-table">
+              <table
+                className="project-table annual-budget-table"
+                style={{ minWidth: `${Object.values(annualColumnDefaults).reduce((total, _, index) => total + annualColumnWidth(Object.keys(annualColumnDefaults)[index] as AnnualColumnKey), 0)}px` }}
+              >
+                <colgroup>
+                  {(Object.keys(annualColumnDefaults) as AnnualColumnKey[]).map((key) => <col key={key} style={{ width: annualColumnWidth(key) }} />)}
+                </colgroup>
                 <thead>
                   <tr>
-                    <th>计划状态 / 操作</th>
-                    <th>项目</th>
-                    <th>分类</th>
-                    <th>学院</th>
-                    <th>Stage</th>
-                    <th>有效预算</th>
-                    <th>本年新增安排</th>
+                    <th className="resizable-column">计划状态 / 操作{annualResizeHandle("status")}</th>
+                    <th className="resizable-column">项目{annualResizeHandle("project")}</th>
+                    <th className="resizable-column">分类 / 采购类型{annualResizeHandle("category")}</th>
+                    <th className="resizable-column">学院{annualResizeHandle("department")}</th>
+                    <th className="resizable-column">Stage{annualResizeHandle("stage")}</th>
+                    <th className="resizable-column">有效预算{annualResizeHandle("effectiveBudget")}</th>
+                    <th className="resizable-column">本年新增安排{annualResizeHandle("plannedAmount")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -707,7 +776,7 @@ export default function AnnualBudgetView({
                                   <span>{member.project_code}</span>
                                 </div>
                               </td>
-                              <td>{projectTypeLabel(member.project_type)}</td>
+                              <td>{annualPlanCategoryLabel(member.project_type, member.procurement_nature)}</td>
                               <td>{member.department || "未录入"}</td>
                               <td>{member.stage}</td>
                               <td>{amount(member.effective_budget)}</td>
@@ -767,7 +836,7 @@ export default function AnnualBudgetView({
           </div>
           {["software", "laboratory"].map((code) => (
             <div className="annual-category-stat" key={code}>
-              <span>{projectTypeLabel(code)}</span>
+              <span>{code === "software" ? "专业教学软件项目" : "实践教学场所项目"}</span>
               <strong>
                 {categoryStats[code]?.count ?? 0} 个 ·{" "}
                 {formatCurrency(categoryStats[code]?.amount ?? "0")} 万

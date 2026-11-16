@@ -280,7 +280,7 @@ textarea {
 .main-stage {
   display: grid;
   grid-area: main;
-  gap: 24px;
+  gap: 0;
   min-width: 0;
   align-self: start;
 }
@@ -292,6 +292,9 @@ textarea {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 14px;
+  position: relative;
+  z-index: 2;
+  padding-bottom: 0;
 }
 
 .group-card {
@@ -318,6 +321,10 @@ textarea {
 }
 
 .group-card.active {
+  z-index: 2;
+  margin-bottom: -1px;
+  border-bottom-color: var(--panel);
+  border-radius: 8px 8px 0 0;
   transform: translateY(-3px);
   box-shadow: 0 18px 36px rgba(31, 30, 26, 0.12);
 }
@@ -500,8 +507,8 @@ textarea {
 .annual-budget-board { min-width: 0; }
 .annual-budget-rail .operation-console { overflow-y: auto; }
 .annual-year { min-width: 9rem; }
-.annual-budget-table { min-width: 61rem; table-layout: auto; }
-.annual-budget-table th:first-child, .annual-budget-table td:first-child { width: 11rem; min-width: 11rem; white-space: normal; }
+.annual-budget-table { min-width: 61rem; table-layout: fixed; }
+.annual-budget-table th:first-child, .annual-budget-table td:first-child { width: auto; min-width: 0; white-space: normal; }
 .annual-budget-table .amount-input { min-width: 9rem; }
 .plan-tag { color: var(--accent-cyan); font-weight: 700; white-space: nowrap; }
 .annual-plan-status { display: grid; justify-items: start; gap: .3rem; }
@@ -1361,6 +1368,25 @@ textarea {
   gap: 8px;
 }
 
+/* The selected stage acts as the tab for the project board below it.  The
+   extension fills the intentionally reserved strip height without changing
+   scrolling or the dimensions of the other cards. */
+.group-card.active {
+  overflow: visible;
+}
+.group-card.active::after {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  inset-inline: -1px;
+  top: 100%;
+  height: 24px;
+  border-inline: 1px solid var(--line);
+  background: var(--panel);
+  pointer-events: none;
+}
+.group-card.active > * { position: relative; z-index: 2; }
+
 .group-card p,
 .group-budget span {
   overflow: hidden;
@@ -1423,6 +1449,30 @@ textarea {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+}
+
+.column-picker-bulk-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.column-picker-bulk-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  border: 1px solid var(--line);
+  background: rgba(255, 252, 246, .72);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: .78rem;
+}
+
+.column-picker-bulk-actions button[aria-checked="true"] {
+  border-color: var(--accent-cyan);
+  background: rgba(12, 122, 121, .1);
+  color: var(--accent-cyan);
 }
 
 .column-picker-menu section {
@@ -1492,10 +1542,21 @@ textarea {
 .project-table th:nth-child(1), .project-table td:nth-child(1) { width: 46px; min-width: 46px; max-width: 46px; }
 /* 年度计划没有选择列；首列是状态与操作，不能沿用项目表的 46px 选择列宽度。 */
 .project-table.annual-budget-table th:nth-child(1), .project-table.annual-budget-table td:nth-child(1) {
-  width: 11rem;
-  min-width: 11rem;
-  max-width: none;
-  white-space: normal;
+  position: static;
+  left: auto;
+  z-index: auto;
+  box-shadow: none;
+}
+.project-table.annual-budget-table th:nth-child(2), .project-table.annual-budget-table td:nth-child(2) {
+  position: static;
+  left: auto;
+  z-index: auto;
+  box-shadow: none;
+}
+.project-table.annual-budget-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 5;
 }
 .project-table .budget-column, .project-table .year-column, .project-table .updated-date { white-space: nowrap; }
 .contract-add-link { padding: 0; color: var(--accent-cyan); font-weight: 700; text-align: left; }

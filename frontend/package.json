@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test:columns": "tsc --target ES2020 --module NodeNext --moduleResolution NodeNext --outDir .column-layout-test-dist src/lib/column-layout.ts && node --test tests/column-layout.test.mjs",
+    "test:annual-plan": "tsc --target ES2020 --module NodeNext --moduleResolution NodeNext --outDir .annual-plan-test-dist src/lib/annual-plan-display.ts && node --test tests/annual-plan-display.test.mjs",
     "test:contract-activity": "tsc --target ES2020 --module NodeNext --moduleResolution NodeNext --outDir node_modules/.cache/contract-activity-tests src/lib/contract-activity.ts && node --test tests/contract-activity.test.mjs",
     "test:rail": "tsc --target ES2020 --module NodeNext --moduleResolution NodeNext --outDir node_modules/.cache/rail-state-tests src/lib/rail-state.ts && node --test tests/rail-state.test.mjs"
   },

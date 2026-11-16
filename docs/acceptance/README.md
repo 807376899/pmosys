@@ -25,6 +25,7 @@
 - [2026-11-09 普通 Stage 推进刷新与选择状态定向验证](stage-advance-refresh-2026-11-09.md)：记录普通推进完整刷新、旧请求保护、选择清理及真实完成/刷新路径。
 - [2026-11-13 新增项目与项目概括快速办理定向验证](project-summary-quick-edit-2026-11-13.md)：记录新增项目统一字段、项目概括快捷编辑、自动审计及浏览器刷新回显。
 - [2026-11-16 年度计划状态与退回项目库定向验证](annual-plan-status-return-2026-11-16.md)：记录计划项目合并展示、状态文案及本年度正常推进项目退回项目库的 API、构建和浏览器证据。
+- [2026-11-16 年度计划列与显示列控件定向验证](annual-plan-columns-and-display-controls-2026-11-16.md)：记录采购类型、年度列宽、显示列全选/外部关闭及状态卡片接合的分层证据。
 - [Phase 1历史执行](phase-1-regression.md)、[Phase 2历史执行](phase-2-external-constraint.md)、[视口历史执行](viewport-regression.md)：原事实保留，旧使用规则不再作为当前规范。
 - [本次文档整改结果](../requirements/governance-remediation-2026-09-11.md)：结构检查及只读保护证据，不是产品回归结果。
 

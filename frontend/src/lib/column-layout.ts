@@ -29,7 +29,20 @@ export function stageGroupAnchorForLayout<T extends string>(layout: readonly (T 
   return index > 0 ? layout[index - 1] as T : null;
 }
 
-export type TableColumnWidths = Record<"overview" | "stage", Record<string, number>>;
+export type TableColumnWidths = Record<"overview" | "stage" | "annual", Record<string, number>>;
+
+export function readTableColumnWidths(value: unknown): TableColumnWidths {
+  const source = value && typeof value === "object" ? value as Partial<TableColumnWidths> : {};
+  const sanitize = (widths: unknown) => Object.fromEntries(
+    Object.entries(widths && typeof widths === "object" ? widths : {})
+      .filter(([, width]) => typeof width === "number" && Number.isFinite(width) && width > 0),
+  );
+  return {
+    overview: sanitize(source.overview),
+    stage: sanitize(source.stage),
+    annual: sanitize(source.annual),
+  };
+}
 
 export function clampColumnWidth(width: number, minimum: number) {
   return Math.max(minimum, Math.round(width));

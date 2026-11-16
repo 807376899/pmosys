@@ -136,6 +136,7 @@ def _annual_plan_member(conn, project: dict, row: dict | None, year: int) -> dic
         "name": projected["name"],
         "department": projected.get("department") or "",
         "project_type": projected.get("project_type") or "",
+        "procurement_nature": projected.get("procurement_nature") or "",
         "stage": projected["stage"],
         "advancement": projected["advancement"],
         "effective_budget": projected["effective_budget"],

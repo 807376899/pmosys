@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const { applySharedOrder, clampColumnWidth, insertStageGroup, replaceVisibleOrder, resetViewColumnWidths, setViewColumnWidth, stageLayoutForVisibleColumns } = await import("../.column-layout-test-dist/column-layout.js");
+const { applySharedOrder, clampColumnWidth, insertStageGroup, readTableColumnWidths, replaceVisibleOrder, resetViewColumnWidths, setViewColumnWidth, stageLayoutForVisibleColumns } = await import("../.column-layout-test-dist/column-layout.js");
 
 test("shared base order is applied without changing a view's visibility", () => {
   const order = applySharedOrder(["stage", "department", "budget", "contract"], ["budget", "contract"]);
@@ -37,6 +37,26 @@ test("column widths are isolated by view and persist by stable column key", () =
   const stage = setViewColumnWidth(overview, "stage", "work_item:review", 208, 148);
   assert.deepEqual(stage, { overview: { "base:budget": 236 }, stage: { "work_item:review": 208 } });
   assert.deepEqual(resetViewColumnWidths(stage, "overview"), { overview: {}, stage: { "work_item:review": 208 } });
+});
+
+test("annual plan widths are stored independently from overview and stage", () => {
+  const initial = readTableColumnWidths({ overview: { "base:budget": 180 }, stage: { "stage:review": 208 }, annual: { "annual:project": 312 } });
+  assert.deepEqual(initial, {
+    overview: { "base:budget": 180 },
+    stage: { "stage:review": 208 },
+    annual: { "annual:project": 312 },
+  });
+  const annual = setViewColumnWidth(initial, "annual", "annual:project", 312, 200);
+  assert.deepEqual(annual, {
+    overview: { "base:budget": 180 },
+    stage: { "stage:review": 208 },
+    annual: { "annual:project": 312 },
+  });
+  assert.deepEqual(resetViewColumnWidths(annual, "annual"), {
+    overview: { "base:budget": 180 },
+    stage: { "stage:review": 208 },
+    annual: {},
+  });
 });
 
 test("column widths never shrink below their readable minimum", () => {

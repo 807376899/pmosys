@@ -264,6 +264,7 @@ export interface AnnualBudgetPlanMember {
   name: string;
   department: string;
   project_type: string;
+  procurement_nature?: "goods" | "service" | "mixed" | "" | null;
   stage: string;
   effective_budget: string | null;
   plan_kind:

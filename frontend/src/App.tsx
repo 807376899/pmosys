@@ -36,7 +36,7 @@ import AnnualBudgetView from "./AnnualBudgetView";
 import ContractPanel from "./ContractPanel";
 import ProjectFundingPanel from "./ProjectFundingPanel";
 import { ApiError, apiDelete, apiGet, apiPatch, apiPost, apiPostForm, apiPut, buildExportUrl } from "./lib/api";
-import { applySharedOrder, insertStageGroup, replaceVisibleOrder, resetViewColumnWidths, setViewColumnWidth, stageGroupAnchorForLayout, stageLayoutForVisibleColumns, type TableColumnWidths } from "./lib/column-layout";
+import { applySharedOrder, insertStageGroup, readTableColumnWidths, replaceVisibleOrder, resetViewColumnWidths, setViewColumnWidth, stageGroupAnchorForLayout, stageLayoutForVisibleColumns, type TableColumnWidths } from "./lib/column-layout";
 import { resolveProjectRailState, resolveWorkbenchRailVisibility, shouldApplyDashboardLoad, shouldClearProjectSelection } from "./lib/rail-state";
 import { formatCurrency, formatDate, formatDateTime, projectTypeLabel, statusLabel, sumMoney } from "./lib/format";
 import type {
@@ -250,13 +250,11 @@ function isBaseColumn(value: unknown): value is BaseColumn {
 }
 
 function readColumnWidths(value: unknown): TableColumnWidths {
-  const source = value && typeof value === "object" ? value as Partial<TableColumnWidths> : {};
-  const sanitize = (widths: unknown) => Object.fromEntries(Object.entries(widths && typeof widths === "object" ? widths : {}).filter(([, width]) => typeof width === "number" && Number.isFinite(width) && width > 0));
-  return { overview: sanitize(source.overview), stage: sanitize(source.stage) };
+  return readTableColumnWidths(value);
 }
 
 function readProjectTableColumnPreferences(): ProjectTableColumnPreferences {
-  const fallback: ProjectTableColumnPreferences = { order: [...allBaseColumns], visibility: { overview: {}, stage: {} }, stageGroupAnchors: {}, widths: { overview: {}, stage: {} }, orderCustomized: false };
+  const fallback: ProjectTableColumnPreferences = { order: [...allBaseColumns], visibility: { overview: {}, stage: {} }, stageGroupAnchors: {}, widths: { overview: {}, stage: {}, annual: {} }, orderCustomized: false };
   try {
     const raw = JSON.parse(localStorage.getItem("pmo-project-table-columns-v1") || "null") as Partial<ProjectTableColumnPreferences> | null;
     if (raw && Array.isArray(raw.order) && raw.order.every(isBaseColumn)) {
@@ -518,10 +516,32 @@ function DashboardPage() {
   const [baseOrderCustomized, setBaseOrderCustomized] = useState(columnPreferencesRef.current.orderCustomized);
   const columnHeaderClickTimer = useRef<number | null>(null);
   const dashboardLoadSequence = useRef(0);
+  const overviewColumnPickerRef = useRef<HTMLDivElement>(null);
+  const stageColumnPickerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     localStorage.setItem("pmo-project-table-columns-v1", JSON.stringify({ order: sharedBaseColumnOrder, visibility: baseColumnVisibility, stageGroupAnchors, widths: columnWidths, orderCustomized: baseOrderCustomized }));
   }, [sharedBaseColumnOrder, baseColumnVisibility, stageGroupAnchors, columnWidths, baseOrderCustomized]);
+
+  useEffect(() => {
+    if (!overviewColumnPickerOpen && !columnPickerOpen) return;
+    const closeWhenOutside = (event: globalThis.MouseEvent) => {
+      const target = event.target as Node;
+      if (overviewColumnPickerOpen && !overviewColumnPickerRef.current?.contains(target)) setOverviewColumnPickerOpen(false);
+      if (columnPickerOpen && !stageColumnPickerRef.current?.contains(target)) setColumnPickerOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setOverviewColumnPickerOpen(false);
+      setColumnPickerOpen(false);
+    };
+    document.addEventListener("mousedown", closeWhenOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeWhenOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [overviewColumnPickerOpen, columnPickerOpen]);
 
   const exportQuery = useMemo(() => {
     const params = new URLSearchParams();
@@ -912,6 +932,11 @@ function DashboardPage() {
   function toggleBaseColumn(view: ConfigurableTableView, column: BaseColumn) {
     const visible = view === "overview" ? overviewColumns : stageBaseColumns;
     saveBaseColumnVisibility(view, visible.includes(column) ? visible.filter((item) => item !== column) : [...visible, column]);
+  }
+
+  function setAllBaseColumnsVisible(view: ConfigurableTableView, visible: boolean) {
+    const allowed = view === "overview" ? overviewAllowedColumns : stageAllowedColumns;
+    saveBaseColumnVisibility(view, visible ? allowed : []);
   }
 
   function resetBaseColumnLayout(view: ConfigurableTableView) {
@@ -1971,14 +1996,16 @@ function DashboardPage() {
                 <button className={`mini-button ${tableView === "stage" ? "active" : ""}`} onClick={() => setTableView("stage")}>阶段跟踪</button>
                 <button className="mini-button" onClick={() => { clearColumnBatchTarget(); setTableView("annual"); setColumnPickerOpen(false); }}>年度预算安排</button>
                 {tableView === "stage" ? <button className="mini-button" onClick={() => { setOperationMode("batch"); setRailExpanded(true); setProjectRailDismissed(false); void loadBatchHistory(); }}>办理活动记录</button> : null}
-                {tableView === "overview" ? <div className="column-picker"><button type="button" className="mini-button" aria-expanded={overviewColumnPickerOpen} onClick={() => setOverviewColumnPickerOpen((open) => !open)}>显示列</button>{overviewColumnPickerOpen ? <div className="column-picker-menu" role="dialog" aria-label="配置总览显示列">
+                {tableView === "overview" ? <div className="column-picker" ref={overviewColumnPickerRef}><button type="button" className="mini-button" aria-expanded={overviewColumnPickerOpen} onClick={() => setOverviewColumnPickerOpen((open) => !open)}>显示列</button>{overviewColumnPickerOpen ? <div className="column-picker-menu" role="dialog" aria-label="配置总览显示列">
                   <div className="column-picker-heading"><strong>显示列</strong><button type="button" className="text-button" onClick={() => setOverviewColumnPickerOpen(false)}>关闭</button></div>
+                  <div className="column-picker-bulk-actions"><button type="button" role="checkbox" aria-checked={overviewColumns.length === overviewAllowedColumns.length} onClick={() => setAllBaseColumnsVisible("overview", true)}>全选可用列</button><button type="button" role="checkbox" aria-checked={overviewColumns.length === 0} onClick={() => setAllBaseColumnsVisible("overview", false)}>取消全部选择</button></div>
                   <section><span>基础列</span><div className="column-config-list">{applySharedOrder(sharedBaseColumnOrder, overviewAllowedColumns).map((column) => <label className="column-config-row" draggable key={column} onDragStart={(event) => event.dataTransfer.setData("text/plain", `base:${column}`)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { const source = event.dataTransfer.getData("text/plain").replace("base:", ""); if (isBaseColumn(source)) moveBaseColumn(source, column); }}><span className="drag-handle" aria-hidden="true">☰</span><span>{OVERVIEW_COLUMN_LABELS[column]}</span><input type="checkbox" checked={overviewColumns.includes(column)} onChange={() => toggleBaseColumn("overview", column)} /></label>)}</div></section>
                   <p className="column-sync-note">基础列顺序会同步到其他视图，显示/隐藏仅影响当前视图。</p>
                   <button type="button" className="text-button column-reset" onClick={() => resetBaseColumnLayout("overview")}>恢复默认列配置</button><button type="button" className="text-button column-reset" onClick={resetColumnWidthsForCurrentView}>恢复默认列宽</button>
                 </div> : null}</div> : null}
-                {tableView === "stage" ? <div className="column-picker"><button type="button" className="mini-button" aria-expanded={columnPickerOpen} onClick={() => setColumnPickerOpen((open) => { if (!open) setStageBaseColumnsOpen(false); return !open; })}>显示列</button>{columnPickerOpen ? <div className="column-picker-menu" role="dialog" aria-label="配置阶段跟踪显示列">
+                {tableView === "stage" ? <div className="column-picker" ref={stageColumnPickerRef}><button type="button" className="mini-button" aria-expanded={columnPickerOpen} onClick={() => setColumnPickerOpen((open) => { if (!open) setStageBaseColumnsOpen(false); return !open; })}>显示列</button>{columnPickerOpen ? <div className="column-picker-menu" role="dialog" aria-label="配置阶段跟踪显示列">
                   <div className="column-picker-heading"><strong>显示列</strong><button type="button" className="text-button" onClick={() => setColumnPickerOpen(false)}>关闭</button></div>
+                  <div className="column-picker-bulk-actions"><button type="button" role="checkbox" aria-checked={stageBaseColumns.length === stageAllowedColumns.length} onClick={() => setAllBaseColumnsVisible("stage", true)}>全选可用列</button><button type="button" role="checkbox" aria-checked={stageBaseColumns.length === 0} onClick={() => setAllBaseColumnsVisible("stage", false)}>取消全部选择</button></div>
                   <section className="stage-base-columns-section"><button type="button" className="column-config-section-toggle" aria-expanded={stageBaseColumnsOpen} onClick={() => setStageBaseColumnsOpen((open) => !open)}><strong>基础信息列</strong><span>与总览共享顺序</span><b aria-hidden="true">{stageBaseColumnsOpen ? "收起" : "展开"}</b></button>{stageBaseColumnsOpen ? <div className="column-config-list">{stageConfigLayout.map((entry) => entry === "stage_group" ? <div className="column-config-row stage-group-config" draggable key={entry} onDragStart={(event) => event.dataTransfer.setData("text/plain", "layout:stage_group")} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { const source = event.dataTransfer.getData("text/plain").replace("layout:", ""); if (source === "stage_group" || isBaseColumn(source)) dropStageLayout(source as StageLayoutToken, entry); }}><span className="drag-handle" aria-hidden="true">☰</span><strong>阶段跟踪列组</strong><small>事项与约束</small></div> : <label className="column-config-row" draggable key={entry} onDragStart={(event) => event.dataTransfer.setData("text/plain", `layout:${entry}`)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { const source = event.dataTransfer.getData("text/plain").replace("layout:", ""); if (source === "stage_group" || isBaseColumn(source)) dropStageLayout(source as StageLayoutToken, entry); }}><span className="drag-handle" aria-hidden="true">☰</span><span>{OVERVIEW_COLUMN_LABELS[entry]}</span><input type="checkbox" checked={stageBaseColumns.includes(entry)} onChange={() => toggleBaseColumn("stage", entry)} /></label>)}</div> : null}</section>
                   <section><span>阶段跟踪列组</span><div className="column-chip-list">{stageColumns.map((column, index) => <button type="button" draggable key={`${column.kind}:${column.key}`} aria-label={`${column.kind === "external_constraint" ? "外部约束" : "事项"}列 ${column.label}`} onDragStart={(event) => event.dataTransfer.setData("text/plain", String(index))} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { const from = Number(event.dataTransfer.getData("text/plain")); if (Number.isInteger(from) && from !== index) { const next = [...stageColumns]; const [moved] = next.splice(from, 1); next.splice(index, 0, moved); saveStageColumns(next); } }} onClick={() => removeStageColumn(column)}><span className="drag-handle">⋮⋮</span>{column.label} <b>×</b></button>)}{!stageColumns.length ? <small>暂无显示列</small> : null}</div></section>
                   <section><span>推荐列</span><div className="column-action-list">{recommendedColumns.filter((column) => !stageColumns.some((item) => item.kind === column.kind && item.key === column.key)).map((column) => <button type="button" key={`${column.kind}:${column.key}`} aria-label={`添加${column.kind === "external_constraint" ? "外部约束" : "事项"}列 ${column.label}`} onClick={() => addStageColumn(column)}>＋ {column.label}</button>)}{!recommendedColumns.filter((column) => !stageColumns.some((item) => item.kind === column.kind && item.key === column.key)).length ? <small>已全部加入</small> : null}</div></section>

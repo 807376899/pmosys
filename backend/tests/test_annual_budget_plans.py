@@ -20,7 +20,7 @@ def _active(client, project_id: int, year: int) -> None:
 
 def test_annual_budget_plan_derives_carryovers_and_saves_candidate_amounts_atomically(client, create_project_payload):
     carryover = client.post("/api/v1/projects", json=create_project_payload(name="续建项目", budget=80)).json()
-    pool = client.post("/api/v1/projects", json=create_project_payload(name="新增项目", budget=50)).json()
+    pool = client.post("/api/v1/projects", json=create_project_payload(name="新增项目", budget=50, procurement_nature="service")).json()
     special = client.post("/api/v1/projects", json=create_project_payload(name="未立项候选", budget=20)).json()
     finished = client.post("/api/v1/projects", json=create_project_payload(name="完成项目", budget=10)).json()
     _active(client, carryover["id"], 2025)
@@ -34,6 +34,7 @@ def test_annual_budget_plan_derives_carryovers_and_saves_candidate_amounts_atomi
     assert indexed[carryover["id"]]["planned_new_amount"] == "0"
     assert indexed[pool["id"]]["selected"] is False
     assert indexed[pool["id"]]["default_planned_new_amount"] == "50"
+    assert indexed[pool["id"]]["procurement_nature"] == "service"
     assert indexed[special["id"]]["stage"] == "未立项"
     assert finished["id"] not in indexed
 
